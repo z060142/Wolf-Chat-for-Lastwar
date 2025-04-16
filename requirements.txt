@@ -1,0 +1,10 @@
+# requirements.txt
+openai
+mcp
+pyautogui
+opencv-python
+numpy
+pyperclip
+pygetwindow
+psutil 
+python-dotenv
