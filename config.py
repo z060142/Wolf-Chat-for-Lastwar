@@ -45,9 +45,16 @@ MCP_SERVERS = {
             exa_config_arg_string # Use the properly escaped variable
         ],
     },
-    "memorymesh": {
-        "command": "node",
-        "args": ["Z:/mcp/Server/MemoryMesh-main/dist/index.js"] # Path remains unchanged
+    "servers": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@smithery/cli@latest",
+        "run",
+        "@jlia0/servers",
+        "--key",
+        "09025967-c177-4653-9af4-40603a1cbd11"
+      ]
     }
     # Add or remove servers as needed
 }
