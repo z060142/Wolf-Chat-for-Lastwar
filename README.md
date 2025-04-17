@@ -1,4 +1,4 @@
-# Dandan MCP Chat Bot
+# Wolf Chat Bot
 
 A specialized chat assistant that integrates with the "Last War-Survival Game" by monitoring the game's chat window using screen recognition technology.
 
