@@ -236,26 +236,46 @@ async def run_main_with_exit_stack():
 
             print(f"\n{config.PERSONA_NAME} is thinking...")
             try:
-                # Get LLM response
-                bot_response = await llm_interaction.get_llm_response(
+                # Get LLM response (現在返回的是一個字典)
+                bot_response_data = await llm_interaction.get_llm_response(
                     user_input=f"Message from {sender_name}: {bubble_text}", # Provide context
                     mcp_sessions=active_mcp_sessions,
                     available_mcp_tools=all_discovered_mcp_tools,
                     persona_details=wolfhart_persona_details
                 )
-                print(f"{config.PERSONA_NAME}'s response: {bot_response}")
-
-                # Send response back via UI interaction module
-                if bot_response:
-                    print("Preparing to send response via UI...")
+                
+                # 提取對話內容
+                bot_dialogue = bot_response_data.get("dialogue", "")
+                valid_response = bot_response_data.get("valid_response", False)
+                print(f"{config.PERSONA_NAME}'s dialogue response: {bot_dialogue}")
+                
+                # 處理命令 (如果有的話)
+                commands = bot_response_data.get("commands", [])
+                if commands:
+                    print(f"Processing {len(commands)} command(s)...")
+                    for cmd in commands:
+                        cmd_type = cmd.get("type", "")
+                        cmd_params = cmd.get("parameters", {})
+                        # 預留位置：在這裡添加命令處理邏輯
+                        print(f"Command type: {cmd_type}, parameters: {cmd_params}")
+                        # TODO: 實現各類命令的處理邏輯
+                
+                # 記錄思考過程 (如果有的話)
+                thoughts = bot_response_data.get("thoughts", "")
+                if thoughts:
+                    print(f"AI Thoughts: {thoughts[:150]}..." if len(thoughts) > 150 else f"AI Thoughts: {thoughts}")
+                
+                # 只有當有效回應時才發送到遊戲
+                if bot_dialogue and valid_response:
+                    print("Preparing to send dialogue response via UI...")
                     send_success = await asyncio.to_thread(
                         ui_interaction.paste_and_send_reply,
-                        bot_response
+                        bot_dialogue
                     )
                     if send_success: print("Response sent successfully.")
                     else: print("Error: Failed to send response via UI.")
                 else:
-                    print("LLM did not generate a response, not sending.")
+                    print("Not sending response: Invalid or empty dialogue content.")
 
             except Exception as e:
                 print(f"\nError processing trigger or sending response: {e}")
