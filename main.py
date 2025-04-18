@@ -225,9 +225,21 @@ async def run_main_with_exit_stack():
             # Use run_in_executor to wait for item from standard queue
             trigger_data = await loop.run_in_executor(None, trigger_queue.get)
 
+            # --- Pause UI Monitoring ---
+            print("Pausing UI monitoring before LLM call...")
+            pause_command = {'action': 'pause'}
+            try:
+                await loop.run_in_executor(None, command_queue.put, pause_command)
+                print("Pause command placed in queue.")
+            except Exception as q_err:
+                print(f"Error putting pause command in queue: {q_err}")
+            # --- End Pause ---
+
             sender_name = trigger_data.get('sender')
             bubble_text = trigger_data.get('text')
             bubble_region = trigger_data.get('bubble_region') # <-- Extract bubble_region
+            bubble_snapshot = trigger_data.get('bubble_snapshot') # <-- Extract snapshot
+            search_area = trigger_data.get('search_area') # <-- Extract search_area
             print(f"\n--- Received trigger from UI ---")
             print(f"   Sender: {sender_name}")
             print(f"   Content: {bubble_text[:100]}...")
@@ -262,22 +274,58 @@ async def run_main_with_exit_stack():
                         cmd_type = cmd.get("type", "")
                         cmd_params = cmd.get("parameters", {}) # Parameters might be empty for remove_position
 
-                        # --- Command Processing ---
+# --- Command Processing ---
                         if cmd_type == "remove_position":
                             if bubble_region: # Check if we have the context
-                                print("Sending 'remove_position' command to UI thread...")
-                                command_to_send = {
-                                    'action': 'remove_position',
-                                    'trigger_bubble_region': bubble_region # Pass the region
-                                }
-                                try:
-                                    await loop.run_in_executor(None, command_queue.put, command_to_send)
-                                    print("Command placed in queue.")
-                                except Exception as q_err:
-                                    print(f"Error putting remove_position command in queue: {q_err}")
+                                # Debug info - print what we have
+                                print(f"Processing remove_position command with:")
+                                print(f"  bubble_region: {bubble_region}")
+                                print(f"  bubble_snapshot available: {'Yes' if bubble_snapshot is not None else 'No'}")
+                                print(f"  search_area available: {'Yes' if search_area is not None else 'No'}")
+                                
+                                # Check if we have snapshot and search_area as well
+                                if bubble_snapshot and search_area:
+                                    print("Sending 'remove_position' command to UI thread with snapshot and search area...")
+                                    command_to_send = {
+                                        'action': 'remove_position',
+                                        'trigger_bubble_region': bubble_region, # Original region (might be outdated)
+                                        'bubble_snapshot': bubble_snapshot,     # Snapshot for re-location
+                                        'search_area': search_area              # Area to search in
+                                    }
+                                    try:
+                                        await loop.run_in_executor(None, command_queue.put, command_to_send)
+                                    except Exception as q_err:
+                                        print(f"Error putting remove_position command in queue: {q_err}")
+                                else:
+                                    # If we have bubble_region but missing other parameters, use a dummy search area
+                                    # and let UI thread take a new screenshot
+                                    print("Missing bubble_snapshot or search_area, trying with defaults...")
+                                    
+                                    # Use the bubble_region itself as a fallback search area if needed
+                                    default_search_area = None
+                                    if search_area is None and bubble_region:
+                                        # Convert bubble_region to a proper search area format if needed
+                                        if len(bubble_region) == 4:
+                                            default_search_area = bubble_region
+                                        
+                                    command_to_send = {
+                                        'action': 'remove_position',
+                                        'trigger_bubble_region': bubble_region,
+                                        'bubble_snapshot': bubble_snapshot,     # Pass as is, might be None
+                                        'search_area': default_search_area if search_area is None else search_area
+                                    }
+                                    
+                                    try:
+                                        await loop.run_in_executor(None, command_queue.put, command_to_send)
+                                        print("Command sent with fallback parameters.")
+                                    except Exception as q_err:
+                                        print(f"Error putting remove_position command in queue: {q_err}")
                             else:
                                 print("Error: Cannot process 'remove_position' command without bubble_region context.")
                         # Add other command handling here if needed
+                        # elif cmd_type == "some_other_command":
+                        #    # Handle other commands
+                        #    pass
                         # elif cmd_type == "some_other_command":
                         #    # Handle other commands
                         #    pass
@@ -307,6 +355,16 @@ async def run_main_with_exit_stack():
                 print(f"\nError processing trigger or sending response: {e}")
                 import traceback
                 traceback.print_exc()
+            finally:
+                # --- Resume UI Monitoring ---
+                print("Resuming UI monitoring after processing...")
+                resume_command = {'action': 'resume'}
+                try:
+                    await loop.run_in_executor(None, command_queue.put, resume_command)
+                    print("Resume command placed in queue.")
+                except Exception as q_err:
+                    print(f"Error putting resume command in queue: {q_err}")
+                # --- End Resume ---
             # No task_done needed for standard queue
 
     except asyncio.CancelledError:
