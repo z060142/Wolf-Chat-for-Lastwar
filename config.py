@@ -27,24 +27,24 @@ exa_config_dict = {"exaApiKey": EXA_API_KEY if EXA_API_KEY else "YOUR_EXA_KEY_MI
 # For cmd /c on Windows, embedding escaped JSON often works like this:
 exa_config_arg_string = json.dumps(json.dumps(exa_config_dict)) # Double dump for cmd escaping? Or just one? Test needed.
 # Let's try single dump first, often sufficient if passed correctly by subprocess
-exa_config_arg_string_single_dump = json.dumps(exa_config_dict)
+exa_config_arg_string_single_dump = json.dumps(exa_config_dict) # Use this one
 
 # --- MCP Server Configuration ---
 MCP_SERVERS = {
-    "exa": {
-        "command": "cmd",
-        "args": [
-            "/c",
-            "npx",
-            "-y",
-            "@smithery/cli@latest",
-            "run",
-            "exa",
-            "--config",
-            # Pass the dynamically created config string with the environment variable key
-            exa_config_arg_string # Use the properly escaped variable
-        ],
-    },
+    # "exa": { # Temporarily commented out to prevent blocking startup
+    #     "command": "cmd",
+    #     "args": [
+    #         "/c",
+    #         "npx",
+    #         "-y",
+    #         "@smithery/cli@latest",
+    #         "run",
+    #         "exa",
+    #         "--config",
+    #         # Pass the dynamically created config string with the environment variable key
+    #         exa_config_arg_string_single_dump # Use the single dump variable
+    #     ],
+    # },
     "servers": {
       "command": "npx",
       "args": [
@@ -71,5 +71,5 @@ WINDOW_TITLE = "Last War-Survival Game"
 
 # --- Print loaded keys for verification (Optional - BE CAREFUL!) ---
 # print(f"DEBUG: Loaded OPENAI_API_KEY: {'*' * (len(OPENAI_API_KEY) - 4) + OPENAI_API_KEY[-4:] if OPENAI_API_KEY else 'Not Found'}")
-# print(f"DEBUG: Loaded EXA_API_KEY: {'*' * (len(EXA_API_KEY) - 4) + EXA_API_KEY[-4:] if EXA_API_KEY else 'Not Found'}")
+print(f"DEBUG: Loaded EXA_API_KEY: {'*' * (len(EXA_API_KEY) - 4) + EXA_API_KEY[-4:] if EXA_API_KEY else 'Not Found'}") # Uncommented Exa key check
 # print(f"DEBUG: Exa args: {MCP_SERVERS['exa']['args']}")

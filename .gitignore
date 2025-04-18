@@ -1,3 +1,4 @@
 .env
 llm_debug.log
 __pycache__/
+debug_screenshots/

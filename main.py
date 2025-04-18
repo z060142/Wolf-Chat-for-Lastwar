@@ -227,12 +227,15 @@ async def run_main_with_exit_stack():
 
             sender_name = trigger_data.get('sender')
             bubble_text = trigger_data.get('text')
+            bubble_region = trigger_data.get('bubble_region') # <-- Extract bubble_region
             print(f"\n--- Received trigger from UI ---")
             print(f"   Sender: {sender_name}")
             print(f"   Content: {bubble_text[:100]}...")
+            if bubble_region:
+                print(f"   Bubble Region: {bubble_region}") # <-- Log bubble_region
 
-            if not sender_name or not bubble_text:
-                print("Warning: Received incomplete trigger data, skipping.")
+            if not sender_name or not bubble_text: # bubble_region is optional context, don't fail if missing
+                print("Warning: Received incomplete trigger data (missing sender or text), skipping.")
                 # No task_done needed for standard queue
                 continue
 
@@ -257,11 +260,31 @@ async def run_main_with_exit_stack():
                     print(f"Processing {len(commands)} command(s)...")
                     for cmd in commands:
                         cmd_type = cmd.get("type", "")
-                        cmd_params = cmd.get("parameters", {})
-                        # 預留位置：在這裡添加命令處理邏輯
-                        print(f"Command type: {cmd_type}, parameters: {cmd_params}")
-                        # TODO: 實現各類命令的處理邏輯
-                
+                        cmd_params = cmd.get("parameters", {}) # Parameters might be empty for remove_position
+
+                        # --- Command Processing ---
+                        if cmd_type == "remove_position":
+                            if bubble_region: # Check if we have the context
+                                print("Sending 'remove_position' command to UI thread...")
+                                command_to_send = {
+                                    'action': 'remove_position',
+                                    'trigger_bubble_region': bubble_region # Pass the region
+                                }
+                                try:
+                                    await loop.run_in_executor(None, command_queue.put, command_to_send)
+                                    print("Command placed in queue.")
+                                except Exception as q_err:
+                                    print(f"Error putting remove_position command in queue: {q_err}")
+                            else:
+                                print("Error: Cannot process 'remove_position' command without bubble_region context.")
+                        # Add other command handling here if needed
+                        # elif cmd_type == "some_other_command":
+                        #    # Handle other commands
+                        #    pass
+                        else:
+                             print(f"Received unhandled command type: {cmd_type}, parameters: {cmd_params}")
+                        # --- End Command Processing ---
+
                 # 記錄思考過程 (如果有的話)
                 thoughts = bot_response_data.get("thoughts", "")
                 if thoughts:
