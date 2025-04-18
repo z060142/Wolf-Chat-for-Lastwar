@@ -24,8 +24,9 @@ all_discovered_mcp_tools: list[dict] = []
 exit_stack = AsyncExitStack()
 # Stores loaded persona data (as a string for easy injection into prompt)
 wolfhart_persona_details: str | None = None
-# --- Use standard thread-safe queue ---
-trigger_queue: ThreadSafeQueue = ThreadSafeQueue() # Use standard Queue
+# --- Use standard thread-safe queues ---
+trigger_queue: ThreadSafeQueue = ThreadSafeQueue() # UI Thread -> Main Loop
+command_queue: ThreadSafeQueue = ThreadSafeQueue() # Main Loop -> UI Thread
 # --- End Change ---
 ui_monitor_task: asyncio.Task | None = None # To track the UI monitor task
 
@@ -205,8 +206,9 @@ async def run_main_with_exit_stack():
         # 3. Start UI Monitoring in a separate thread
         print("\n--- Starting UI monitoring thread ---")
         loop = asyncio.get_running_loop() # Get loop for run_in_executor
+        # Use the new monitoring loop function, passing both queues
         monitor_task = loop.create_task(
-            asyncio.to_thread(ui_interaction.monitor_chat_for_trigger, trigger_queue),
+            asyncio.to_thread(ui_interaction.run_ui_monitoring_loop, trigger_queue, command_queue), # Pass command_queue
             name="ui_monitor"
         )
         ui_monitor_task = monitor_task # Store task reference for shutdown
@@ -265,15 +267,16 @@ async def run_main_with_exit_stack():
                 if thoughts:
                     print(f"AI Thoughts: {thoughts[:150]}..." if len(thoughts) > 150 else f"AI Thoughts: {thoughts}")
                 
-                # 只有當有效回應時才發送到遊戲
+                # 只有當有效回應時才發送到遊戲 (via command queue)
                 if bot_dialogue and valid_response:
-                    print("Preparing to send dialogue response via UI...")
-                    send_success = await asyncio.to_thread(
-                        ui_interaction.paste_and_send_reply,
-                        bot_dialogue
-                    )
-                    if send_success: print("Response sent successfully.")
-                    else: print("Error: Failed to send response via UI.")
+                    print("Sending 'send_reply' command to UI thread...")
+                    command_to_send = {'action': 'send_reply', 'text': bot_dialogue}
+                    try:
+                        # Put command into the queue for the UI thread to handle
+                        await loop.run_in_executor(None, command_queue.put, command_to_send)
+                        print("Command placed in queue.")
+                    except Exception as q_err:
+                        print(f"Error putting command in queue: {q_err}")
                 else:
                     print("Not sending response: Invalid or empty dialogue content.")
 
@@ -309,4 +312,3 @@ if __name__ == "__main__":
         print(f"Top-level error during asyncio.run execution: {e}")
     finally:
         print("Program exited.")
-
