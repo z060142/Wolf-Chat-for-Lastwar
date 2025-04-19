@@ -32,20 +32,20 @@ exa_config_arg_string_single_dump = json.dumps(exa_config_dict) # Use this one
 
 # --- MCP Server Configuration ---
 MCP_SERVERS = {
-    # "exa": { # Temporarily commented out to prevent blocking startup
-    #     "command": "cmd",
-    #     "args": [
-    #         "/c",
-    #         "npx",
-    #         "-y",
-    #         "@smithery/cli@latest",
-    #         "run",
-    #         "exa",
-    #         "--config",
-    #         # Pass the dynamically created config string with the environment variable key
-    #         exa_config_arg_string_single_dump # Use the single dump variable
-    #     ],
-    # },
+    "exa": { # Temporarily commented out to prevent blocking startup
+        "command": "cmd",
+        "args": [
+            "/c",
+            "npx",
+            "-y",
+            "@smithery/cli@latest",
+            "run",
+            "exa",
+            "--config",
+            # Pass the dynamically created config string with the environment variable key
+            exa_config_arg_string_single_dump # Use the single dump variable
+        ],
+    },
     "servers": {
       "command": "npx",
       "args": [
