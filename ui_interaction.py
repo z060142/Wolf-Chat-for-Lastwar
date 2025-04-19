@@ -42,6 +42,8 @@ CORNER_TL_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "corner_tl_type2.png") # Added
 CORNER_BR_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "corner_br_type2.png") # Added
 CORNER_TL_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "corner_tl_type3.png") # Added
 CORNER_BR_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "corner_br_type3.png") # Added
+CORNER_TL_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "corner_tl_type4.png") # Added type4
+CORNER_BR_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "corner_br_type4.png") # Added type4
 # --- End Additional Regular Types ---
 BOT_CORNER_TL_IMG = os.path.join(TEMPLATE_DIR, "bot_corner_tl.png")
 # BOT_CORNER_TR_IMG = os.path.join(TEMPLATE_DIR, "bot_corner_tr.png") # Unused
@@ -58,8 +60,12 @@ BOT_CORNER_BR_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "bot_corner_br_type3.png")
 # Keywords
 KEYWORD_wolf_LOWER_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower.png")
 KEYWORD_Wolf_UPPER_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper.png")
+KEYWORD_wolf_LOWER_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type2.png") # Added for type3 bubbles
+KEYWORD_Wolf_UPPER_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type2.png") # Added for type3 bubbles
 KEYWORD_wolf_LOWER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type3.png") # Added for type3 bubbles
 KEYWORD_Wolf_UPPER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type3.png") # Added for type3 bubbles
+KEYWORD_wolf_LOWER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type4.png") # Added for type4 bubbles
+KEYWORD_Wolf_UPPER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type4.png") # Added for type4 bubbles
 # UI Elements
 COPY_MENU_ITEM_IMG = os.path.join(TEMPLATE_DIR, "copy_menu_item.png")
 PROFILE_OPTION_IMG = os.path.join(TEMPLATE_DIR, "profile_option.png")
@@ -110,7 +116,7 @@ CHAT_INPUT_CENTER_Y = 1280
 SCREENSHOT_REGION = None
 CONFIDENCE_THRESHOLD = 0.9 # Increased threshold for corner matching
 STATE_CONFIDENCE_THRESHOLD = 0.7
-AVATAR_OFFSET_X = -55 # Original offset, used for non-reply interactions like position removal
+AVATAR_OFFSET_X = -45 # Original offset, used for non-reply interactions like position removal
 # AVATAR_OFFSET_X_RELOCATED = -50 # Replaced by specific reply offsets
 AVATAR_OFFSET_X_REPLY = -45 # Horizontal offset for avatar click after re-location (for reply context)
 AVATAR_OFFSET_Y_REPLY = 10  # Vertical offset for avatar click after re-location (for reply context)
@@ -226,8 +232,8 @@ class DetectionModule:
         processed_tls = set() # Keep track of TL corners already used in a bubble
 
         # --- Find ALL Regular Bubble Corners (Raw Coordinates) ---
-        regular_tl_keys = ['corner_tl', 'corner_tl_type2', 'corner_tl_type3'] # Modified
-        regular_br_keys = ['corner_br', 'corner_br_type2', 'corner_br_type3'] # Modified
+        regular_tl_keys = ['corner_tl', 'corner_tl_type2', 'corner_tl_type3', 'corner_tl_type4'] # Added type4
+        regular_br_keys = ['corner_br', 'corner_br_type2', 'corner_br_type3', 'corner_br_type4'] # Added type4
 
         all_regular_tl_boxes = []
         for key in regular_tl_keys:
@@ -318,28 +324,52 @@ class DetectionModule:
         if region[2] <= 0 or region[3] <= 0: return None # Invalid region width/height
 
         # Try original lowercase with color matching
-        locations_lower = self._find_template('keyword_wolf_lower', region=region, grayscale=False) # Changed grayscale to False
+        locations_lower = self._find_template('keyword_wolf_lower', region=region, grayscale=True) # Changed grayscale to False
         if locations_lower:
             print(f"Found keyword (lowercase, color) in region {region}, position: {locations_lower[0]}") # Updated log message
             return locations_lower[0]
 
         # Try original uppercase with color matching
-        locations_upper = self._find_template('keyword_wolf_upper', region=region, grayscale=False) # Changed grayscale to False
+        locations_upper = self._find_template('keyword_wolf_upper', region=region, grayscale=True) # Changed grayscale to False
         if locations_upper:
             print(f"Found keyword (uppercase, color) in region {region}, position: {locations_upper[0]}") # Updated log message
             return locations_upper[0]
+        
+        # Try type2 lowercase (white text, no grayscale)
+        locations_lower_type2 = self._find_template('keyword_wolf_lower_type2', region=region, grayscale=False) # Added type2 check
+        if locations_lower_type2:
+            print(f"Found keyword (lowercase, type2) in region {region}, position: {locations_lower_type2[0]}")
+            return locations_lower_type2[0]
 
-        # Try type3 lowercase (white text, no grayscale)
-        locations_lower_type3 = self._find_template('keyword_wolf_lower_type3', region=region, grayscale=False) # Added type3 check
+        # Try type2 uppercase (white text, no grayscale)
+        locations_upper_type2 = self._find_template('keyword_wolf_upper_type2', region=region, grayscale=False) # Added type2 check
+        if locations_upper_type2:
+            print(f"Found keyword (uppercase, type2) in region {region}, position: {locations_upper_type2[0]}")
+            return locations_upper_type2[0]
+
+        # Try type3 lowercase (white text, no grayscale) - Corrected
+        locations_lower_type3 = self._find_template('keyword_wolf_lower_type3', region=region, grayscale=False)
         if locations_lower_type3:
             print(f"Found keyword (lowercase, type3) in region {region}, position: {locations_lower_type3[0]}")
             return locations_lower_type3[0]
 
-        # Try type3 uppercase (white text, no grayscale)
-        locations_upper_type3 = self._find_template('keyword_wolf_upper_type3', region=region, grayscale=False) # Added type3 check
+        # Try type3 uppercase (white text, no grayscale) - Corrected
+        locations_upper_type3 = self._find_template('keyword_wolf_upper_type3', region=region, grayscale=False)
         if locations_upper_type3:
             print(f"Found keyword (uppercase, type3) in region {region}, position: {locations_upper_type3[0]}")
             return locations_upper_type3[0]
+
+        # Try type4 lowercase (white text, no grayscale) - Added type4
+        locations_lower_type4 = self._find_template('keyword_wolf_lower_type4', region=region, grayscale=False)
+        if locations_lower_type4:
+            print(f"Found keyword (lowercase, type4) in region {region}, position: {locations_lower_type4[0]}")
+            return locations_lower_type4[0]
+
+        # Try type4 uppercase (white text, no grayscale) - Added type4
+        locations_upper_type4 = self._find_template('keyword_wolf_upper_type4', region=region, grayscale=False)
+        if locations_upper_type4:
+            print(f"Found keyword (uppercase, type4) in region {region}, position: {locations_upper_type4[0]}")
+            return locations_upper_type4[0]
 
         return None
 
@@ -1010,14 +1040,19 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
         # Regular Bubble (Original + Skins) - Keys match those used in find_dialogue_bubbles
         'corner_tl': CORNER_TL_IMG, 'corner_br': CORNER_BR_IMG,
         'corner_tl_type2': CORNER_TL_TYPE2_IMG, 'corner_br_type2': CORNER_BR_TYPE2_IMG,
-        'corner_tl_type3': CORNER_TL_TYPE3_IMG, 'corner_br_type3': CORNER_BR_TYPE3_IMG, # Corrected: Added missing keys here
+        'corner_tl_type3': CORNER_TL_TYPE3_IMG, 'corner_br_type3': CORNER_BR_TYPE3_IMG,
+        'corner_tl_type4': CORNER_TL_TYPE4_IMG, 'corner_br_type4': CORNER_BR_TYPE4_IMG, # Added type4
         # Bot Bubble (Single Type)
         'bot_corner_tl': BOT_CORNER_TL_IMG, 'bot_corner_br': BOT_CORNER_BR_IMG,
         # Keywords & UI Elements
         'keyword_wolf_lower': KEYWORD_wolf_LOWER_IMG,
         'keyword_wolf_upper': KEYWORD_Wolf_UPPER_IMG,
-        'keyword_wolf_lower_type3': KEYWORD_wolf_LOWER_TYPE3_IMG, # Added
-        'keyword_wolf_upper_type3': KEYWORD_Wolf_UPPER_TYPE3_IMG, # Added
+        'keyword_wolf_lower_type2': KEYWORD_wolf_LOWER_TYPE2_IMG,
+        'keyword_wolf_upper_type2': KEYWORD_Wolf_UPPER_TYPE2_IMG,
+        'keyword_wolf_lower_type3': KEYWORD_wolf_LOWER_TYPE3_IMG,
+        'keyword_wolf_upper_type3': KEYWORD_Wolf_UPPER_TYPE3_IMG,
+        'keyword_wolf_lower_type4': KEYWORD_wolf_LOWER_TYPE4_IMG, # Added type4
+        'keyword_wolf_upper_type4': KEYWORD_Wolf_UPPER_TYPE4_IMG, # Added type4
         'copy_menu_item': COPY_MENU_ITEM_IMG, 'profile_option': PROFILE_OPTION_IMG,
         'copy_name_button': COPY_NAME_BUTTON_IMG, 'send_button': SEND_BUTTON_IMG,
         'chat_input': CHAT_INPUT_IMG, 'profile_name_page': PROFILE_NAME_PAGE_IMG,

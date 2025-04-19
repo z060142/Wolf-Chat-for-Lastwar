@@ -12,7 +12,7 @@ import mcp_client # To call MCP tools
 
 # --- Debug 配置 ---
 # 要關閉 debug 功能，只需將此變數設置為 False 或註釋掉該行
-DEBUG_LLM = True  
+DEBUG_LLM = False  
 
 # 設置 debug 輸出文件
 # 要關閉文件輸出，只需設置為 None

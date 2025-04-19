@@ -52,6 +52,10 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 7. **視窗設定工具 (window-setup-script.py)**
    - 輔助工具，用於設置遊戲視窗的位置和大小
    - 方便開發階段截取 UI 元素樣本
+8. **視窗監視工具 (window-monitor-script.py)**
+   - (新增) 強化腳本，用於持續監視遊戲視窗
+   - 確保目標視窗維持在最上層 (Always on Top)
+   - 自動將視窗移回指定的位置
 
 ### 資料流程
 
@@ -282,6 +286,21 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     - 如果重新定位失敗，則記錄錯誤並返回 `False`。
     - 如果重新定位成功，則後續所有基於氣泡位置的計算（包括尋找職位圖標的搜索區域 `search_region` 和點擊頭像的座標 `avatar_click_x`, `avatar_click_y`）都將使用這個**新找到的**氣泡座標。
 - **效果**：確保 `remove_position` 操作基於氣泡的最新位置執行，提高了在動態滾動的聊天界面中的可靠性。
+
+### 修正 Type3 關鍵字辨識並新增 Type4 支援 (2025-04-19)
+
+- **目的**：修復先前版本中 `type3` 關鍵字辨識的錯誤，並擴充系統以支援新的 `type4` 聊天泡泡外觀和對應的關鍵字樣式。
+- **`ui_interaction.py`**：
+    - **修正 `find_keyword_in_region`**：移除了錯誤使用 `type2` 模板鍵來尋找 `type3` 關鍵字的重複程式碼，確保 `type3` 關鍵字使用正確的模板 (`keyword_wolf_lower_type3`, `keyword_wolf_upper_type3`)。
+    - **新增 `type4` 泡泡支援**：
+        - 在檔案開頭定義了 `type4` 角落模板的路徑常數 (`CORNER_TL_TYPE4_IMG`, `CORNER_BR_TYPE4_IMG`)。
+        - 在 `find_dialogue_bubbles` 函數中，將 `type4` 的模板鍵 (`corner_tl_type4`, `corner_br_type4`) 加入 `regular_tl_keys` 和 `regular_br_keys` 列表。
+        - 在 `run_ui_monitoring_loop` 的 `templates` 字典中加入了對應的鍵值對。
+    - **新增 `type4` 關鍵字支援**：
+        - 在檔案開頭定義了 `type4` 關鍵字模板的路徑常數 (`KEYWORD_wolf_LOWER_TYPE4_IMG`, `KEYWORD_Wolf_UPPER_TYPE4_IMG`)。
+        - 在 `find_keyword_in_region` 函數中，加入了尋找 `type4` 關鍵字模板 (`keyword_wolf_lower_type4`, `keyword_wolf_upper_type4`) 的邏輯。
+        - 在 `run_ui_monitoring_loop` 的 `templates` 字典中加入了對應的鍵值對。
+- **效果**：提高了對 `type3` 關鍵字的辨識準確率，並使系統能夠辨識 `type4` 的聊天泡泡和關鍵字（前提是提供了對應的模板圖片）。
 
 ## 開發建議
 

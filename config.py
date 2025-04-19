@@ -15,6 +15,7 @@ OPENAI_API_BASE_URL = "https://openrouter.ai/api/v1"  # <--- For example "http:/
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 #LLM_MODEL = "anthropic/claude-3.7-sonnet"
 #LLM_MODEL = "meta-llama/llama-4-maverick"
+#LLM_MODEL = "deepseek/deepseek-chat-v3-0324:free"
 LLM_MODEL = "deepseek/deepseek-chat-v3-0324"      # <--- Ensure this matches the model name provided by your provider
 
 EXA_API_KEY = os.getenv("EXA_API_KEY")

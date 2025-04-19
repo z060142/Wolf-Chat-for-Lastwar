@@ -6,5 +6,6 @@ opencv-python
 numpy
 pyperclip
 pygetwindow
-psutil 
+psutil
+pywin32
 python-dotenv
