@@ -16,7 +16,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 #LLM_MODEL = "anthropic/claude-3.7-sonnet"
 #LLM_MODEL = "meta-llama/llama-4-maverick"
 #LLM_MODEL = "deepseek/deepseek-chat-v3-0324:free"
+#LLM_MODEL = "google/gemini-2.5-flash-preview"
 LLM_MODEL = "deepseek/deepseek-chat-v3-0324"      # <--- Ensure this matches the model name provided by your provider
+
+#LLM_MODEL = "openai/gpt-4.1-nano"
 
 EXA_API_KEY = os.getenv("EXA_API_KEY")
 
@@ -46,16 +49,13 @@ MCP_SERVERS = {
             exa_config_arg_string_single_dump # Use the single dump variable
         ],
     },
-    "servers": {
+    "github.com/modelcontextprotocol/servers/tree/main/src/memory": {
       "command": "npx",
       "args": [
         "-y",
-        "@smithery/cli@latest",
-        "run",
-        "@jlia0/servers",
-        "--key",
-        "09025967-c177-4653-9af4-40603a1cbd11"
-      ]
+        "@modelcontextprotocol/server-memory"
+      ],
+      "disabled": False
     }
     # Add or remove servers as needed
 }

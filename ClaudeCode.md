@@ -352,6 +352,14 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 ## 使用指南
 
+### 快捷鍵 (新增)
+
+- **F7**: 清除最近已處理的對話紀錄 (`recent_texts` in `ui_interaction.py`)。這有助於在需要時強制重新處理最近的訊息。
+- **F8**: 暫停/恢復腳本的主要功能（UI 監控、LLM 互動）。
+    - **暫停時**: UI 監控線程會停止偵測新的聊天氣泡，主循環會暫停處理新的觸發事件。
+    - **恢復時**: UI 監控線程會恢復偵測，並且會清除最近的對話紀錄 (`recent_texts`) 和最後處理的氣泡資訊 (`last_processed_bubble_info`)，以確保從乾淨的狀態開始。
+- **F9**: 觸發腳本的正常關閉流程，包括關閉 MCP 連接和停止監控線程。
+
 ### 啟動流程
 
 1. 確保遊戲已啟動且聊天介面可見
@@ -374,3 +382,11 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 3. **LLM 連接問題**: 驗證 API 密鑰和網絡連接
 4. **MCP 服務器連接失敗**: 確認服務器配置正確並且運行中
 5. **工具調用後無回應**: 檢查 llm_debug.log 文件，查看工具調用結果和解析過程
+
+### 強化 System Prompt 以鼓勵工具使用 (2025-04-19)
+
+- **目的**：調整 `llm_interaction.py` 中的 `get_system_prompt` 函數，使其更明確地引導 LLM 在回應前主動使用工具（特別是記憶體工具）和整合工具資訊。
+- **修改內容**：
+    1.  **核心身份強化**：在 `CORE IDENTITY AND TOOL USAGE` 部分加入新的一點，強調 Wolfhart 會主動查閱內部知識圖譜和外部來源。
+    2.  **記憶體指示強化**：將 `Memory Management (Knowledge Graph)` 部分的提示從 "IMPORTANT" 改為 "CRITICAL"，並明確指示在回應*之前*要考慮使用查詢工具檢查記憶體，同時也強調了寫入新資訊的主動性。
+- **效果**：旨在提高 LLM 使用工具的主動性和依賴性，使其回應更具上下文感知和資訊準確性，同時保持角色一致性。

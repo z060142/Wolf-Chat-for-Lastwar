@@ -9,3 +9,4 @@ pygetwindow
 psutil
 pywin32
 python-dotenv
+keyboard

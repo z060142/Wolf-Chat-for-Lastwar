@@ -1126,6 +1126,17 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                          monitoring_paused_flag[0] = False
                     # No continue needed here
 
+                elif action == 'clear_history': # Added for F7
+                    print("UI Thread: Processing clear_history command.")
+                    recent_texts.clear()
+                    print("UI Thread: recent_texts cleared.")
+
+                elif action == 'reset_state': # Added for F8 resume
+                    print("UI Thread: Processing reset_state command.")
+                    recent_texts.clear()
+                    last_processed_bubble_info = None
+                    print("UI Thread: recent_texts cleared and last_processed_bubble_info reset.")
+
                 else:
                     print(f"UI Thread: Received unknown command: {action}")
 
