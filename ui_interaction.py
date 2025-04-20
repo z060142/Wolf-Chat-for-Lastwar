@@ -66,6 +66,12 @@ KEYWORD_wolf_LOWER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_ty
 KEYWORD_Wolf_UPPER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type3.png") # Added for type3 bubbles
 KEYWORD_wolf_LOWER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type4.png") # Added for type4 bubbles
 KEYWORD_Wolf_UPPER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type4.png") # Added for type4 bubbles
+# --- Reply Keywords ---
+KEYWORD_WOLF_REPLY_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply.png") # Added for reply detection
+KEYWORD_WOLF_REPLY_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type2.png") # Added for reply detection type2
+KEYWORD_WOLF_REPLY_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type3.png") # Added for reply detection type3
+KEYWORD_WOLF_REPLY_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type4.png") # Added for reply detection type4
+# --- End Reply Keywords ---
 # UI Elements
 COPY_MENU_ITEM_IMG = os.path.join(TEMPLATE_DIR, "copy_menu_item.png")
 PROFILE_OPTION_IMG = os.path.join(TEMPLATE_DIR, "profile_option.png")
@@ -370,6 +376,30 @@ class DetectionModule:
         if locations_upper_type4:
             print(f"Found keyword (uppercase, type4) in region {region}, position: {locations_upper_type4[0]}")
             return locations_upper_type4[0]
+
+        # Try reply keyword (normal)
+        locations_reply = self._find_template('keyword_wolf_reply', region=region, grayscale=False)
+        if locations_reply:
+            print(f"Found keyword (reply) in region {region}, position: {locations_reply[0]}")
+            return locations_reply[0]
+
+        # Try reply keyword (type2)
+        locations_reply_type2 = self._find_template('keyword_wolf_reply_type2', region=region, grayscale=False)
+        if locations_reply_type2:
+            print(f"Found keyword (reply, type2) in region {region}, position: {locations_reply_type2[0]}")
+            return locations_reply_type2[0]
+
+        # Try reply keyword (type3)
+        locations_reply_type3 = self._find_template('keyword_wolf_reply_type3', region=region, grayscale=False)
+        if locations_reply_type3:
+            print(f"Found keyword (reply, type3) in region {region}, position: {locations_reply_type3[0]}")
+            return locations_reply_type3[0]
+
+        # Try reply keyword (type4)
+        locations_reply_type4 = self._find_template('keyword_wolf_reply_type4', region=region, grayscale=False)
+        if locations_reply_type4:
+            print(f"Found keyword (reply, type4) in region {region}, position: {locations_reply_type4[0]}")
+            return locations_reply_type4[0]
 
         return None
 
@@ -1053,6 +1083,12 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
         'keyword_wolf_upper_type3': KEYWORD_Wolf_UPPER_TYPE3_IMG,
         'keyword_wolf_lower_type4': KEYWORD_wolf_LOWER_TYPE4_IMG, # Added type4
         'keyword_wolf_upper_type4': KEYWORD_Wolf_UPPER_TYPE4_IMG, # Added type4
+        # --- Add Reply Keywords ---
+        'keyword_wolf_reply': KEYWORD_WOLF_REPLY_IMG,
+        'keyword_wolf_reply_type2': KEYWORD_WOLF_REPLY_TYPE2_IMG,
+        'keyword_wolf_reply_type3': KEYWORD_WOLF_REPLY_TYPE3_IMG,
+        'keyword_wolf_reply_type4': KEYWORD_WOLF_REPLY_TYPE4_IMG,
+        # --- End Reply Keywords ---
         'copy_menu_item': COPY_MENU_ITEM_IMG, 'profile_option': PROFILE_OPTION_IMG,
         'copy_name_button': COPY_NAME_BUTTON_IMG, 'send_button': SEND_BUTTON_IMG,
         'chat_input': CHAT_INPUT_IMG, 'profile_name_page': PROFILE_NAME_PAGE_IMG,
@@ -1247,255 +1283,288 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
             all_bubbles_data = detector.find_dialogue_bubbles() # Returns list of dicts
             if not all_bubbles_data: time.sleep(2); continue
 
-            # Filter out bot bubbles, find newest non-bot bubble (example logic)
+            # Filter out bot bubbles
             other_bubbles_data = [b_info for b_info in all_bubbles_data if not b_info['is_bot']]
             if not other_bubbles_data: time.sleep(0.2); continue
-            # Simple logic: assume lowest bubble is newest (might need improvement)
-            # Sort by bbox bottom y-coordinate (index 3)
-            target_bubble_info = max(other_bubbles_data, key=lambda b_info: b_info['bbox'][3])
 
-            # 2. Check for Duplicates (Position & Content)
-            # Compare using the 'bbox' from the info dicts
-            if are_bboxes_similar(target_bubble_info.get('bbox'), last_processed_bubble_info.get('bbox') if last_processed_bubble_info else None):
-                time.sleep(0.2); continue
+            # Sort bubbles from bottom to top (based on bottom Y coordinate)
+            sorted_bubbles = sorted(other_bubbles_data, key=lambda b_info: b_info['bbox'][3], reverse=True)
 
-            # 3. Detect Keyword in Bubble
-            target_bbox = target_bubble_info['bbox']
-            bubble_region = (target_bbox[0], target_bbox[1], target_bbox[2]-target_bbox[0], target_bbox[3]-target_bbox[1])
-            keyword_coords = detector.find_keyword_in_region(bubble_region)
+            # Iterate through sorted bubbles (bottom to top)
+            for target_bubble_info in sorted_bubbles:
+                target_bbox = target_bubble_info['bbox']
+                bubble_region = (target_bbox[0], target_bbox[1], target_bbox[2]-target_bbox[0], target_bbox[3]-target_bbox[1])
 
-            if keyword_coords:
-                print(f"\n!!! Keyword detected in bubble {target_bbox} !!!")
+                # 3. Detect Keyword in Bubble
+                keyword_coords = detector.find_keyword_in_region(bubble_region)
 
-                # --- Variables needed later ---
-                bubble_snapshot = None # Initialize snapshot variable
-                search_area = SCREENSHOT_REGION # Define search area early
-                if search_area is None:
-                    print("Warning: SCREENSHOT_REGION not defined, searching full screen for bubble snapshot.")
-                    # Consider adding a default chat region if SCREENSHOT_REGION is often None
+                if keyword_coords:
+                    print(f"\n!!! Keyword detected in bubble {target_bbox} !!!")
 
-                # --- Take Snapshot for Re-location (and potentially save it) ---
-                try:
-                    bubble_region_tuple = (int(bubble_region[0]), int(bubble_region[1]), int(bubble_region[2]), int(bubble_region[3]))
-                    if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
-                        print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping trigger.")
-                        continue
-                    bubble_snapshot = pyautogui.screenshot(region=bubble_region_tuple)
-                    if bubble_snapshot is None:
-                         print("Warning: Failed to capture bubble snapshot. Skipping trigger.")
-                         continue
+                    # --- Determine if it's a reply keyword for offset ---
+                    is_reply_keyword = False
+                    reply_keyword_keys = ['keyword_wolf_reply', 'keyword_wolf_reply_type2', 'keyword_wolf_reply_type3', 'keyword_wolf_reply_type4']
+                    for key in reply_keyword_keys:
+                        reply_locs = detector._find_template(key, region=bubble_region, grayscale=False, confidence=detector.confidence)
+                        if reply_locs:
+                            for loc in reply_locs:
+                                if abs(keyword_coords[0] - loc[0]) <= 2 and abs(keyword_coords[1] - loc[1]) <= 2:
+                                    print(f"Confirmed detected keyword at {keyword_coords} matches reply keyword template '{key}' at {loc}.")
+                                    is_reply_keyword = True
+                                    break
+                        if is_reply_keyword:
+                            break
 
-                    # --- Save Snapshot for Debugging (Replaces old debug screenshot logic) ---
-                    try:
-                        screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
-                        # Use a more descriptive filename
-                        screenshot_filename = f"debug_relocation_snapshot_{screenshot_index}.png"
-                        screenshot_path = os.path.join(DEBUG_SCREENSHOT_DIR, screenshot_filename)
-                        print(f"Attempting to save bubble snapshot used for re-location to: {screenshot_path}")
-                        bubble_snapshot.save(screenshot_path) # Save the PIL image object
-                        print(f"Successfully saved bubble snapshot: {screenshot_path}")
-                        screenshot_counter += 1
-                    except Exception as save_err:
-                        print(f"Error saving bubble snapshot to {screenshot_path}: {repr(save_err)}")
-                        # Continue even if saving fails
-
-                except Exception as snapshot_err:
-                     print(f"Error taking initial bubble snapshot: {repr(snapshot_err)}")
-                     continue # Skip trigger if snapshot fails
-
-                # 4. Interact: Get Bubble Text
-                bubble_text = interactor.copy_text_at(keyword_coords)
-                if not bubble_text:
-                    print("Error: Could not get dialogue content.")
-                    last_processed_bubble_info = target_bubble_info # Mark as processed even if failed
-                    perform_state_cleanup(detector, interactor) # Attempt cleanup after failed copy
-                    continue
-
-                # Check recent text history (needs context awareness)
-                if bubble_text in recent_texts:
-                    print(f"Content '{bubble_text[:30]}...' in recent history, skipping.")
-                    last_processed_bubble_info = target_bubble_info
-                    continue
-
-                print(">>> New trigger event <<<")
-                last_processed_bubble_info = target_bubble_info
-                recent_texts.append(bubble_text)
-
-                # 5. Interact: Get Sender Name (with Bubble Re-location)
-                sender_name = None
-                try:
-                    # --- Bubble Re-location Logic with Fallback Mechanism ---
-                    print("Attempting to re-locate bubble before getting sender name...")
-                    if bubble_snapshot is None: # Should not happen if we reached here, but check anyway
-                         print("Error: Bubble snapshot missing for re-location. Skipping.")
-                         continue
-
-                    # First attempt with standard confidence
-                    print(f"First attempt with confidence {BUBBLE_RELOCATE_CONFIDENCE}...")
-                    new_bubble_box = None
-                    try:
-                        new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot, 
-                                                                region=search_area, 
-                                                                confidence=BUBBLE_RELOCATE_CONFIDENCE)
-                    except Exception as e:
-                        print(f"Exception during initial bubble location attempt: {e}")
-                    
-                    # Second attempt with fallback confidence if first failed
-                    if not new_bubble_box:
-                        print(f"First attempt failed. Trying with lower confidence {BUBBLE_RELOCATE_FALLBACK_CONFIDENCE}...")
-                        try:
-                            # Try with a lower confidence threshold
-                            new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot, 
-                                                                    region=search_area, 
-                                                                    confidence=BUBBLE_RELOCATE_FALLBACK_CONFIDENCE)
-                        except Exception as e:
-                            print(f"Exception during fallback bubble location attempt: {e}")
-                    
-                    # Third attempt with even lower confidence as last resort
-                    if not new_bubble_box:
-                        print("Second attempt failed. Trying with even lower confidence 0.4...")
-                        try:
-                            # Last resort with very low confidence
-                            new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot, 
-                                                                    region=search_area, 
-                                                                    confidence=0.4)
-                        except Exception as e:
-                            print(f"Exception during last resort bubble location attempt: {e}")
-
-                    if new_bubble_box:
-                        new_tl_x, new_tl_y = new_bubble_box.left, new_bubble_box.top
-                        print(f"Successfully re-located bubble snapshot at: ({new_tl_x}, {new_tl_y})")
-                        # Calculate avatar coords based on the *new* top-left and the *reply* offsets
-                        new_avatar_coords = (new_tl_x + AVATAR_OFFSET_X_REPLY, new_tl_y + AVATAR_OFFSET_Y_REPLY)
-                        print(f"Calculated new avatar coordinates for reply context: {new_avatar_coords}")
-                        # Proceed to get sender name using the new coordinates, passing snapshot info for retries
-                        sender_name = interactor.retrieve_sender_name_interaction(
-                            initial_avatar_coords=new_avatar_coords,
-                            bubble_snapshot=bubble_snapshot,
-                            search_area=search_area
-                        )
+                    # Calculate click coordinates with potential offset
+                    click_coords = keyword_coords
+                    if is_reply_keyword:
+                        click_coords = (keyword_coords[0], keyword_coords[1] + 25)
+                        print(f"Applying +25 Y-offset for reply keyword. Click target: {click_coords}")
                     else:
-                        print("Warning: Failed to re-locate bubble snapshot on screen after multiple attempts with decreasing confidence thresholds.")
-                        print("Trying direct approach with original bubble coordinates...")
-                        
-                        # Fallback to original coordinates based on the target_bubble_info
-                        original_tl_coords = target_bubble_info.get('tl_coords')
-                        if original_tl_coords:
-                            fallback_avatar_coords = (original_tl_coords[0] + AVATAR_OFFSET_X_REPLY, 
-                                                    original_tl_coords[1] + AVATAR_OFFSET_Y_REPLY)
-                            print(f"Using fallback avatar coordinates from original detection: {fallback_avatar_coords}")
-                            
-                            # Try with direct coordinates
+                        print(f"Detected keyword is not a reply type. Click target: {click_coords}")
+
+                    # --- Variables needed later ---
+                    bubble_snapshot = None
+                    search_area = SCREENSHOT_REGION
+                    if search_area is None:
+                        print("Warning: SCREENSHOT_REGION not defined, searching full screen for bubble snapshot.")
+
+                    # --- Take Snapshot for Re-location ---
+                    try:
+                        bubble_region_tuple = (int(bubble_region[0]), int(bubble_region[1]), int(bubble_region[2]), int(bubble_region[3]))
+                        if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
+                            print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping this bubble.")
+                            continue # Skip to next bubble in the loop
+                        bubble_snapshot = pyautogui.screenshot(region=bubble_region_tuple)
+                        if bubble_snapshot is None:
+                             print("Warning: Failed to capture bubble snapshot. Skipping this bubble.")
+                             continue # Skip to next bubble
+
+                        # --- Save Snapshot for Debugging ---
+                        try:
+                            screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
+                            screenshot_filename = f"debug_relocation_snapshot_{screenshot_index}.png"
+                            screenshot_path = os.path.join(DEBUG_SCREENSHOT_DIR, screenshot_filename)
+                            print(f"Attempting to save bubble snapshot used for re-location to: {screenshot_path}")
+                            bubble_snapshot.save(screenshot_path)
+                            print(f"Successfully saved bubble snapshot: {screenshot_path}")
+                            screenshot_counter += 1
+                        except Exception as save_err:
+                            print(f"Error saving bubble snapshot to {screenshot_path}: {repr(save_err)}")
+
+                    except Exception as snapshot_err:
+                         print(f"Error taking initial bubble snapshot: {repr(snapshot_err)}")
+                         continue # Skip to next bubble
+
+                    # 4. Re-locate bubble *before* copying text
+                    print("Attempting to re-locate bubble before copying text...")
+                    new_bubble_box_for_copy = None
+                    if bubble_snapshot:
+                        try:
+                            # Use standard confidence for this initial critical step
+                            new_bubble_box_for_copy = pyautogui.locateOnScreen(bubble_snapshot,
+                                                                             region=search_area,
+                                                                             confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                        except Exception as e:
+                            print(f"Exception during bubble location before copy: {e}")
+
+                    if not new_bubble_box_for_copy:
+                        print("Warning: Failed to re-locate bubble before copying text. Skipping this bubble.")
+                        continue # Skip to the next bubble in the outer loop
+
+                    print(f"Successfully re-located bubble for copy at: {new_bubble_box_for_copy}")
+                    # Define the region based on the re-located bubble to find the keyword again
+                    copy_bubble_region = (new_bubble_box_for_copy.left, new_bubble_box_for_copy.top,
+                                          new_bubble_box_for_copy.width, new_bubble_box_for_copy.height)
+
+                    # Find the keyword *again* within the *new* bubble region to get current coords
+                    current_keyword_coords = detector.find_keyword_in_region(copy_bubble_region)
+                    if not current_keyword_coords:
+                        print("Warning: Keyword not found in the re-located bubble region. Skipping this bubble.")
+                        continue # Skip to the next bubble
+
+                    # Determine if it's a reply keyword based on the *new* location/region
+                    is_reply_keyword_current = False
+                    # (Re-check is_reply_keyword logic here based on current_keyword_coords and copy_bubble_region)
+                    # This check might be complex, for simplicity, we can reuse the 'is_reply_keyword'
+                    # determined earlier based on the initial detection, assuming the keyword type doesn't change.
+                    # Let's reuse the previously determined 'is_reply_keyword' for offset calculation.
+                    click_coords_current = current_keyword_coords
+                    if is_reply_keyword: # Use the flag determined from initial detection
+                        click_coords_current = (current_keyword_coords[0], current_keyword_coords[1] + 25)
+                        print(f"Applying +25 Y-offset for reply keyword (current location). Click target: {click_coords_current}")
+                    else:
+                        print(f"Detected keyword is not a reply type (current location). Click target: {click_coords_current}")
+
+                    # Interact: Get Bubble Text using current coordinates
+                    bubble_text = interactor.copy_text_at(click_coords_current)
+                    if not bubble_text:
+                        print("Error: Could not get dialogue content for this bubble (after re-location).")
+                        perform_state_cleanup(detector, interactor) # Attempt cleanup
+                        continue # Skip to next bubble
+
+                    # Check recent text history
+                    if bubble_text in recent_texts:
+                        print(f"Content '{bubble_text[:30]}...' in recent history, skipping this bubble.")
+                        continue # Skip to next bubble
+
+                    print(">>> New trigger event <<<")
+                    # Add to recent texts *before* potentially long interaction
+                    recent_texts.append(bubble_text)
+
+                    # 5. Interact: Get Sender Name (uses re-location internally via retrieve_sender_name_interaction)
+                    sender_name = None
+                    try:
+                        # --- Bubble Re-location Logic ---
+                        print("Attempting to re-locate bubble before getting sender name...")
+                        if bubble_snapshot is None:
+                             print("Error: Bubble snapshot missing for re-location. Skipping this bubble.")
+                             continue
+
+                        # Try locating with decreasing confidence
+                        new_bubble_box = None
+                        confidences_to_try = [BUBBLE_RELOCATE_CONFIDENCE, BUBBLE_RELOCATE_FALLBACK_CONFIDENCE, 0.4]
+                        for conf in confidences_to_try:
+                            print(f"Attempting location with confidence {conf}...")
+                            try:
+                                new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+                                                                        region=search_area,
+                                                                        confidence=conf)
+                                if new_bubble_box:
+                                    print(f"Successfully located with confidence {conf}.")
+                                    break # Found it
+                            except Exception as e:
+                                print(f"Exception during location attempt with confidence {conf}: {e}")
+                        # --- End Confidence Loop ---
+
+                        if new_bubble_box:
+                            new_tl_x, new_tl_y = new_bubble_box.left, new_bubble_box.top
+                            print(f"Successfully re-located bubble snapshot at: ({new_tl_x}, {new_tl_y})")
+                            new_avatar_coords = (new_tl_x + AVATAR_OFFSET_X_REPLY, new_tl_y + AVATAR_OFFSET_Y_REPLY)
+                            print(f"Calculated new avatar coordinates for reply context: {new_avatar_coords}")
                             sender_name = interactor.retrieve_sender_name_interaction(
-                                initial_avatar_coords=fallback_avatar_coords,
-                                bubble_snapshot=bubble_snapshot, 
+                                initial_avatar_coords=new_avatar_coords,
+                                bubble_snapshot=bubble_snapshot,
                                 search_area=search_area
                             )
-                            
-                            if not sender_name:
-                                print("Direct approach failed. Skipping this trigger.")
-                                last_processed_bubble_info = target_bubble_info # Mark as processed
-                                perform_state_cleanup(detector, interactor) # Cleanup
-                                continue
                         else:
-                            print("No original coordinates available. Skipping sender name retrieval.")
-                            # No need to continue if we can't find the bubble again
-                            last_processed_bubble_info = target_bubble_info # Mark as processed to avoid re-triggering immediately
-                            perform_state_cleanup(detector, interactor) # Attempt cleanup as state might be inconsistent
-                            continue
-                    # --- End Bubble Re-location Logic ---
+                            print("Warning: Failed to re-locate bubble snapshot after multiple attempts.")
+                            print("Trying direct approach with original bubble coordinates...")
+                            original_tl_coords = target_bubble_info.get('tl_coords')
+                            if original_tl_coords:
+                                fallback_avatar_coords = (original_tl_coords[0] + AVATAR_OFFSET_X_REPLY,
+                                                        original_tl_coords[1] + AVATAR_OFFSET_Y_REPLY)
+                                print(f"Using fallback avatar coordinates from original detection: {fallback_avatar_coords}")
+                                sender_name = interactor.retrieve_sender_name_interaction(
+                                    initial_avatar_coords=fallback_avatar_coords,
+                                    bubble_snapshot=bubble_snapshot,
+                                    search_area=search_area
+                                )
+                                if not sender_name:
+                                    print("Direct approach failed. Skipping this trigger.")
+                                    perform_state_cleanup(detector, interactor)
+                                    continue # Skip to next bubble
+                            else:
+                                print("No original coordinates available. Skipping sender name retrieval.")
+                                perform_state_cleanup(detector, interactor)
+                                continue # Skip to next bubble
+                        # --- End Bubble Re-location Logic ---
 
-                except Exception as reloc_err:
-                    print(f"Error during bubble re-location or subsequent interaction: {reloc_err}")
-                    import traceback
-                    traceback.print_exc()
-                    # Attempt cleanup after error during this critical phase
-                    perform_state_cleanup(detector, interactor)
-                    continue # Skip further processing for this trigger
+                    except Exception as reloc_err:
+                        print(f"Error during bubble re-location or subsequent interaction: {reloc_err}")
+                        import traceback
+                        traceback.print_exc()
+                        perform_state_cleanup(detector, interactor)
+                        continue # Skip to next bubble
 
-                # 6. Perform Cleanup (Crucial after potentially leaving chat screen)
-                # Moved the check for sender_name *after* potential re-location attempt
-                cleanup_successful = perform_state_cleanup(detector, interactor)
-                if not cleanup_successful:
-                    print("Error: Failed to return to chat screen after getting name. Aborting trigger.")
-                    continue # Skip putting in queue if cleanup failed
+                    # 6. Perform Cleanup
+                    cleanup_successful = perform_state_cleanup(detector, interactor)
+                    if not cleanup_successful:
+                        print("Error: Failed to return to chat screen after getting name. Skipping this bubble.")
+                        continue # Skip to next bubble
 
-                if not sender_name:
-                    print("Error: Could not get sender name, aborting processing.")
-                    continue # Already cleaned up, just skip
+                    if not sender_name:
+                        print("Error: Could not get sender name for this bubble, skipping.")
+                        continue # Skip to next bubble
 
-                # --- Attempt to activate reply context BEFORE putting in queue ---
-                reply_context_activated = False
-                try:
-                    print("Attempting to activate reply context...")
-                    # Re-locate the bubble *again* to click its center for reply
-                    if bubble_snapshot is None:
-                         print("Warning: Bubble snapshot missing for reply context activation. Skipping.")
-                         final_bubble_box_for_reply = None # Ensure it's None
-                    else:
-                         print(f"Attempting final re-location for reply context using search_area: {search_area}")
-                         final_bubble_box_for_reply = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
-
-                    if final_bubble_box_for_reply:
-                        print(f"Final re-location successful at: {final_bubble_box_for_reply}")
-                        bubble_x_reply, bubble_y_reply = final_bubble_box_for_reply.left, final_bubble_box_for_reply.top
-                        bubble_w_reply, bubble_h_reply = final_bubble_box_for_reply.width, final_bubble_box_for_reply.height
-                        center_x_reply = bubble_x_reply + bubble_w_reply // 2
-                        center_y_reply = bubble_y_reply + bubble_h_reply // 2
-
-                        print(f"Clicking bubble center for reply at ({center_x_reply}, {center_y_reply})")
-                        interactor.click_at(center_x_reply, center_y_reply)
-                        time.sleep(0.15) # Increased wait time for menu/reply button to appear
-
-                        print("Searching for reply button...")
-                        reply_button_locs = detector._find_template('reply_button', confidence=0.8)
-                        if reply_button_locs:
-                            reply_coords = reply_button_locs[0]
-                            print(f"Found reply button at {reply_coords}. Clicking...")
-                            interactor.click_at(reply_coords[0], reply_coords[1])
-                            time.sleep(0.07) # Wait after click
-                            reply_context_activated = True
-                            print("Reply context activated.")
+                    # --- Attempt to activate reply context ---
+                    reply_context_activated = False
+                    try:
+                        print("Attempting to activate reply context...")
+                        if bubble_snapshot is None:
+                             print("Warning: Bubble snapshot missing for reply context activation. Skipping.")
+                             final_bubble_box_for_reply = None
                         else:
-                            print(">>> Reply button template ('reply_button') not found after clicking bubble center. <<<")
-                            # Optional: Press ESC to close menu if reply button wasn't found?
-                            # print("Attempting to press ESC to close potential menu.")
-                            # interactor.press_key('esc')
-                            # time.sleep(0.1)
-                    else:
-                        # This log message was already present but is important
-                        print("Warning: Failed to re-locate bubble for activating reply context.")
+                             print(f"Attempting final re-location for reply context using search_area: {search_area}")
+                             final_bubble_box_for_reply = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
 
-                except Exception as reply_context_err:
-                    print(f"!!! Error during reply context activation: {reply_context_err} !!!")
-                    # Ensure reply_context_activated remains False
+                        if final_bubble_box_for_reply:
+                            print(f"Final re-location successful at: {final_bubble_box_for_reply}")
+                            bubble_x_reply, bubble_y_reply = final_bubble_box_for_reply.left, final_bubble_box_for_reply.top
+                            bubble_w_reply, bubble_h_reply = final_bubble_box_for_reply.width, final_bubble_box_for_reply.height
+                            center_x_reply = bubble_x_reply + bubble_w_reply // 2
+                            center_y_reply = bubble_y_reply + bubble_h_reply // 2
 
-                # 7. Send Trigger Info to Main Thread/Async Loop
-                print("\n>>> Putting trigger info in Queue <<<")
-                print(f"   Sender: {sender_name}")
-                print(f"   Content: {bubble_text[:100]}...")
-                print(f"   Bubble Region: {bubble_region}") # Include region derived from bbox
-                print(f"   Reply Context Activated: {reply_context_activated}") # Include the flag
-                try:
-                    # Include bubble_region and reply_context_activated flag
-                    data_to_send = {
-                        'sender': sender_name,
-                        'text': bubble_text,
-                        'bubble_region': bubble_region, # Use bbox-derived region for general use
-                        'reply_context_activated': reply_context_activated, # Send the flag
-                        'bubble_snapshot': bubble_snapshot, # <-- Add snapshot
-                        'search_area': search_area        # <-- Add search area used for snapshot
-                        # 'tl_coords': target_bubble_info['tl_coords'] # Optionally send if needed elsewhere
-                    }
-                    trigger_queue.put(data_to_send) # Put in the queue for main loop
-                    print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
-                except Exception as q_err:
-                    print(f"Error putting data in Queue: {q_err}")
+                            if is_reply_keyword:
+                                center_y_reply += 15
+                                print(f"Applying +15 Y-offset to bubble center click for reply keyword. Target Y: {center_y_reply}")
 
-                print("--- Single trigger processing complete ---")
-                time.sleep(0.1) # Pause after successful trigger
+                            print(f"Clicking bubble center for reply at ({center_x_reply}, {center_y_reply})")
+                            interactor.click_at(center_x_reply, center_y_reply)
+                            time.sleep(0.15)
 
-            time.sleep(1.5) # Polling interval
+                            print("Searching for reply button...")
+                            reply_button_locs = detector._find_template('reply_button', confidence=0.8)
+                            if reply_button_locs:
+                                reply_coords = reply_button_locs[0]
+                                print(f"Found reply button at {reply_coords}. Clicking...")
+                                interactor.click_at(reply_coords[0], reply_coords[1])
+                                time.sleep(0.07)
+                                reply_context_activated = True
+                                print("Reply context activated.")
+                            else:
+                                print(">>> Reply button template ('reply_button') not found after clicking bubble center. <<<")
+                        else:
+                            print("Warning: Failed to re-locate bubble for activating reply context.")
+
+                    except Exception as reply_context_err:
+                        print(f"!!! Error during reply context activation: {reply_context_err} !!!")
+
+                    # 7. Send Trigger Info to Main Thread
+                    print("\n>>> Putting trigger info in Queue <<<")
+                    print(f"   Sender: {sender_name}")
+                    print(f"   Content: {bubble_text[:100]}...")
+                    print(f"   Bubble Region: {bubble_region}") # Original region for context
+                    print(f"   Reply Context Activated: {reply_context_activated}")
+                    try:
+                        data_to_send = {
+                            'sender': sender_name,
+                            'text': bubble_text,
+                            'bubble_region': bubble_region, # Send original region for context if needed
+                            'reply_context_activated': reply_context_activated,
+                            'bubble_snapshot': bubble_snapshot, # Send the snapshot used
+                            'search_area': search_area
+                        }
+                        trigger_queue.put(data_to_send)
+                        print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
+
+                        # --- CRITICAL: Break loop after successfully processing one trigger ---
+                        print("--- Single bubble processing complete. Breaking scan cycle. ---")
+                        break # Exit the 'for target_bubble_info in sorted_bubbles' loop
+
+                    except Exception as q_err:
+                        print(f"Error putting data in Queue: {q_err}")
+                        # Don't break if queue put fails, maybe try next bubble? Or log and break?
+                        # Let's break here too, as something is wrong.
+                        print("Breaking scan cycle due to queue error.")
+                        break
+
+                # End of keyword found block (if keyword_coords:)
+            # End of loop through sorted bubbles (for target_bubble_info...)
+
+            # If the loop finished without breaking (i.e., no trigger processed), wait the full interval.
+            # If it broke, the sleep still happens here before the next cycle.
+            time.sleep(1.5) # Polling interval after checking all bubbles or processing one
 
         except KeyboardInterrupt:
             print("\nMonitoring interrupted.")

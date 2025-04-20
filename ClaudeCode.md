@@ -302,6 +302,18 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
         - 在 `run_ui_monitoring_loop` 的 `templates` 字典中加入了對應的鍵值對。
 - **效果**：提高了對 `type3` 關鍵字的辨識準確率，並使系統能夠辨識 `type4` 的聊天泡泡和關鍵字（前提是提供了對應的模板圖片）。
 
+### 新增 Reply 關鍵字偵測與點擊偏移 (2025-04-20)
+
+- **目的**：擴充關鍵字偵測機制，使其能夠辨識特定的回覆指示圖片 (`keyword_wolf_reply.png` 及其 type2, type3, type4 變體)，並在點擊這些特定圖片以複製文字時，應用 Y 軸偏移。
+- **`ui_interaction.py`**：
+    - **新增模板**：定義了 `KEYWORD_WOLF_REPLY_IMG` 系列常數，並將其加入 `run_ui_monitoring_loop` 中的 `templates` 字典。
+    - **擴充偵測**：修改 `find_keyword_in_region` 函數，加入對 `keyword_wolf_reply` 系列模板的搜尋邏輯。
+    - **條件式偏移**：在 `run_ui_monitoring_loop` 中，於偵測到關鍵字後，加入判斷邏輯。如果偵測到的關鍵字是 `keyword_wolf_reply` 系列之一，則：
+        1. 計算用於 `copy_text_at` 的點擊座標時，Y 座標會增加 15 像素。
+        2. 在後續嘗試激活回覆上下文時，計算用於點擊**氣泡中心**的座標時，Y 座標**也會**增加 15 像素。
+    - 其他關鍵字或 UI 元素的點擊不受影響。
+- **效果**：系統現在可以偵測新的回覆指示圖片作為觸發條件。當由這些圖片觸發時，用於複製文字的點擊和用於激活回覆上下文的氣泡中心點擊都會向下微調 15 像素，以避免誤觸其他 UI 元素。
+
 ## 開發建議
 
 ### 優化方向
