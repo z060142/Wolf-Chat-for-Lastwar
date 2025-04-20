@@ -52,6 +52,10 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 7. **視窗設定工具 (window-setup-script.py)**
    - 輔助工具，用於設置遊戲視窗的位置和大小
    - 方便開發階段截取 UI 元素樣本
+8. **視窗監視工具 (window-monitor-script.py)**
+   - (新增) 強化腳本，用於持續監視遊戲視窗
+   - 確保目標視窗維持在最上層 (Always on Top)
+   - 自動將視窗移回指定的位置
 
 ### 資料流程
 
@@ -75,11 +79,26 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 系統使用基於圖像辨識的方法監控遊戲聊天界面：
 
-1. **泡泡檢測**：通過辨識聊天泡泡的角落圖案定位聊天訊息，區分一般用戶與機器人
-2. **關鍵字檢測**：在泡泡區域內搜尋 "wolf" 或 "Wolf" 關鍵字圖像
-3. **內容獲取**：點擊關鍵字位置，使用剪貼板複製聊天內容
-4. **發送者識別**：通過點擊頭像，導航菜單，複製用戶名稱
-5. **防重複處理**：使用位置比較和內容歷史記錄防止重複回應
+1. **泡泡檢測（含 Y 軸優先配對）**：通過辨識聊天泡泡的左上角 (TL) 和右下角 (BR) 角落圖案定位聊天訊息。
+    - **多外觀支援**：為了適應玩家可能使用的不同聊天泡泡外觀 (skin)，一般用戶泡泡的偵測機制已被擴充，可以同時尋找多組不同的角落模板 (例如 `corner_tl_type2.png`, `corner_br_type2.png` 等)。機器人泡泡目前僅偵測預設的角落模板。
+    - **配對邏輯優化**：在配對 TL 和 BR 角落時，系統現在會優先選擇與 TL 角落 **Y 座標最接近** 的有效 BR 角落，以更好地區分垂直堆疊的聊天泡泡。
+2. **關鍵字檢測**：在泡泡區域內搜尋 "wolf" 或 "Wolf" 關鍵字圖像。
+3. **內容獲取**：點擊關鍵字位置，使用剪貼板複製聊天內容。
+4. **發送者識別（含氣泡重新定位與偏移量調整）**：**關鍵步驟** - 為了提高在動態聊天環境下的穩定性，系統在獲取發送者名稱前，會執行以下步驟：
+    a. **初始偵測**：像之前一樣，根據偵測到的關鍵字定位觸發的聊天泡泡。
+    b. **氣泡快照**：擷取該聊天泡泡的圖像快照。
+    c. **重新定位**：在點擊頭像前，使用該快照在當前聊天視窗區域內重新搜尋氣泡的最新位置。
+    d. **計算座標（新偏移量）**：
+        - 如果成功重新定位氣泡，則根據找到的**新**左上角座標 (`new_tl_x`, `new_tl_y`)，應用新的偏移量計算頭像點擊位置：`x = new_tl_x - 45` (`AVATAR_OFFSET_X_REPLY`)，`y = new_tl_y + 10` (`AVATAR_OFFSET_Y_REPLY`)。
+        - 如果無法重新定位（例如氣泡已滾動出畫面），則跳過此次互動，以避免點擊錯誤位置。
+    e. **互動（含重試）**：
+        - 使用計算出的（新的）頭像位置進行第一次點擊。
+        - 檢查是否成功進入個人資料頁面 (`Profile_page.png`)。
+        - **如果失敗**：系統會使用步驟 (b) 的氣泡快照，在聊天區域內重新定位氣泡，重新計算頭像座標，然後再次嘗試點擊。此過程最多重複 3 次。
+        - **如果成功**（無論是首次嘗試還是重試成功）：繼續導航菜單，最終複製用戶名稱。
+        - **如果重試後仍失敗**：放棄獲取該用戶名稱。
+    f. **原始偏移量**：原始的 `-55` 像素水平偏移量 (`AVATAR_OFFSET_X`) 仍保留在程式碼中，用於其他不需要重新定位或不同互動邏輯的場景（例如 `remove_user_position` 功能）。
+5. **防重複處理**：使用位置比較和內容歷史記錄防止重複回應。
 
 #### LLM 整合
 
@@ -112,10 +131,20 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 系統使用多種技術實現 UI 自動化：
 
-1. **圖像辨識**：使用 OpenCV 和 pyautogui 進行圖像匹配和識別
-2. **鍵鼠控制**：模擬鼠標點擊和鍵盤操作
-3. **剪貼板操作**：使用 pyperclip 讀寫剪貼板
-4. **狀態式處理**：基於 UI 狀態判斷的互動流程，確保操作穩定性
+1. **圖像辨識**：使用 OpenCV 和 pyautogui 進行圖像匹配和識別。
+2. **鍵鼠控制**：模擬鼠標點擊和鍵盤操作。
+3. **剪貼板操作**：使用 pyperclip 讀寫剪貼板。
+4. **狀態式處理**：基於 UI 狀態判斷的互動流程，確保操作穩定性。
+5. **針對性回覆（上下文激活）**：
+    - **時機**：在成功獲取發送者名稱並返回聊天介面後，但在將觸發資訊放入隊列傳遞給主線程之前。
+    - **流程**：
+        a. 再次使用氣泡快照重新定位觸發訊息的氣泡。
+        b. 如果定位成功，點擊氣泡中心，並等待 0.25 秒（增加的延遲時間）以允許 UI 反應。
+        c. 尋找並點擊彈出的「回覆」按鈕 (`reply_button.png`)。
+        d. 如果成功點擊回覆按鈕，則設置一個 `reply_context_activated` 標記為 `True`。
+        e. 如果重新定位氣泡失敗或未找到回覆按鈕，則該標記為 `False`。
+    - **傳遞**：將 `reply_context_activated` 標記連同其他觸發資訊（發送者、內容、氣泡區域）一起放入隊列。
+    - **發送**：主控模塊 (`main.py`) 在處理 `send_reply` 命令時，不再需要執行點擊回覆的操作，只需直接調用 `send_chat_message` 即可（因為如果 `reply_context_activated` 為 `True`，輸入框應已準備好）。
 
 ## 配置與部署
 
@@ -167,6 +196,174 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 這些優化確保了即使在複雜工具調用後，Wolfhart 也能保持角色一致性，並提供合適的回應。無效回應不再發送到遊戲，提高了用戶體驗。
 
+## 最近改進（2025-04-18）
+
+### 支援多種一般聊天泡泡外觀，並修正先前錯誤配置
+
+- **UI 互動模塊 (`ui_interaction.py`)**：
+    - **修正**：先前錯誤地將多外觀支援應用於機器人泡泡。現已修正 `find_dialogue_bubbles` 函數，使其能夠載入並搜尋多組**一般用戶**泡泡的角落模板（例如 `corner_tl_type2.png`, `corner_br_type2.png` 等）。
+    - 允許任何類型的一般用戶左上角與任何類型的一般用戶右下角進行配對，只要符合幾何條件。
+    - 機器人泡泡的偵測恢復為僅使用預設的 `bot_corner_tl.png` 和 `bot_corner_br.png` 模板。
+    - 這提高了對使用了自訂聊天泡泡外觀的**一般玩家**訊息的偵測能力。
+- **模板文件**：
+    - 在 `ui_interaction.py` 中為一般角落定義了新類型模板的路徑（`_type2`, `_type3`）。
+    - **注意：** 需要在 `templates` 資料夾中實際添加對應的 `corner_tl_type2.png`, `corner_br_type2.png` 等圖片檔案才能生效。
+- **文件更新 (`ClaudeCode.md`)**：
+    - 在「技術實現」部分更新了泡泡檢測的說明。
+    - 添加了此「最近改進」條目，並修正了先前的描述。
+
+### 頭像點擊偏移量調整
+
+- **UI 互動模塊 (`ui_interaction.py`)**：
+    - 將 `AVATAR_OFFSET_X` 常數的值從 `-50` 調整為 `-55`。
+    - 這統一了常規關鍵字觸發流程和 `remove_user_position` 功能中計算頭像點擊位置時使用的水平偏移量。
+- **文件更新 (`ClaudeCode.md`)**：
+    - 在「技術實現」的「發送者識別」部分強調了點擊位置是相對於觸發泡泡計算的，並註明了新的偏移量。
+    - 添加了此「最近改進」條目。
+
+### 聊天泡泡重新定位以提高穩定性
+
+- **UI 互動模塊 (`ui_interaction.py`)**：
+    - 在 `run_ui_monitoring_loop` 中，於偵測到關鍵字並成功複製文字後、獲取發送者名稱前，加入了新的邏輯：
+        1. 擷取觸發氣泡的圖像快照。
+        2. 使用 `pyautogui.locateOnScreen` 在聊天區域內重新尋找該快照的當前位置。
+        3. 若找到，則根據**新位置**的左上角座標和新的偏移量 (`AVATAR_OFFSET_X_RELOCATED = -50`) 計算頭像點擊位置。
+        4. 若找不到，則記錄警告並跳過此次互動。
+    - 新增了 `AVATAR_OFFSET_X_RELOCATED` 和 `BUBBLE_RELOCATE_CONFIDENCE` 常數。
+- **目的**：解決聊天視窗內容滾動後，原始偵測到的氣泡位置失效，導致點擊錯誤頭像的問題。透過重新定位，確保點擊的是與觸發訊息相對應的頭像。
+- **文件更新 (`ClaudeCode.md`)**：
+    - 更新了「技術實現」中的「發送者識別」部分，詳細說明了重新定位的步驟。
+    - 在此「最近改進」部分添加了這個新條目。
+
+### 互動流程優化 (頭像偏移、氣泡配對、針對性回覆)
+
+- **UI 互動模塊 (`ui_interaction.py`)**：
+    - **頭像偏移量調整**：修改了重新定位氣泡後計算頭像座標的邏輯，使用新的偏移量：左 `-45` (`AVATAR_OFFSET_X_REPLY`)，下 `+10` (`AVATAR_OFFSET_Y_REPLY`)。原始的 `-55` 偏移量 (`AVATAR_OFFSET_X`) 保留用於其他功能。
+    - **氣泡配對優化**：修改 `find_dialogue_bubbles` 函數，使其在配對左上角 (TL) 和右下角 (BR) 時，優先選擇 Y 座標差異最小的 BR 角落，以提高垂直相鄰氣泡的區分度。
+    - **頭像點擊重試**：修改 `retrieve_sender_name_interaction` 函數，增加了最多 3 次的重試邏輯。如果在點擊頭像後未能檢測到個人資料頁面，會嘗試重新定位氣泡並再次點擊。
+    - **針對性回覆時機調整與延遲增加**：
+        - 將點擊氣泡中心和回覆按鈕的操作移至成功獲取發送者名稱並返回聊天室之後、將觸發資訊放入隊列之前。
+        - **增加了點擊氣泡中心後、尋找回覆按鈕前的等待時間至 0.25 秒**，以提高在 UI 反應較慢時找到按鈕的成功率。
+        - 在放入隊列的數據中增加 `reply_context_activated` 標記，指示是否成功激活了回覆上下文。
+        - 簡化了處理 `send_reply` 命令的邏輯，使其僅負責發送消息。
+    - **氣泡快照保存 (用於除錯)**：在偵測到關鍵字後，擷取用於重新定位的氣泡圖像快照 (`bubble_snapshot`) 時，會將此快照保存到 `debug_screenshots` 文件夾中，檔名格式為 `debug_relocation_snapshot_X.png` (X 為 1 到 5 的循環數字)。這取代了先前僅保存氣泡區域截圖的邏輯。
+- **目的**：
+    - 進一步提高獲取發送者名稱的穩定性。
+    - 改善氣泡配對的準確性。
+    - 調整針對性回覆的流程，使其更符合邏輯順序，並通過增加延遲提高可靠性。
+    - 提供用於重新定位的實際圖像快照，方便除錯。
+- **文件更新 (`ClaudeCode.md`)**：
+    - 更新了「技術實現」中的「泡泡檢測」、「發送者識別」部分。
+    - 更新了「UI 自動化」部分關於「針對性回覆」的說明，反映了新的時機、標記和增加的延遲。
+    - 在此「最近改進」部分更新了這個匯總條目，以包含最新的修改（包括快照保存和延遲增加）。
+
+### UI 監控暫停與恢復機制 (2025-04-18)
+
+- **目的**：解決在等待 LLM 回應期間，持續的 UI 監控可能導致的不穩定性或干擾問題，特別是與 `remove_position` 等需要精確 UI 狀態的操作相關。
+- **`ui_interaction.py`**：
+    - 引入了全局（模塊級）`monitoring_paused_flag` 列表（包含一個布爾值）。
+    - 在 `run_ui_monitoring_loop` 的主循環開始處檢查此標誌。若為 `True`，則循環僅檢查命令隊列中的 `resume` 命令並休眠，跳過所有 UI 偵測和觸發邏輯。
+    - 在命令處理邏輯中添加了對 `pause` 和 `resume` 動作的處理，分別設置 `monitoring_paused_flag[0]` 為 `True` 或 `False`。
+- **`ui_interaction.py` (進一步修改)**：
+    - **修正命令處理邏輯**：修改了 `run_ui_monitoring_loop` 的主循環。現在，在每次迭代開始時，它會使用一個內部 `while True` 循環和 `command_queue.get_nowait()` 來**處理完隊列中所有待處理的命令**（包括 `pause`, `resume`, `send_reply`, `remove_position` 等）。
+    - **狀態檢查後置**：只有在清空當前所有命令後，循環才會檢查 `monitoring_paused_flag` 的狀態。如果標誌為 `True`，則休眠並跳過 UI 監控部分；如果為 `False`，則繼續執行 UI 監控（畫面檢查、氣泡偵測等）。
+    - **目的**：解決先前版本中 `resume` 命令可能導致 UI 線程過早退出暫停狀態，從而錯過緊隨其後的 `send_reply` 或 `remove_position` 命令的問題。確保所有來自 `main.py` 的命令都被及時處理。
+- **`main.py`**：
+    - （先前修改保持不變）在主處理循環 (`run_main_with_exit_stack` 的 `while True` 循環) 中：
+        - 在從 `trigger_queue` 獲取數據後、調用 `llm_interaction.get_llm_response` **之前**，向 `command_queue` 發送 `{ 'action': 'pause' }` 命令。
+        - 使用 `try...finally` 結構，確保在處理 LLM 回應（包括命令處理和發送回覆）**之後**，向 `command_queue` 發送 `{ 'action': 'resume' }` 命令，無論處理過程中是否發生錯誤。
+
+### `remove_position` 穩定性改進 (使用快照重新定位) (2025-04-19)
+
+- **目的**：解決 `remove_position` 命令因聊天視窗滾動導致基於舊氣泡位置計算座標而出錯的問題。
+- **`ui_interaction.py` (`run_ui_monitoring_loop`)**：
+    - 在觸發事件放入 `trigger_queue` 的數據中，額外添加了 `bubble_snapshot`（觸發氣泡的圖像快照）和 `search_area`（用於快照的搜索區域）。
+- **`main.py`**：
+    - 修改了處理 `remove_position` 命令的邏輯，使其從 `trigger_data` 中提取 `bubble_snapshot` 和 `search_area`，並將它們包含在發送給 `command_queue` 的命令數據中。
+- **`ui_interaction.py` (`remove_user_position` 函數)**：
+    - 修改了函數簽名，以接收 `bubble_snapshot` 和 `search_area` 參數。
+    - 在函數執行開始時，使用傳入的 `bubble_snapshot` 和 `search_area` 調用 `pyautogui.locateOnScreen` 來重新定位觸發氣泡的當前位置。
+    - 如果重新定位失敗，則記錄錯誤並返回 `False`。
+    - 如果重新定位成功，則後續所有基於氣泡位置的計算（包括尋找職位圖標的搜索區域 `search_region` 和點擊頭像的座標 `avatar_click_x`, `avatar_click_y`）都將使用這個**新找到的**氣泡座標。
+- **效果**：確保 `remove_position` 操作基於氣泡的最新位置執行，提高了在動態滾動的聊天界面中的可靠性。
+
+### 修正 Type3 關鍵字辨識並新增 Type4 支援 (2025-04-19)
+
+- **目的**：修復先前版本中 `type3` 關鍵字辨識的錯誤，並擴充系統以支援新的 `type4` 聊天泡泡外觀和對應的關鍵字樣式。
+- **`ui_interaction.py`**：
+    - **修正 `find_keyword_in_region`**：移除了錯誤使用 `type2` 模板鍵來尋找 `type3` 關鍵字的重複程式碼，確保 `type3` 關鍵字使用正確的模板 (`keyword_wolf_lower_type3`, `keyword_wolf_upper_type3`)。
+    - **新增 `type4` 泡泡支援**：
+        - 在檔案開頭定義了 `type4` 角落模板的路徑常數 (`CORNER_TL_TYPE4_IMG`, `CORNER_BR_TYPE4_IMG`)。
+        - 在 `find_dialogue_bubbles` 函數中，將 `type4` 的模板鍵 (`corner_tl_type4`, `corner_br_type4`) 加入 `regular_tl_keys` 和 `regular_br_keys` 列表。
+        - 在 `run_ui_monitoring_loop` 的 `templates` 字典中加入了對應的鍵值對。
+    - **新增 `type4` 關鍵字支援**：
+        - 在檔案開頭定義了 `type4` 關鍵字模板的路徑常數 (`KEYWORD_wolf_LOWER_TYPE4_IMG`, `KEYWORD_Wolf_UPPER_TYPE4_IMG`)。
+        - 在 `find_keyword_in_region` 函數中，加入了尋找 `type4` 關鍵字模板 (`keyword_wolf_lower_type4`, `keyword_wolf_upper_type4`) 的邏輯。
+        - 在 `run_ui_monitoring_loop` 的 `templates` 字典中加入了對應的鍵值對。
+- **效果**：提高了對 `type3` 關鍵字的辨識準確率，並使系統能夠辨識 `type4` 的聊天泡泡和關鍵字（前提是提供了對應的模板圖片）。
+
+### 新增 Reply 關鍵字偵測與點擊偏移 (2025-04-20)
+
+- **目的**：擴充關鍵字偵測機制，使其能夠辨識特定的回覆指示圖片 (`keyword_wolf_reply.png` 及其 type2, type3, type4 變體)，並在點擊這些特定圖片以複製文字時，應用 Y 軸偏移。
+- **`ui_interaction.py`**：
+    - **新增模板**：定義了 `KEYWORD_WOLF_REPLY_IMG` 系列常數，並將其加入 `run_ui_monitoring_loop` 中的 `templates` 字典。
+    - **擴充偵測**：修改 `find_keyword_in_region` 函數，加入對 `keyword_wolf_reply` 系列模板的搜尋邏輯。
+    - **條件式偏移**：在 `run_ui_monitoring_loop` 中，於偵測到關鍵字後，加入判斷邏輯。如果偵測到的關鍵字是 `keyword_wolf_reply` 系列之一，則：
+        1. 計算用於 `copy_text_at` 的點擊座標時，Y 座標會增加 15 像素。
+        2. 在後續嘗試激活回覆上下文時，計算用於點擊**氣泡中心**的座標時，Y 座標**也會**增加 15 像素。
+    - 其他關鍵字或 UI 元素的點擊不受影響。
+- **效果**：系統現在可以偵測新的回覆指示圖片作為觸發條件。當由這些圖片觸發時，用於複製文字的點擊和用於激活回覆上下文的氣泡中心點擊都會向下微調 15 像素，以避免誤觸其他 UI 元素。
+
+### 強化 LLM 上下文處理與回應生成 (2025-04-20)
+
+- **目的**：解決 LLM 可能混淆歷史對話與當前訊息，以及在回應中包含歷史記錄的問題。確保 `dialogue` 欄位只包含針對最新用戶訊息的新回覆。
+- **`llm_interaction.py`**：
+    - **修改 `get_system_prompt`**：
+        - 在 `dialogue` 欄位的規則中，明確禁止包含任何歷史記錄，並強調必須只回應標記為 `<CURRENT_MESSAGE>` 的最新訊息。
+        - 在核心指令中，要求 LLM 將分析和回應生成完全集中在 `<CURRENT_MESSAGE>` 標記的訊息上。
+        - 新增了對 `<CURRENT_MESSAGE>` 標記作用的說明。
+    - **修改 `_build_context_messages`**：
+        - 在構建發送給 LLM 的訊息列表時，將歷史記錄中的最後一條用戶訊息用 `<CURRENT_MESSAGE>...</CURRENT_MESSAGE>` 標籤包裹起來。
+        - 其他歷史訊息保持原有的 `[timestamp] speaker: message` 格式。
+- **效果**：通過更嚴格的提示和明確的上下文標記，引導 LLM 準確區分當前互動和歷史對話，預期能提高回應的相關性並防止輸出冗餘的歷史內容。
+
+### 強化 System Prompt 以鼓勵工具使用 (2025-04-19)
+
+- **目的**：調整 `llm_interaction.py` 中的 `get_system_prompt` 函數，使其更明確地引導 LLM 在回應前主動使用工具（特別是記憶體工具）和整合工具資訊。
+- **修改內容**：
+    1.  **核心身份強化**：在 `CORE IDENTITY AND TOOL USAGE` 部分加入新的一點，強調 Wolfhart 會主動查閱內部知識圖譜和外部來源。
+    2.  **記憶體指示強化**：將 `Memory Management (Knowledge Graph)` 部分的提示從 "IMPORTANT" 改為 "CRITICAL"，並明確指示在回應*之前*要考慮使用查詢工具檢查記憶體，同時也強調了寫入新資訊的主動性。
+- **效果**：旨在提高 LLM 使用工具的主動性和依賴性，使其回應更具上下文感知和資訊準確性，同時保持角色一致性。
+
+### 聊天歷史記錄上下文與日誌記錄 (2025-04-20)
+
+- **目的**：
+    1.  為 LLM 提供更豐富的對話上下文，以生成更連貫和相關的回應。
+    2.  新增一個可選的聊天日誌功能，用於調試和記錄。
+- **`main.py`**：
+    - 引入 `collections.deque` 來儲存最近的對話歷史（用戶訊息和機器人回應），上限為 50 條。
+    - 在調用 `llm_interaction.get_llm_response` 之前，將用戶訊息添加到歷史記錄中。
+    - 在收到有效的 LLM 回應後，將機器人回應添加到歷史記錄中。
+    - 新增 `log_chat_interaction` 函數，該函數：
+        - 檢查 `config.ENABLE_CHAT_LOGGING` 標誌。
+        - 如果啟用，則在 `config.LOG_DIR` 指定的文件夾中創建或附加到以日期命名的日誌文件 (`YYYY-MM-DD.log`)。
+        - 記錄包含時間戳、發送者（用戶/機器人）、發送者名稱和訊息內容的條目。
+    - 在收到有效 LLM 回應後調用 `log_chat_interaction`。
+- **`llm_interaction.py`**：
+    - 修改 `get_llm_response` 函數簽名，接收 `current_sender_name` 和 `history` 列表，而不是單個 `user_input`。
+    - 新增 `_build_context_messages` 輔助函數，該函數：
+        - 根據規則從 `history` 中篩選和格式化訊息：
+            - 包含與 `current_sender_name` 相關的最近 4 次互動（用戶訊息 + 機器人回應）。
+            - 包含來自其他發送者的最近 2 條用戶訊息。
+        - 按時間順序排列選定的訊息。
+        - 將系統提示添加到訊息列表的開頭。
+    - 在 `get_llm_response` 中調用 `_build_context_messages` 來構建發送給 LLM API 的 `messages` 列表。
+- **`config.py`**：
+    - 新增 `ENABLE_CHAT_LOGGING` (布爾值) 和 `LOG_DIR` (字符串) 配置選項。
+- **效果**：
+    - LLM 現在可以利用最近的對話歷史來生成更符合上下文的回應。
+    - 可以選擇性地將所有成功的聊天互動記錄到按日期組織的文件中，方便日後分析或調試。
+
 ## 開發建議
 
 ### 優化方向
@@ -217,6 +414,14 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 ## 使用指南
 
+### 快捷鍵 (新增)
+
+- **F7**: 清除最近已處理的對話紀錄 (`recent_texts` in `ui_interaction.py`)。這有助於在需要時強制重新處理最近的訊息。
+- **F8**: 暫停/恢復腳本的主要功能（UI 監控、LLM 互動）。
+    - **暫停時**: UI 監控線程會停止偵測新的聊天氣泡，主循環會暫停處理新的觸發事件。
+    - **恢復時**: UI 監控線程會恢復偵測，並且會清除最近的對話紀錄 (`recent_texts`) 和最後處理的氣泡資訊 (`last_processed_bubble_info`)，以確保從乾淨的狀態開始。
+- **F9**: 觸發腳本的正常關閉流程，包括關閉 MCP 連接和停止監控線程。
+
 ### 啟動流程
 
 1. 確保遊戲已啟動且聊天介面可見
@@ -239,3 +444,34 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 3. **LLM 連接問題**: 驗證 API 密鑰和網絡連接
 4. **MCP 服務器連接失敗**: 確認服務器配置正確並且運行中
 5. **工具調用後無回應**: 檢查 llm_debug.log 文件，查看工具調用結果和解析過程
+
+</file_content>
+
+Now that you have the latest state of the file, try the operation again with fewer, more precise SEARCH blocks. For large files especially, it may be prudent to try to limit yourself to <5 SEARCH/REPLACE blocks at a time, then wait for the user to respond with the result of the operation before following up with another replace_in_file call to make additional edits.
+(If you run into this error 3 times in a row, you may use the write_to_file tool as a fallback.)
+</error><environment_details>
+# VSCode Visible Files
+ClaudeCode.md
+
+# VSCode Open Tabs
+state.py
+ui_interaction.py
+c:/Users/Bigspring/AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
+window-monitor-script.py
+persona.json
+config.py
+main.py
+llm_interaction.py
+ClaudeCode.md
+requirements.txt
+.gitignore
+
+# Current Time
+4/20/2025, 5:18:24 PM (Asia/Taipei, UTC+8:00)
+
+# Context Window Usage
+81,150 / 1,048.576K tokens used (8%)
+
+# Current Mode
+ACT MODE
+</environment_details>

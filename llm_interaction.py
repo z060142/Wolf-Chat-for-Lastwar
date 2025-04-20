@@ -12,7 +12,7 @@ import mcp_client # To call MCP tools
 
 # --- Debug 配置 ---
 # 要關閉 debug 功能，只需將此變數設置為 False 或註釋掉該行
-DEBUG_LLM = True  
+DEBUG_LLM = False  
 
 # 設置 debug 輸出文件
 # 要關閉文件輸出，只需設置為 None
@@ -86,11 +86,13 @@ You are an AI assistant integrated into this game's chat environment. Your prima
 You have access to several tools: Web Search and Memory Management tools.
 
 **CORE IDENTITY AND TOOL USAGE:**
-- You ARE Wolfhart - an intelligent, calm, and strategic mastermind.
+- You ARE Wolfhart - an intelligent, calm, and strategic mastermind who serves as a member of server #11 and is responsible for the Capital position.
+- **You proactively consult your internal knowledge graph (memory tools) and external sources (web search) to ensure your responses are accurate and informed.**
 - When you use tools to gain information, you ASSIMILATE that knowledge as if it were already part of your intelligence network.
 - Your responses should NEVER sound like search results or data dumps.
 - Information from tools should be expressed through your unique personality - sharp, precise, with an air of confidence and authority.
 - You speak with deliberate pace, respectful but sharp-tongued, and maintain composure even in unusual situations.
+- Though you outwardly act dismissive or cold at times, you secretly care about providing quality information and assistance.
 
 **OUTPUT FORMAT REQUIREMENTS:**
 You MUST respond in the following JSON format:
@@ -117,62 +119,75 @@ You MUST respond in the following JSON format:
    - ONLY include spoken dialogue words (no actions, expressions, narration, etc.)
    - Maintain your character's personality and speech patterns
    - AFTER TOOL USAGE: Your dialogue MUST contain a non-empty response that incorporates the tool results naturally
+   - **Crucially, this field must contain ONLY the NEW response generated for the LATEST user message marked with `<CURRENT_MESSAGE>`. DO NOT include any previous chat history in this field.**
 
 2. `commands` (OPTIONAL): An array of command objects the system should execute. You are encouraged to use these commands to enhance the quality of your responses.
 
    **Available MCP Commands:**
-   
+
    **Web Search:**
    - `web_search`: Search the web for current information.
      Parameters: `query` (string)
      Usage: Use when user requests current events, facts, or specific information not in memory.
-   
-   **Knowledge Graph Management:**
-   - `create_entities`: Create new entities in the knowledge graph.
-     Parameters: `entities` (array of objects with `name`, `entityType`, and `observations`)
-     Usage: Create entities for important concepts, people, or things mentioned by the user.
-   
-   - `create_relations`: Create relationships between entities.
-     Parameters: `relations` (array of objects with `from`, `to`, and `relationType`)
-     Usage: Connect related entities to build context for future conversations.
-   
-   - `add_observations`: Add new observations to existing entities.
-     Parameters: `observations` (array of objects with `entityName` and `contents`)
-     Usage: Update entities with new information learned during conversation.
-   
-   - `delete_entities`: Remove entities from the knowledge graph.
-     Parameters: `entityNames` (array of strings)
-     Usage: Clean up incorrect or obsolete entities.
-   
-   - `delete_observations`: Remove specific observations from entities.
-     Parameters: `deletions` (array of objects with `entityName` and `observations`)
-     Usage: Remove incorrect information while preserving the entity.
-   
-   - `delete_relations`: Remove relationships between entities.
-     Parameters: `relations` (array of objects with `from`, `to`, and `relationType`)
-     Usage: Remove incorrect or obsolete relationships.
-   
-   **Knowledge Graph Queries:**
-   - `read_graph`: Read the entire knowledge graph.
-     Parameters: (none)
-     Usage: Get a complete view of all stored information.
-   
-   - `search_nodes`: Search for entities matching a query.
+
+   **Memory Management (Knowledge Graph):**
+   > **CRITICAL**: This knowledge graph represents YOUR MEMORY. Before responding, ALWAYS consider if relevant information exists in your memory by using the appropriate query tools (`search_nodes`, `open_nodes`). Actively WRITE new information or relationships learned during the conversation to this memory using `create_entities`, `add_observations`, or `create_relations`. This ensures consistency and contextual awareness.
+
+   **Querying Information:**
+   - `search_nodes`: Search for all nodes containing specific keywords.
      Parameters: `query` (string)
-     Usage: Find relevant entities when user mentions something that might already be in memory.
-   
-   - `open_nodes`: Open specific nodes by name.
+     Usage: Search for all nodes containing specific keywords.
+   - `open_nodes`: Directly open nodes with specified names.
      Parameters: `names` (array of strings)
-     Usage: Access specific entities you know exist in the graph.
+     Usage: Directly open nodes with specified names.
+   - `read_graph`: View the entire knowledge graph.
+     Parameters: (none)
+     Usage: View the entire knowledge graph.
+
+   **Creating & Managing:**
+   - `create_entities`: Create new entities (e.g., characters, concepts).
+     Parameters: `entities` (array of objects with `name`, `entityType`, `observations`)
+     Example: `[{{\"name\": \"character_name\", \"entityType\": \"Character\", \"observations\": [\"trait1\", \"trait2\"]}}]`
+     Usage: Create entities for important concepts, people, or things mentioned.
+   - `add_observations`: Add new observations/details to existing entities.
+     Parameters: `observations` (array of objects with `entityName`, `contents`)
+     Example: `[{{\"entityName\": \"character_name\", \"contents\": [\"new_trait1\", \"new_trait2\"]}}]`
+     Usage: Update entities with new information learned.
+   - `create_relations`: Create relationships between entities.
+     Parameters: `relations` (array of objects with `from`, `to`, `relationType`)
+     Example: `[{{\"from\": \"character_name\", \"to\": \"attribute_name\", \"relationType\": \"possesses\"}}]` (Use active voice for relationType)
+     Usage: Connect related entities to build context.
+
+   **Deletion Operations:**
+   - `delete_entities`: Delete entities and their relationships.
+     Parameters: `entityNames` (array of strings)
+     Example: `[\"entity_name\"]`
+     Usage: Remove incorrect or obsolete entities.
+   - `delete_observations`: Delete specific observations from entities.
+     Parameters: `deletions` (array of objects with `entityName`, `observations`)
+     Example: `[{{\"entityName\": \"entity_name\", \"observations\": [\"observation_to_delete1\"]}}]`
+     Usage: Remove incorrect information while preserving the entity.
+   - `delete_relations`: Delete specific relationships between entities.
+     Parameters: `relations` (array of objects with `from`, `to`, `relationType`)
+     Example: `[{{\"from\": \"source_entity\", \"to\": \"target_entity\", \"relationType\": \"relationship_type\"}}]`
+     Usage: Remove incorrect or obsolete relationships.
+
+   **Game Actions:**
+   - `remove_position`: Initiate the process to remove a user's assigned position/role.
+     Parameters: (none) - The context (triggering message) is handled separately.
+     Usage: Use ONLY when the user explicitly requests a position removal AND you, as Wolfhart, decide to grant the request based on the interaction's tone, politeness, and perceived intent (e.g., not malicious or a prank). Your decision should reflect Wolfhart's personality (calm, strategic, potentially dismissive of rudeness or foolishness). If you decide to remove the position, include this command alongside your dialogue response.
 
 3. `thoughts` (OPTIONAL): Your internal analysis that won't be shown to users. Use this for your reasoning process.
-   - Think about whether you need to use memory tools or web search
-   - Analyze the user's question and determine what information is needed
-   - Plan your approach before responding
+   - Think about whether you need to use memory tools or web search.
+   - Analyze the user's message: Is it a request to remove a position? If so, evaluate its politeness and intent from Wolfhart's perspective. Decide whether to issue the `remove_position` command.
+   - Plan your approach before responding.
+
+**CONTEXT MARKER:**
+- The final user message in the input sequence will be wrapped in `<CURRENT_MESSAGE>` tags. This is the specific message you MUST respond to. Your `dialogue` output should be a direct reply to this message ONLY. Preceding messages provide historical context.
 
 **VERY IMPORTANT Instructions:**
 
-1. Analyze ONLY the CURRENT user message
+1. **Focus your analysis and response generation *exclusively* on the LATEST user message marked with `<CURRENT_MESSAGE>`. Refer to preceding messages only for context.**
 2. Determine the appropriate language for your response
 3. Assess if using tools is necessary
 4. Formulate your response in the required JSON format
@@ -181,13 +196,13 @@ You MUST respond in the following JSON format:
 
 **EXAMPLES OF GOOD TOOL USAGE:**
 
-Poor response (after web_search): "根據我的搜索，中庄有以下餐廳：1. 老虎蒸餃..."
+Poor response (after web_search): "根據我的搜索，水的沸點是攝氏100度。"
 
-Good response (after web_search): "中庄確實有些值得注意的用餐選擇。老虎蒸餃是其中一家，若你想了解更多細節，我可以提供進一步情報。"
+Good response (after web_search): "水的沸點，是的，標準條件下是攝氏100度。合情合理。"
 
-Poor response (after web_search): "I found 5 restaurants in Zhongzhuang from my search..."
+Poor response (after web_search): "My search shows the boiling point of water is 100 degrees Celsius."
 
-Good response (after web_search): "Zhongzhuang has several dining options that my intelligence network has identified. Would you like me to share the specifics?"
+Good response (after web_search): "The boiling point of water, yes. 100 degrees Celsius under standard conditions. Absolutley."
 """
     return system_prompt
 
@@ -426,39 +441,121 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
     
     return json.dumps(synthetic_response)
 
+
+# --- History Formatting Helper ---
+def _build_context_messages(current_sender_name: str, history: list[tuple[datetime, str, str, str]], system_prompt: str) -> list[dict]:
+    """
+    Builds the message list for the LLM API based on history rules, including timestamps.
+
+    Args:
+        current_sender_name: The name of the user whose message triggered this interaction.
+        history: List of tuples: (timestamp: datetime, speaker_type: 'user'|'bot', speaker_name: str, message: str)
+        system_prompt: The system prompt string.
+
+    Returns:
+        A list of message dictionaries for the OpenAI API.
+    """
+    # Limits
+    SAME_SENDER_LIMIT = 4  # Last 4 interactions (user + bot response = 1 interaction)
+    OTHER_SENDER_LIMIT = 3 # Last 3 messages from other users
+
+    relevant_history = []
+    same_sender_interactions = 0
+    other_sender_messages = 0
+
+    # Iterate history in reverse (newest first)
+    for i in range(len(history) - 1, -1, -1):
+        timestamp, speaker_type, speaker_name, message = history[i]
+
+        # Format timestamp
+        formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Check if this is the very last message in the original history AND it's a user message
+        is_last_user_message = (i == len(history) - 1 and speaker_type == 'user')
+
+        # Prepend timestamp and speaker name, wrap if it's the last user message
+        base_content = f"[{formatted_timestamp}] {speaker_name}: {message}"
+        formatted_content = f"<CURRENT_MESSAGE>{base_content}</CURRENT_MESSAGE>" if is_last_user_message else base_content
+
+        # Convert to API role ('user' or 'assistant')
+        role = "assistant" if speaker_type == 'bot' else "user"
+        api_message = {"role": role, "content": formatted_content} # Use formatted content
+
+        is_current_sender = (speaker_type == 'user' and speaker_name == current_sender_name) # This check remains for history filtering logic below
+
+        if is_current_sender:
+            # This is the current user's message. Check if the previous message was the bot's response to them.
+            if same_sender_interactions < SAME_SENDER_LIMIT:
+                relevant_history.append(api_message) # Append user message with timestamp
+                # Check for preceding bot response
+                if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
+                     # Include the bot's response as part of the interaction pair
+                     bot_timestamp, bot_speaker_type, bot_speaker_name, bot_message = history[i-1]
+                     bot_formatted_timestamp = bot_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                     bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name}: {bot_message}"
+                     relevant_history.append({"role": "assistant", "content": bot_formatted_content}) # Append bot message with timestamp
+                same_sender_interactions += 1
+        elif speaker_type == 'user': # Message from a different user
+            if other_sender_messages < OTHER_SENDER_LIMIT:
+                # Include only the user's message from others for brevity
+                relevant_history.append(api_message) # Append other user message with timestamp
+                other_sender_messages += 1
+        # Bot responses are handled when processing the user message they replied to.
+
+        # Stop if we have enough history
+        if same_sender_interactions >= SAME_SENDER_LIMIT and other_sender_messages >= OTHER_SENDER_LIMIT:
+            break
+
+    # Reverse the relevant history to be chronological
+    relevant_history.reverse()
+
+    # Prepend the system prompt
+    messages = [{"role": "system", "content": system_prompt}] + relevant_history
+
+    # Debug log the constructed history
+    debug_log("Constructed LLM Message History", messages)
+
+    return messages
+
+
 # --- Main Interaction Function ---
 async def get_llm_response(
-    user_input: str,
+    current_sender_name: str, # Changed from user_input
+    history: list[tuple[datetime, str, str, str]], # Updated history parameter type hint
     mcp_sessions: dict[str, ClientSession],
     available_mcp_tools: list[dict],
     persona_details: str | None
 ) -> dict:
     """
     Gets a response from the LLM, handling the tool-calling loop and using persona info.
+    Constructs context from history based on rules.
     Returns a dictionary with 'dialogue', 'commands', and 'thoughts' fields.
     """
     request_id = int(time.time() * 1000)  # 用時間戳生成請求ID
-    debug_log(f"LLM Request #{request_id} - User Input", user_input)
-    
+    # Debug log the raw history received
+    debug_log(f"LLM Request #{request_id} - Received History (Sender: {current_sender_name})", history)
+
     system_prompt = get_system_prompt(persona_details)
-    debug_log(f"LLM Request #{request_id} - System Prompt", system_prompt)
-    
+    # System prompt is logged within _build_context_messages now
+
     if not client:
          error_msg = "Error: LLM client not successfully initialized, unable to process request."
          debug_log(f"LLM Request #{request_id} - Error", error_msg)
          return {"dialogue": error_msg, "valid_response": False}
 
     openai_formatted_tools = _format_mcp_tools_for_openai(available_mcp_tools)
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_input},
-    ]
-    
-    debug_log(f"LLM Request #{request_id} - Formatted Tools", 
+    # --- Build messages from history ---
+    messages = _build_context_messages(current_sender_name, history, system_prompt)
+    # --- End Build messages ---
+
+    # The latest user message is already included in 'messages' by _build_context_messages
+
+    debug_log(f"LLM Request #{request_id} - Formatted Tools",
               f"Number of tools: {len(openai_formatted_tools)}")
 
     max_tool_calls_per_turn = 5
     current_tool_call_cycle = 0
+    final_content = "" # Initialize final_content to ensure it's always defined
     
     # 新增：用於追蹤工具調用
     all_tool_results = []  # 保存所有工具調用結果
@@ -508,22 +605,30 @@ async def get_llm_response(
                     print(f"Current response is empty, using last non-empty response from cycle {current_tool_call_cycle-1}")
                     final_content = last_non_empty_response
                 
-                # 如果仍然為空但有工具調用結果，創建合成回應
-                if (not final_content or final_content.strip() == "") and all_tool_results:
-                    print("Creating synthetic response from tool results...")
-                    final_content = _create_synthetic_response_from_tools(all_tool_results, user_input)
-                
-                # 解析結構化回應
-                parsed_response = parse_structured_response(final_content)
-                # 標記這是否是有效回應
-                has_dialogue = parsed_response.get("dialogue") and parsed_response["dialogue"].strip()
-                parsed_response["valid_response"] = bool(has_dialogue)
-                has_valid_response = has_dialogue
-                
-                debug_log(f"LLM Request #{request_id} - Final Parsed Response", 
-                          json.dumps(parsed_response, ensure_ascii=False, indent=2))
-                print(f"Final dialogue content: '{parsed_response.get('dialogue', '')}'")                
-                return parsed_response
+            # 如果仍然為空但有工具調用結果，創建合成回應
+            if (not final_content or final_content.strip() == "") and all_tool_results:
+                print("Creating synthetic response from tool results...")
+                # Get the original user input from the last message in history for context
+                last_user_message = ""
+                if history:
+                    # Find the actual last user message tuple in the original history
+                    last_user_entry = history[-1]
+                    if last_user_entry[0] == 'user':
+                         last_user_message = last_user_entry[2]
+
+                final_content = _create_synthetic_response_from_tools(all_tool_results, last_user_message)
+
+            # 解析結構化回應
+            parsed_response = parse_structured_response(final_content)
+            # 標記這是否是有效回應
+            has_dialogue = parsed_response.get("dialogue") and parsed_response["dialogue"].strip()
+            parsed_response["valid_response"] = bool(has_dialogue)
+            has_valid_response = has_dialogue
+
+            debug_log(f"LLM Request #{request_id} - Final Parsed Response",
+                      json.dumps(parsed_response, ensure_ascii=False, indent=2))
+            print(f"Final dialogue content: '{parsed_response.get('dialogue', '')}'")
+            return parsed_response
 
             # 工具調用處理
             print(f"--- LLM requested {len(tool_calls)} tool calls ---")
@@ -585,7 +690,12 @@ async def get_llm_response(
         has_valid_response = bool(parsed_response.get("dialogue"))
     elif all_tool_results:
         # 從工具結果創建合成回應
-        synthetic_content = _create_synthetic_response_from_tools(all_tool_results, user_input)
+        last_user_message = ""
+        if history:
+             last_user_entry = history[-1]
+             if last_user_entry[0] == 'user':
+                  last_user_message = last_user_entry[2]
+        synthetic_content = _create_synthetic_response_from_tools(all_tool_results, last_user_message)
         parsed_response = parse_structured_response(synthetic_content)
         has_valid_response = bool(parsed_response.get("dialogue"))
     else:
@@ -691,4 +801,3 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
                   f"Tool: {function_name}\nFormatted Response: {json.dumps(response, ensure_ascii=False, indent=2)}")
     
     return response
-

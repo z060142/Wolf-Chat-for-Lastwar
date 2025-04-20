@@ -4,12 +4,24 @@ import asyncio
 import sys
 import os
 import json # Import json module
+import collections # For deque
+import datetime # For logging timestamp
 from contextlib import AsyncExitStack
 # --- Import standard queue ---
-from queue import Queue as ThreadSafeQueue # Rename to avoid confusion
+from queue import Queue as ThreadSafeQueue, Empty as QueueEmpty # Rename to avoid confusion, import Empty
 # --- End Import ---
 from mcp.client.stdio import stdio_client
 from mcp import ClientSession, StdioServerParameters, types
+
+# --- Keyboard Imports ---
+import threading
+import time
+try:
+    import keyboard # Needs pip install keyboard
+except ImportError:
+    print("Error: 'keyboard' library not found. Please install it: pip install keyboard")
+    sys.exit(1)
+# --- End Keyboard Imports ---
 
 import config
 import mcp_client
@@ -24,16 +36,137 @@ all_discovered_mcp_tools: list[dict] = []
 exit_stack = AsyncExitStack()
 # Stores loaded persona data (as a string for easy injection into prompt)
 wolfhart_persona_details: str | None = None
+# --- Conversation History ---
+# Store tuples of (timestamp, speaker_type, speaker_name, message_content)
+# speaker_type can be 'user' or 'bot'
+conversation_history = collections.deque(maxlen=50) # Store last 50 messages (user+bot) with timestamps
 # --- Use standard thread-safe queues ---
 trigger_queue: ThreadSafeQueue = ThreadSafeQueue() # UI Thread -> Main Loop
 command_queue: ThreadSafeQueue = ThreadSafeQueue() # Main Loop -> UI Thread
 # --- End Change ---
 ui_monitor_task: asyncio.Task | None = None # To track the UI monitor task
 
+# --- Keyboard Shortcut State ---
+script_paused = False
+shutdown_requested = False
+main_loop = None # To store the main event loop for threadsafe calls
+# --- End Keyboard Shortcut State ---
+
+
+# --- Keyboard Shortcut Handlers ---
+def set_main_loop_and_queue(loop, queue):
+    """Stores the main event loop and command queue for threadsafe access."""
+    global main_loop, command_queue # Use the global command_queue directly
+    main_loop = loop
+    # command_queue is already global
+
+def handle_f7():
+    """Handles F7 press: Clears UI history."""
+    if main_loop and command_queue:
+        print("\n--- F7 pressed: Clearing UI history ---")
+        command = {'action': 'clear_history'}
+        try:
+            # Use call_soon_threadsafe to put item in queue from this thread
+            main_loop.call_soon_threadsafe(command_queue.put_nowait, command)
+        except Exception as e:
+            print(f"Error sending clear_history command: {e}")
+
+def handle_f8():
+    """Handles F8 press: Toggles script pause state and UI monitoring."""
+    global script_paused
+    if main_loop and command_queue:
+        script_paused = not script_paused
+        if script_paused:
+            print("\n--- F8 pressed: Pausing script and UI monitoring ---")
+            command = {'action': 'pause'}
+            try:
+                main_loop.call_soon_threadsafe(command_queue.put_nowait, command)
+            except Exception as e:
+                 print(f"Error sending pause command (F8): {e}")
+        else:
+            print("\n--- F8 pressed: Resuming script, resetting state, and resuming UI monitoring ---")
+            reset_command = {'action': 'reset_state'}
+            resume_command = {'action': 'resume'}
+            try:
+                main_loop.call_soon_threadsafe(command_queue.put_nowait, reset_command)
+                # Add a small delay? Let's try without first.
+                # time.sleep(0.05) # Short delay between commands if needed
+                main_loop.call_soon_threadsafe(command_queue.put_nowait, resume_command)
+            except Exception as e:
+                 print(f"Error sending reset/resume commands (F8): {e}")
+
+def handle_f9():
+    """Handles F9 press: Initiates script shutdown."""
+    global shutdown_requested
+    if not shutdown_requested: # Prevent multiple shutdown requests
+        print("\n--- F9 pressed: Requesting shutdown ---")
+        shutdown_requested = True
+        # Optional: Unhook keys immediately? Let the listener loop handle it.
+
+def keyboard_listener():
+    """Runs in a separate thread to listen for keyboard hotkeys."""
+    print("Keyboard listener thread started. F7: Clear History, F8: Pause/Resume, F9: Quit.")
+    try:
+        keyboard.add_hotkey('f7', handle_f7)
+        keyboard.add_hotkey('f8', handle_f8)
+        keyboard.add_hotkey('f9', handle_f9)
+
+        # Keep the thread alive while checking for shutdown request
+        while not shutdown_requested:
+            time.sleep(0.1) # Check periodically
+
+    except Exception as e:
+        print(f"Error in keyboard listener thread: {e}")
+    finally:
+        print("Keyboard listener thread stopping and unhooking keys.")
+        try:
+            keyboard.unhook_all() # Clean up hooks
+        except Exception as unhook_e:
+            print(f"Error unhooking keyboard keys: {unhook_e}")
+# --- End Keyboard Shortcut Handlers ---
+
+
+# --- Chat Logging Function ---
+def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_message: str):
+    """Logs the chat interaction to a date-stamped file if enabled."""
+    if not config.ENABLE_CHAT_LOGGING:
+        return
+
+    try:
+        # Ensure log directory exists
+        log_dir = config.LOG_DIR
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Get current date for filename
+        today_date = datetime.date.today().strftime("%Y-%m-%d")
+        log_file_path = os.path.join(log_dir, f"{today_date}.log")
+
+        # Get current timestamp for log entry
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Format log entry
+        log_entry = f"[{timestamp}] User ({user_name}): {user_message}\n"
+        log_entry += f"[{timestamp}] Bot ({bot_name}): {bot_message}\n"
+        log_entry += "---\n" # Separator
+
+        # Append to log file
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+
+    except Exception as e:
+        print(f"Error writing to chat log: {e}")
+# --- End Chat Logging Function ---
+
+
 # --- Cleanup Function ---
 async def shutdown():
     """Gracefully closes connections and stops monitoring task."""
-    global wolfhart_persona_details, ui_monitor_task
+    global wolfhart_persona_details, ui_monitor_task, shutdown_requested
+    # Ensure shutdown is requested if called externally (e.g., Ctrl+C)
+    if not shutdown_requested:
+        print("Shutdown initiated externally (e.g., Ctrl+C).")
+        shutdown_requested = True # Ensure listener thread stops
+
     print(f"\nInitiating shutdown procedure...")
 
     # 1. Cancel UI monitor task first
@@ -188,7 +321,7 @@ def load_persona_from_file(filename="persona.json"):
 # --- Main Async Function ---
 async def run_main_with_exit_stack():
     """Initializes connections, loads persona, starts UI monitor and main processing loop."""
-    global initialization_successful, main_task, loop, wolfhart_persona_details, trigger_queue, ui_monitor_task
+    global initialization_successful, main_task, loop, wolfhart_persona_details, trigger_queue, ui_monitor_task, shutdown_requested, script_paused, command_queue
     try:
         # 1. Load Persona Synchronously (before async loop starts)
         load_persona_from_file() # Corrected function
@@ -203,9 +336,17 @@ async def run_main_with_exit_stack():
 
         initialization_successful = True
 
-        # 3. Start UI Monitoring in a separate thread
+        # 3. Get loop and set it for keyboard handlers
+        loop = asyncio.get_running_loop()
+        set_main_loop_and_queue(loop, command_queue) # Pass loop and queue
+
+        # 4. Start Keyboard Listener Thread
+        print("\n--- Starting keyboard listener thread ---")
+        kb_thread = threading.Thread(target=keyboard_listener, daemon=True) # Use daemon thread
+        kb_thread.start()
+
+        # 5. Start UI Monitoring in a separate thread
         print("\n--- Starting UI monitoring thread ---")
-        loop = asyncio.get_running_loop() # Get loop for run_in_executor
         # Use the new monitoring loop function, passing both queues
         monitor_task = loop.create_task(
             asyncio.to_thread(ui_interaction.run_ui_monitoring_loop, trigger_queue, command_queue), # Pass command_queue
@@ -213,62 +354,193 @@ async def run_main_with_exit_stack():
         )
         ui_monitor_task = monitor_task # Store task reference for shutdown
 
-        # 4. Start the main processing loop (waiting on the standard queue)
+        # 6. Start the main processing loop (non-blocking check on queue)
         print("\n--- Wolfhart chatbot has started (waiting for triggers) ---")
         print(f"Available tools: {len(all_discovered_mcp_tools)}")
         if wolfhart_persona_details: print("Persona data loaded.")
         else: print("Warning: Failed to load Persona data.")
-        print("Press Ctrl+C to stop the program.")
+        print("F7: Clear History, F8: Pause/Resume, F9: Quit.")
 
         while True:
-            print("\nWaiting for UI trigger (from thread-safe Queue)...")
-            # Use run_in_executor to wait for item from standard queue
-            trigger_data = await loop.run_in_executor(None, trigger_queue.get)
+            # --- Check for Shutdown Request ---
+            if shutdown_requested:
+                print("Shutdown requested via F9. Exiting main loop.")
+                break
 
+            # --- Check for Pause State ---
+            if script_paused:
+                # Script is paused by F8, just sleep briefly
+                await asyncio.sleep(0.1)
+                continue # Skip the rest of the loop
+
+            # --- Wait for Trigger Data (Blocking via executor) ---
+            trigger_data = None
+            try:
+                # Use run_in_executor with the blocking get() method
+                # This will efficiently wait until an item is available in the queue
+                print("Waiting for UI trigger (from thread-safe Queue)...") # Log before blocking wait
+                trigger_data = await loop.run_in_executor(None, trigger_queue.get)
+            except Exception as e:
+                # Handle potential errors during queue get (though less likely with blocking get)
+                print(f"Error getting data from trigger_queue: {e}")
+                await asyncio.sleep(0.5) # Wait a bit before retrying
+                continue
+
+            # --- Process Trigger Data (if received) ---
+            # No need for 'if trigger_data:' check here, as get() blocks until data is available
+            # --- Pause UI Monitoring (Only if not already paused by F8) ---
+            if not script_paused:
+                print("Pausing UI monitoring before LLM call...")
+                # Corrected indentation below
+                pause_command = {'action': 'pause'}
+                try:
+                    await loop.run_in_executor(None, command_queue.put, pause_command)
+                    print("Pause command placed in queue.")
+                except Exception as q_err:
+                    print(f"Error putting pause command in queue: {q_err}")
+            else: # Corrected indentation for else
+                print("Script already paused by F8, skipping automatic pause.")
+            # --- End Pause ---
+
+            # Process trigger data (Corrected indentation for this block - unindented one level)
             sender_name = trigger_data.get('sender')
             bubble_text = trigger_data.get('text')
+            bubble_region = trigger_data.get('bubble_region') # <-- Extract bubble_region
+            bubble_snapshot = trigger_data.get('bubble_snapshot') # <-- Extract snapshot
+            search_area = trigger_data.get('search_area') # <-- Extract search_area
             print(f"\n--- Received trigger from UI ---")
             print(f"   Sender: {sender_name}")
             print(f"   Content: {bubble_text[:100]}...")
+            if bubble_region:
+                print(f"   Bubble Region: {bubble_region}") # <-- Log bubble_region
 
-            if not sender_name or not bubble_text:
-                print("Warning: Received incomplete trigger data, skipping.")
-                # No task_done needed for standard queue
+            if not sender_name or not bubble_text: # bubble_region is optional context, don't fail if missing
+                print("Warning: Received incomplete trigger data (missing sender or text), skipping.")
+                # Resume UI if we paused it automatically
+                if not script_paused:
+                    print("Resuming UI monitoring after incomplete trigger.")
+                    resume_command = {'action': 'resume'}
+                    try:
+                        await loop.run_in_executor(None, command_queue.put, resume_command)
+                    except Exception as q_err:
+                        print(f"Error putting resume command in queue: {q_err}")
                 continue
+
+            # --- Add user message to history ---
+            timestamp = datetime.datetime.now() # Get current timestamp
+            conversation_history.append((timestamp, 'user', sender_name, bubble_text))
+            print(f"Added user message from {sender_name} to history at {timestamp}.")
+            # --- End Add user message ---
 
             print(f"\n{config.PERSONA_NAME} is thinking...")
             try:
                 # Get LLM response (現在返回的是一個字典)
+                # --- Pass history and current sender name ---
                 bot_response_data = await llm_interaction.get_llm_response(
-                    user_input=f"Message from {sender_name}: {bubble_text}", # Provide context
+                    current_sender_name=sender_name, # Pass current sender
+                    history=list(conversation_history), # Pass a copy of the history
                     mcp_sessions=active_mcp_sessions,
                     available_mcp_tools=all_discovered_mcp_tools,
                     persona_details=wolfhart_persona_details
                 )
-                
+
                 # 提取對話內容
                 bot_dialogue = bot_response_data.get("dialogue", "")
                 valid_response = bot_response_data.get("valid_response", False)
                 print(f"{config.PERSONA_NAME}'s dialogue response: {bot_dialogue}")
-                
+
                 # 處理命令 (如果有的話)
                 commands = bot_response_data.get("commands", [])
                 if commands:
                     print(f"Processing {len(commands)} command(s)...")
                     for cmd in commands:
                         cmd_type = cmd.get("type", "")
-                        cmd_params = cmd.get("parameters", {})
-                        # 預留位置：在這裡添加命令處理邏輯
-                        print(f"Command type: {cmd_type}, parameters: {cmd_params}")
-                        # TODO: 實現各類命令的處理邏輯
-                
+                        cmd_params = cmd.get("parameters", {}) # Parameters might be empty for remove_position
+
+# --- Command Processing ---
+                        if cmd_type == "remove_position":
+                            if bubble_region: # Check if we have the context
+                                # Debug info - print what we have
+                                print(f"Processing remove_position command with:")
+                                print(f"  bubble_region: {bubble_region}")
+                                print(f"  bubble_snapshot available: {'Yes' if bubble_snapshot is not None else 'No'}")
+                                print(f"  search_area available: {'Yes' if search_area is not None else 'No'}")
+
+                                # Check if we have snapshot and search_area as well
+                                if bubble_snapshot and search_area:
+                                    print("Sending 'remove_position' command to UI thread with snapshot and search area...")
+                                    command_to_send = {
+                                        'action': 'remove_position',
+                                        'trigger_bubble_region': bubble_region, # Original region (might be outdated)
+                                        'bubble_snapshot': bubble_snapshot,     # Snapshot for re-location
+                                        'search_area': search_area              # Area to search in
+                                    }
+                                    try:
+                                        await loop.run_in_executor(None, command_queue.put, command_to_send)
+                                    except Exception as q_err:
+                                        print(f"Error putting remove_position command in queue: {q_err}")
+                                else:
+                                    # If we have bubble_region but missing other parameters, use a dummy search area
+                                    # and let UI thread take a new screenshot
+                                    print("Missing bubble_snapshot or search_area, trying with defaults...")
+
+                                    # Use the bubble_region itself as a fallback search area if needed
+                                    default_search_area = None
+                                    if search_area is None and bubble_region:
+                                        # Convert bubble_region to a proper search area format if needed
+                                        if len(bubble_region) == 4:
+                                            default_search_area = bubble_region
+
+                                    command_to_send = {
+                                        'action': 'remove_position',
+                                        'trigger_bubble_region': bubble_region,
+                                        'bubble_snapshot': bubble_snapshot,     # Pass as is, might be None
+                                        'search_area': default_search_area if search_area is None else search_area
+                                    }
+
+                                    try:
+                                        await loop.run_in_executor(None, command_queue.put, command_to_send)
+                                        print("Command sent with fallback parameters.")
+                                    except Exception as q_err:
+                                        print(f"Error putting remove_position command in queue: {q_err}")
+                        else:
+                            print("Error: Cannot process 'remove_position' command without bubble_region context.")
+                        # Add other command handling here if needed
+                        # elif cmd_type == "some_other_command":
+                        #    # Handle other commands
+                        #    pass
+                        # elif cmd_type == "some_other_command":
+                        #    # Handle other commands
+                        #    pass
+                        # else:
+                        #     # 2025-04-19: Commented out - MCP tools like web_search are now handled
+                        #     # internally by llm_interaction.py's tool calling loop.
+                        #     # main.py only needs to handle UI-specific commands like remove_position.
+                        #     print(f"Ignoring command type from LLM JSON (already handled internally): {cmd_type}, parameters: {cmd_params}")
+                        # --- End Command Processing ---
+
                 # 記錄思考過程 (如果有的話)
                 thoughts = bot_response_data.get("thoughts", "")
                 if thoughts:
                     print(f"AI Thoughts: {thoughts[:150]}..." if len(thoughts) > 150 else f"AI Thoughts: {thoughts}")
-                
+
                 # 只有當有效回應時才發送到遊戲 (via command queue)
                 if bot_dialogue and valid_response:
+                    # --- Add bot response to history ---
+                    timestamp = datetime.datetime.now() # Get current timestamp
+                    conversation_history.append((timestamp, 'bot', config.PERSONA_NAME, bot_dialogue))
+                    print(f"Added bot response to history at {timestamp}.")
+                    # --- End Add bot response ---
+
+                    # --- Log the interaction ---
+                    log_chat_interaction(
+                        user_name=sender_name,
+                        user_message=bubble_text,
+                        bot_name=config.PERSONA_NAME,
+                        bot_message=bot_dialogue
+                    )
+                    # --- End Log interaction ---
+
                     print("Sending 'send_reply' command to UI thread...")
                     command_to_send = {'action': 'send_reply', 'text': bot_dialogue}
                     try:
@@ -279,12 +551,33 @@ async def run_main_with_exit_stack():
                         print(f"Error putting command in queue: {q_err}")
                 else:
                     print("Not sending response: Invalid or empty dialogue content.")
+                    # --- Log failed interaction attempt (optional) ---
+                    # log_chat_interaction(
+                    #     user_name=sender_name,
+                    #     user_message=bubble_text,
+                    #     bot_name=config.PERSONA_NAME,
+                    #     bot_message="<No valid response generated>"
+                    # )
+                    # --- End Log failed attempt ---
 
             except Exception as e:
                 print(f"\nError processing trigger or sending response: {e}")
                 import traceback
                 traceback.print_exc()
-            # No task_done needed for standard queue
+            finally:
+                # --- Resume UI Monitoring (Only if not paused by F8) ---
+                if not script_paused:
+                    print("Resuming UI monitoring after processing...")
+                    resume_command = {'action': 'resume'}
+                    try:
+                        await loop.run_in_executor(None, command_queue.put, resume_command)
+                        print("Resume command placed in queue.")
+                    except Exception as q_err:
+                        print(f"Error putting resume command in queue: {q_err}")
+                else:
+                     print("Script is paused by F8, skipping automatic resume.")
+                # --- End Resume ---
+                # No task_done needed for standard queue
 
     except asyncio.CancelledError:
          print("Main task canceled.") # Expected during shutdown via Ctrl+C
@@ -306,7 +599,10 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
          print("\nCtrl+C detected (outside asyncio.run)... Attempting to close...")
          # The finally block inside run_main_with_exit_stack should ideally handle it
-         pass
+         # Ensure shutdown_requested is set for the listener thread
+         shutdown_requested = True
+         # Give a moment for things to potentially clean up
+         time.sleep(0.5)
     except Exception as e:
         # Catch top-level errors during asyncio.run itself
         print(f"Top-level error during asyncio.run execution: {e}")
