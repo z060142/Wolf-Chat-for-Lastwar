@@ -63,6 +63,10 @@ MCP_SERVERS = {
 # MCP Client Configuration
 MCP_CONFIRM_TOOL_EXECUTION = False # True: Confirm before execution, False: Execute automatically
 
+# --- Chat Logging Configuration ---
+ENABLE_CHAT_LOGGING = True # True: Enable logging, False: Disable logging
+LOG_DIR = "chat_logs"      # Directory to store chat logs
+
 # Persona Configuration
 PERSONA_NAME = "Wolfhart"
 # PERSONA_RESOURCE_URI = "persona://wolfhart/details" # Now using local file instead

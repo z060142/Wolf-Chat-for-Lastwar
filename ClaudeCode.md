@@ -314,6 +314,56 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     - 其他關鍵字或 UI 元素的點擊不受影響。
 - **效果**：系統現在可以偵測新的回覆指示圖片作為觸發條件。當由這些圖片觸發時，用於複製文字的點擊和用於激活回覆上下文的氣泡中心點擊都會向下微調 15 像素，以避免誤觸其他 UI 元素。
 
+### 強化 LLM 上下文處理與回應生成 (2025-04-20)
+
+- **目的**：解決 LLM 可能混淆歷史對話與當前訊息，以及在回應中包含歷史記錄的問題。確保 `dialogue` 欄位只包含針對最新用戶訊息的新回覆。
+- **`llm_interaction.py`**：
+    - **修改 `get_system_prompt`**：
+        - 在 `dialogue` 欄位的規則中，明確禁止包含任何歷史記錄，並強調必須只回應標記為 `<CURRENT_MESSAGE>` 的最新訊息。
+        - 在核心指令中，要求 LLM 將分析和回應生成完全集中在 `<CURRENT_MESSAGE>` 標記的訊息上。
+        - 新增了對 `<CURRENT_MESSAGE>` 標記作用的說明。
+    - **修改 `_build_context_messages`**：
+        - 在構建發送給 LLM 的訊息列表時，將歷史記錄中的最後一條用戶訊息用 `<CURRENT_MESSAGE>...</CURRENT_MESSAGE>` 標籤包裹起來。
+        - 其他歷史訊息保持原有的 `[timestamp] speaker: message` 格式。
+- **效果**：通過更嚴格的提示和明確的上下文標記，引導 LLM 準確區分當前互動和歷史對話，預期能提高回應的相關性並防止輸出冗餘的歷史內容。
+
+### 強化 System Prompt 以鼓勵工具使用 (2025-04-19)
+
+- **目的**：調整 `llm_interaction.py` 中的 `get_system_prompt` 函數，使其更明確地引導 LLM 在回應前主動使用工具（特別是記憶體工具）和整合工具資訊。
+- **修改內容**：
+    1.  **核心身份強化**：在 `CORE IDENTITY AND TOOL USAGE` 部分加入新的一點，強調 Wolfhart 會主動查閱內部知識圖譜和外部來源。
+    2.  **記憶體指示強化**：將 `Memory Management (Knowledge Graph)` 部分的提示從 "IMPORTANT" 改為 "CRITICAL"，並明確指示在回應*之前*要考慮使用查詢工具檢查記憶體，同時也強調了寫入新資訊的主動性。
+- **效果**：旨在提高 LLM 使用工具的主動性和依賴性，使其回應更具上下文感知和資訊準確性，同時保持角色一致性。
+
+### 聊天歷史記錄上下文與日誌記錄 (2025-04-20)
+
+- **目的**：
+    1.  為 LLM 提供更豐富的對話上下文，以生成更連貫和相關的回應。
+    2.  新增一個可選的聊天日誌功能，用於調試和記錄。
+- **`main.py`**：
+    - 引入 `collections.deque` 來儲存最近的對話歷史（用戶訊息和機器人回應），上限為 50 條。
+    - 在調用 `llm_interaction.get_llm_response` 之前，將用戶訊息添加到歷史記錄中。
+    - 在收到有效的 LLM 回應後，將機器人回應添加到歷史記錄中。
+    - 新增 `log_chat_interaction` 函數，該函數：
+        - 檢查 `config.ENABLE_CHAT_LOGGING` 標誌。
+        - 如果啟用，則在 `config.LOG_DIR` 指定的文件夾中創建或附加到以日期命名的日誌文件 (`YYYY-MM-DD.log`)。
+        - 記錄包含時間戳、發送者（用戶/機器人）、發送者名稱和訊息內容的條目。
+    - 在收到有效 LLM 回應後調用 `log_chat_interaction`。
+- **`llm_interaction.py`**：
+    - 修改 `get_llm_response` 函數簽名，接收 `current_sender_name` 和 `history` 列表，而不是單個 `user_input`。
+    - 新增 `_build_context_messages` 輔助函數，該函數：
+        - 根據規則從 `history` 中篩選和格式化訊息：
+            - 包含與 `current_sender_name` 相關的最近 4 次互動（用戶訊息 + 機器人回應）。
+            - 包含來自其他發送者的最近 2 條用戶訊息。
+        - 按時間順序排列選定的訊息。
+        - 將系統提示添加到訊息列表的開頭。
+    - 在 `get_llm_response` 中調用 `_build_context_messages` 來構建發送給 LLM API 的 `messages` 列表。
+- **`config.py`**：
+    - 新增 `ENABLE_CHAT_LOGGING` (布爾值) 和 `LOG_DIR` (字符串) 配置選項。
+- **效果**：
+    - LLM 現在可以利用最近的對話歷史來生成更符合上下文的回應。
+    - 可以選擇性地將所有成功的聊天互動記錄到按日期組織的文件中，方便日後分析或調試。
+
 ## 開發建議
 
 ### 優化方向
@@ -395,10 +445,33 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 4. **MCP 服務器連接失敗**: 確認服務器配置正確並且運行中
 5. **工具調用後無回應**: 檢查 llm_debug.log 文件，查看工具調用結果和解析過程
 
-### 強化 System Prompt 以鼓勵工具使用 (2025-04-19)
+</file_content>
 
-- **目的**：調整 `llm_interaction.py` 中的 `get_system_prompt` 函數，使其更明確地引導 LLM 在回應前主動使用工具（特別是記憶體工具）和整合工具資訊。
-- **修改內容**：
-    1.  **核心身份強化**：在 `CORE IDENTITY AND TOOL USAGE` 部分加入新的一點，強調 Wolfhart 會主動查閱內部知識圖譜和外部來源。
-    2.  **記憶體指示強化**：將 `Memory Management (Knowledge Graph)` 部分的提示從 "IMPORTANT" 改為 "CRITICAL"，並明確指示在回應*之前*要考慮使用查詢工具檢查記憶體，同時也強調了寫入新資訊的主動性。
-- **效果**：旨在提高 LLM 使用工具的主動性和依賴性，使其回應更具上下文感知和資訊準確性，同時保持角色一致性。
+Now that you have the latest state of the file, try the operation again with fewer, more precise SEARCH blocks. For large files especially, it may be prudent to try to limit yourself to <5 SEARCH/REPLACE blocks at a time, then wait for the user to respond with the result of the operation before following up with another replace_in_file call to make additional edits.
+(If you run into this error 3 times in a row, you may use the write_to_file tool as a fallback.)
+</error><environment_details>
+# VSCode Visible Files
+ClaudeCode.md
+
+# VSCode Open Tabs
+state.py
+ui_interaction.py
+c:/Users/Bigspring/AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json
+window-monitor-script.py
+persona.json
+config.py
+main.py
+llm_interaction.py
+ClaudeCode.md
+requirements.txt
+.gitignore
+
+# Current Time
+4/20/2025, 5:18:24 PM (Asia/Taipei, UTC+8:00)
+
+# Context Window Usage
+81,150 / 1,048.576K tokens used (8%)
+
+# Current Mode
+ACT MODE
+</environment_details>

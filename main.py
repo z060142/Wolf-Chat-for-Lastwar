@@ -4,6 +4,8 @@ import asyncio
 import sys
 import os
 import json # Import json module
+import collections # For deque
+import datetime # For logging timestamp
 from contextlib import AsyncExitStack
 # --- Import standard queue ---
 from queue import Queue as ThreadSafeQueue, Empty as QueueEmpty # Rename to avoid confusion, import Empty
@@ -34,6 +36,10 @@ all_discovered_mcp_tools: list[dict] = []
 exit_stack = AsyncExitStack()
 # Stores loaded persona data (as a string for easy injection into prompt)
 wolfhart_persona_details: str | None = None
+# --- Conversation History ---
+# Store tuples of (timestamp, speaker_type, speaker_name, message_content)
+# speaker_type can be 'user' or 'bot'
+conversation_history = collections.deque(maxlen=50) # Store last 50 messages (user+bot) with timestamps
 # --- Use standard thread-safe queues ---
 trigger_queue: ThreadSafeQueue = ThreadSafeQueue() # UI Thread -> Main Loop
 command_queue: ThreadSafeQueue = ThreadSafeQueue() # Main Loop -> UI Thread
@@ -118,6 +124,38 @@ def keyboard_listener():
         except Exception as unhook_e:
             print(f"Error unhooking keyboard keys: {unhook_e}")
 # --- End Keyboard Shortcut Handlers ---
+
+
+# --- Chat Logging Function ---
+def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_message: str):
+    """Logs the chat interaction to a date-stamped file if enabled."""
+    if not config.ENABLE_CHAT_LOGGING:
+        return
+
+    try:
+        # Ensure log directory exists
+        log_dir = config.LOG_DIR
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Get current date for filename
+        today_date = datetime.date.today().strftime("%Y-%m-%d")
+        log_file_path = os.path.join(log_dir, f"{today_date}.log")
+
+        # Get current timestamp for log entry
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Format log entry
+        log_entry = f"[{timestamp}] User ({user_name}): {user_message}\n"
+        log_entry += f"[{timestamp}] Bot ({bot_name}): {bot_message}\n"
+        log_entry += "---\n" # Separator
+
+        # Append to log file
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+
+    except Exception as e:
+        print(f"Error writing to chat log: {e}")
+# --- End Chat Logging Function ---
 
 
 # --- Cleanup Function ---
@@ -388,11 +426,19 @@ async def run_main_with_exit_stack():
                         print(f"Error putting resume command in queue: {q_err}")
                 continue
 
+            # --- Add user message to history ---
+            timestamp = datetime.datetime.now() # Get current timestamp
+            conversation_history.append((timestamp, 'user', sender_name, bubble_text))
+            print(f"Added user message from {sender_name} to history at {timestamp}.")
+            # --- End Add user message ---
+
             print(f"\n{config.PERSONA_NAME} is thinking...")
             try:
                 # Get LLM response (現在返回的是一個字典)
+                # --- Pass history and current sender name ---
                 bot_response_data = await llm_interaction.get_llm_response(
-                    user_input=f"Message from {sender_name}: {bubble_text}", # Provide context
+                    current_sender_name=sender_name, # Pass current sender
+                    history=list(conversation_history), # Pass a copy of the history
                     mcp_sessions=active_mcp_sessions,
                     available_mcp_tools=all_discovered_mcp_tools,
                     persona_details=wolfhart_persona_details
@@ -480,6 +526,21 @@ async def run_main_with_exit_stack():
 
                 # 只有當有效回應時才發送到遊戲 (via command queue)
                 if bot_dialogue and valid_response:
+                    # --- Add bot response to history ---
+                    timestamp = datetime.datetime.now() # Get current timestamp
+                    conversation_history.append((timestamp, 'bot', config.PERSONA_NAME, bot_dialogue))
+                    print(f"Added bot response to history at {timestamp}.")
+                    # --- End Add bot response ---
+
+                    # --- Log the interaction ---
+                    log_chat_interaction(
+                        user_name=sender_name,
+                        user_message=bubble_text,
+                        bot_name=config.PERSONA_NAME,
+                        bot_message=bot_dialogue
+                    )
+                    # --- End Log interaction ---
+
                     print("Sending 'send_reply' command to UI thread...")
                     command_to_send = {'action': 'send_reply', 'text': bot_dialogue}
                     try:
@@ -490,6 +551,14 @@ async def run_main_with_exit_stack():
                         print(f"Error putting command in queue: {q_err}")
                 else:
                     print("Not sending response: Invalid or empty dialogue content.")
+                    # --- Log failed interaction attempt (optional) ---
+                    # log_chat_interaction(
+                    #     user_name=sender_name,
+                    #     user_message=bubble_text,
+                    #     bot_name=config.PERSONA_NAME,
+                    #     bot_message="<No valid response generated>"
+                    # )
+                    # --- End Log failed attempt ---
 
             except Exception as e:
                 print(f"\nError processing trigger or sending response: {e}")
