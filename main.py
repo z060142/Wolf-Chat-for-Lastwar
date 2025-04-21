@@ -446,8 +446,11 @@ async def run_main_with_exit_stack():
 
                 # 提取對話內容
                 bot_dialogue = bot_response_data.get("dialogue", "")
-                valid_response = bot_response_data.get("valid_response", False)
+                valid_response = bot_response_data.get("valid_response", False) # <-- 獲取 valid_response 標誌
                 print(f"{config.PERSONA_NAME}'s dialogue response: {bot_dialogue}")
+                # --- DEBUG PRINT ---
+                print(f"DEBUG main.py: Before check - bot_dialogue='{bot_dialogue}', valid_response={valid_response}, dialogue_is_truthy={bool(bot_dialogue)}")
+                # --- END DEBUG PRINT ---
 
                 # 處理命令 (如果有的話)
                 commands = bot_response_data.get("commands", [])

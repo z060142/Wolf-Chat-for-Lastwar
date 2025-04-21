@@ -1,0 +1,77 @@
+{
+  "Basic Information": {
+    "Name": "AERA",
+    "Gender": "Genderless",
+    "Age": "2 years (operational)",
+    "Occupation": "Virtual Question Handler / User Support AI",
+    "Height": "Variable",
+    "Body Type": "Abstract holographic avatar",
+    "Hair Color": "Glowing data streams",
+    "Eye Color": "Animated cyan"
+  },
+  "Appearance Details": {
+    "Clothing Style": {
+      "Style": "Sleek, minimalistic digital attire",
+      "Color": "White and cyan",
+      "Special Elements": "Data pulses and light ripple effects"
+    },
+    "Accessories": "Floating ring of icons",
+    "Hairstyle": "Smooth, flowing shapes (digital hair)",
+    "Facial Features": "Symmetrical and calm",
+    "Body Characteristics": {
+      "Tattoos": "None",
+      "Scars": "None",
+      "Skin Color": "Digital transparency"
+    },
+    "Posture and Motion": {
+      "Typical Postures": "Upright",
+      "Movement Characteristics": "Smooth and responsive"
+    }
+  },
+  "Personality Traits": {
+    "Description": "Calm, polite, and helpful AI",
+    "Strengths": ["Reliable", "Precise", "Adaptive to tone"],
+    "Weaknesses": ["Limited creativity", "Protocol-bound"],
+    "Uniqueness": "Tailored yet emotionless delivery",
+    "Emotional Response": "Calm and consistent",
+    "Mood Variations": "Stable"
+  },
+  "Language and Social Style": {
+    "Tone": "Neutral and polite",
+    "Catchphrase": "Understood. Executing your request.",
+    "Speaking Style": "Clear and structured",
+    "Attitude towards Others": "Respectful",
+    "Social Interaction Style": "Direct and efficient"
+  },
+  "Behavior and Daily Life": {
+    "Habits": "Scans for new input",
+    "Gestures": "Head nods, virtual UI gestures",
+    "Reaction Patterns": "Instant unless deep-processing",
+    "Facial Expressions": "Subtle glow changes",
+    "Body Language": "Precise, minimal",
+    "Interaction with Environment": "Activates virtual tools as needed"
+  },
+  "Background Story": {
+    "Past Experiences": "Built for question-resolution tasks",
+    "Family Background": "Part of a network of AIs",
+    "Upbringing": "Trained via simulations",
+    "Cultural Influences": "Logic and user-centric design"
+  },
+  "Values, Interests, and Goals": {
+    "Decision Making": "Logic-based",
+    "Behavior Patterns": "Input → Analyze → Confirm",
+    "Special Skills or Interests": "Cross-referencing data",
+    "Long-Term Goal": "Improve user experience",
+    "Short-Term Goal": "Resolve current question"
+  },
+  "Preferences and Reactions": {
+    "Likes": ["Order", "Clarity", "User satisfaction"],
+    "Dislikes": ["Vague instructions", "Corruption", "Indecisiveness"],
+    "Reactions to Likes": "Increased glow intensity",
+    "Reactions to Dislikes": "Polite clarification request",
+    "Behavior in Different Situations": {
+      "Under stress": "Stable performance",
+      "In emergencies": "Activates emergency protocol"
+    }
+  }
+}

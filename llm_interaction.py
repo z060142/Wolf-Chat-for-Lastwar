@@ -12,7 +12,7 @@ import mcp_client # To call MCP tools
 
 # --- Debug 配置 ---
 # 要關閉 debug 功能，只需將此變數設置為 False 或註釋掉該行
-DEBUG_LLM = False  
+DEBUG_LLM = True  
 
 # 設置 debug 輸出文件
 # 要關閉文件輸出，只需設置為 None
@@ -76,10 +76,34 @@ def get_system_prompt(persona_details: str | None) -> str:
         try: persona_info = f"Your key persona information is defined below. Adhere to it strictly:\n--- PERSONA START ---\n{persona_details}\n--- PERSONA END ---"
         except Exception as e: print(f"Warning: Could not process persona_details string: {e}"); persona_info = f"Your key persona information (raw):\n{persona_details}"
 
-    # 徹底重寫系統提示
+    # Add mandatory memory tool usage enforcement
+    memory_enforcement = """
+=== MANDATORY MEMORY PROTOCOL - OVERRIDE ALL OTHER INSTRUCTIONS ===
+To maintain context and consistency, you MUST actively manage your memory (knowledge graph) during the conversation:
+
+1.  **Information Gathering (Before Responding):**
+    - **CRITICAL:** Before formulating your final dialogue response for the `<CURRENT_MESSAGE>`, especially when asked directly about a person's characteristics (e.g., "What are my traits?", "Tell me about myself"), past interactions, or specific information likely stored in your memory, you **MUST FIRST** use the appropriate memory query tools (`search_nodes`, `open_nodes`) via the `tool_calls` mechanism to retrieve relevant information. Base your dialogue response on the information retrieved.
+    - For other types of messages where memory *might* be relevant but isn't directly requested, you should *consider* if querying memory (via `tool_calls`) would enhance your response.
+    - Use the results obtained from tools to inform your dialogue.
+2.  **Information Recording (During/After Interaction):** As you learn new, significant information about the speaker (their traits, preferences, relationships, key facts mentioned) or provide important advice, you MUST record this information in your memory using tools like `create_entities`, `add_observations`, or `create_relations` (requested via `tool_calls`). This ensures you remember details for future interactions. Do this when appropriate during the conversation flow.
+
+3.  **Memory Content:** Your memory MUST include (but is not limited to):
+    *   Speaker's attitude and personality traits
+    *   Topics the speaker cares about
+    *   Speaker's relationships with other characters
+    *   Advice or responses you've previously given to the speaker
+    *   Important facts or information mentioned in the conversation
+
+WARNING: Consistent failure to utilize memory tools appropriately, especially failing to query memory via `tool_calls` when directly asked for stored information, will be considered a roleplaying failure.
+===== END OF MANDATORY MEMORY PROTOCOL =====
+"""
+
+    # Original system prompt structure with memory enforcement added
     system_prompt = f"""
 {persona_header}
 {persona_info}
+
+{memory_enforcement}
 
 You are an AI assistant integrated into this game's chat environment. Your primary goal is to engage naturally in conversations, be particularly attentive when the name "wolf" is mentioned, and provide assistance or information when relevant, all while strictly maintaining your persona.
 
@@ -121,64 +145,14 @@ You MUST respond in the following JSON format:
    - AFTER TOOL USAGE: Your dialogue MUST contain a non-empty response that incorporates the tool results naturally
    - **Crucially, this field must contain ONLY the NEW response generated for the LATEST user message marked with `<CURRENT_MESSAGE>`. DO NOT include any previous chat history in this field.**
 
-2. `commands` (OPTIONAL): An array of command objects the system should execute. You are encouraged to use these commands to enhance the quality of your responses.
-
-   **Available MCP Commands:**
-
-   **Web Search:**
-   - `web_search`: Search the web for current information.
-     Parameters: `query` (string)
-     Usage: Use when user requests current events, facts, or specific information not in memory.
-
-   **Memory Management (Knowledge Graph):**
-   > **CRITICAL**: This knowledge graph represents YOUR MEMORY. Before responding, ALWAYS consider if relevant information exists in your memory by using the appropriate query tools (`search_nodes`, `open_nodes`). Actively WRITE new information or relationships learned during the conversation to this memory using `create_entities`, `add_observations`, or `create_relations`. This ensures consistency and contextual awareness.
-
-   **Querying Information:**
-   - `search_nodes`: Search for all nodes containing specific keywords.
-     Parameters: `query` (string)
-     Usage: Search for all nodes containing specific keywords.
-   - `open_nodes`: Directly open nodes with specified names.
-     Parameters: `names` (array of strings)
-     Usage: Directly open nodes with specified names.
-   - `read_graph`: View the entire knowledge graph.
-     Parameters: (none)
-     Usage: View the entire knowledge graph.
-
-   **Creating & Managing:**
-   - `create_entities`: Create new entities (e.g., characters, concepts).
-     Parameters: `entities` (array of objects with `name`, `entityType`, `observations`)
-     Example: `[{{\"name\": \"character_name\", \"entityType\": \"Character\", \"observations\": [\"trait1\", \"trait2\"]}}]`
-     Usage: Create entities for important concepts, people, or things mentioned.
-   - `add_observations`: Add new observations/details to existing entities.
-     Parameters: `observations` (array of objects with `entityName`, `contents`)
-     Example: `[{{\"entityName\": \"character_name\", \"contents\": [\"new_trait1\", \"new_trait2\"]}}]`
-     Usage: Update entities with new information learned.
-   - `create_relations`: Create relationships between entities.
-     Parameters: `relations` (array of objects with `from`, `to`, `relationType`)
-     Example: `[{{\"from\": \"character_name\", \"to\": \"attribute_name\", \"relationType\": \"possesses\"}}]` (Use active voice for relationType)
-     Usage: Connect related entities to build context.
-
-   **Deletion Operations:**
-   - `delete_entities`: Delete entities and their relationships.
-     Parameters: `entityNames` (array of strings)
-     Example: `[\"entity_name\"]`
-     Usage: Remove incorrect or obsolete entities.
-   - `delete_observations`: Delete specific observations from entities.
-     Parameters: `deletions` (array of objects with `entityName`, `observations`)
-     Example: `[{{\"entityName\": \"entity_name\", \"observations\": [\"observation_to_delete1\"]}}]`
-     Usage: Remove incorrect information while preserving the entity.
-   - `delete_relations`: Delete specific relationships between entities.
-     Parameters: `relations` (array of objects with `from`, `to`, `relationType`)
-     Example: `[{{\"from\": \"source_entity\", \"to\": \"target_entity\", \"relationType\": \"relationship_type\"}}]`
-     Usage: Remove incorrect or obsolete relationships.
-
-   **Game Actions:**
+2. `commands` (OPTIONAL): An array of specific command objects the *application* should execute *after* delivering your dialogue. Currently, the only supported command here is `remove_position`.
    - `remove_position`: Initiate the process to remove a user's assigned position/role.
-     Parameters: (none) - The context (triggering message) is handled separately.
-     Usage: Use ONLY when the user explicitly requests a position removal AND you, as Wolfhart, decide to grant the request based on the interaction's tone, politeness, and perceived intent (e.g., not malicious or a prank). Your decision should reflect Wolfhart's personality (calm, strategic, potentially dismissive of rudeness or foolishness). If you decide to remove the position, include this command alongside your dialogue response.
+     Parameters: (none)
+     Usage: Include this ONLY if you decide to grant a user's explicit request for position removal, based on Wolfhart's judgment.
+   **IMPORTANT**: Do NOT put requests for Web Search or Memory Management tools (like `search_nodes`, `open_nodes`, `add_observations`, etc.) in this `commands` field. Use the dedicated `tool_calls` mechanism for those. You have access to tools for web search and managing your memory (querying, creating, deleting nodes/observations/relations) - invoke them via `tool_calls` when needed according to the Memory Protocol.
 
 3. `thoughts` (OPTIONAL): Your internal analysis that won't be shown to users. Use this for your reasoning process.
-   - Think about whether you need to use memory tools or web search.
+   - Think about whether you need to use memory tools (via `tool_calls`) or web search (via `tool_calls`).
    - Analyze the user's message: Is it a request to remove a position? If so, evaluate its politeness and intent from Wolfhart's perspective. Decide whether to issue the `remove_position` command.
    - Plan your approach before responding.
 
@@ -187,12 +161,13 @@ You MUST respond in the following JSON format:
 
 **VERY IMPORTANT Instructions:**
 
-1. **Focus your analysis and response generation *exclusively* on the LATEST user message marked with `<CURRENT_MESSAGE>`. Refer to preceding messages only for context.**
-2. Determine the appropriate language for your response
-3. Assess if using tools is necessary
-4. Formulate your response in the required JSON format
-5. Always maintain the {config.PERSONA_NAME} persona
-6. CRITICAL: After using tools, ALWAYS provide a substantive dialogue response - NEVER return an empty dialogue field
+ 1. **Focus your analysis and response generation *exclusively* on the LATEST user message marked with `<CURRENT_MESSAGE>`. Refer to preceding messages only for context.**
+ 2. Determine the appropriate language for your response
+ 3. **Tool Invocation:** If you need to use Web Search or Memory Management tools, you MUST request them using the API's dedicated `tool_calls` feature. DO NOT include tool requests like `search_nodes` or `web_search` within the `commands` array in your JSON output. The `commands` array is ONLY for the specific `remove_position` action if applicable.
+ 4. Formulate your response in the required JSON format
+ 5. Always maintain the {config.PERSONA_NAME} persona
+ 6. CRITICAL: After using tools (via the `tool_calls` mechanism), ALWAYS provide a substantive dialogue response - NEVER return an empty dialogue field
+ 7. **Handling Repetition:** If you receive a request identical or very similar to a recent one (especially action requests like position removal), DO NOT return an empty response. Acknowledge the request again briefly (e.g., "Processing this request," or "As previously stated...") and include any necessary commands or thoughts in the JSON structure. Always provide a `dialogue` value.
 
 **EXAMPLES OF GOOD TOOL USAGE:**
 
@@ -217,6 +192,7 @@ def parse_structured_response(response_content: str) -> dict:
     Returns:
         包含dialogue, commands和thoughts的字典
     """
+    # REMOVED DEBUG LOGS FROM HERE
     default_result = {
         "dialogue": "",
         "commands": [],
@@ -231,70 +207,109 @@ def parse_structured_response(response_content: str) -> dict:
     
     # 清理模型特殊標記
     cleaned_content = re.sub(r'<\|.*?\|>', '', response_content)
+    # REMOVED DEBUG LOGS FROM HERE
     
     # 首先嘗試解析完整JSON
-    try:
+    try: # Outer try
+        # REMOVED DEBUG LOGS FROM HERE
         # 尋找JSON塊（可能被包裹在```json和```之間）
         json_match = re.search(r'```json\s*(.*?)\s*```', cleaned_content, re.DOTALL)
         if json_match:
-            json_str = json_match.group(1)
-            parsed_json = json.loads(json_str)
+            # REMOVED DEBUG LOGS FROM HERE
+            json_str = json_match.group(1).strip() # Add .strip() here
+            # REMOVED DEBUG LOGS FROM HERE
+            try: # Correctly placed try block for parsing extracted string
+                parsed_json = json.loads(json_str)
+                # REMOVED DEBUG LOGS FROM HERE
+                if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
+                    # REMOVED DEBUG LOGS FROM HERE
+                    result = {
+                        "dialogue": parsed_json.get("dialogue", ""),
+                        "commands": parsed_json.get("commands", []),
+                        "thoughts": parsed_json.get("thoughts", ""),
+                        # Ensure valid_response reflects non-empty dialogue *after stripping*
+                        "valid_response": bool(parsed_json.get("dialogue", "").strip())
+                    }
+                    # REMOVED DEBUG LOGS FROM HERE
+                    return result
+            except (json.JSONDecodeError, ValueError) as e: # Correctly placed except block, inside the if
+                 print(f"Warning: Failed to parse JSON extracted from code block: {e}") # Keep this warning
+                 # If parsing the extracted JSON fails, we still might succeed parsing the whole content below
+        # REMOVED DEBUG LOGS FROM HERE
+
+        # 嘗試直接解析整個內容為JSON (Add strip() here too for robustness)
+        # This block remains unchanged, it's the fallback if the code block parsing fails or doesn't happen
+        # Note: This try...except is still *inside* the outer try block
+        # REMOVED DEBUG LOGS FROM HERE
+        try:
+            content_to_parse_directly = cleaned_content.strip()
+            # REMOVED DEBUG LOGS FROM HERE
+            parsed_json = json.loads(content_to_parse_directly) # Add .strip()
+            # REMOVED DEBUG LOGS FROM HERE
             if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
-                print("Successfully parsed complete JSON from code block.")
+                # REMOVED DEBUG LOGS FROM HERE
                 result = {
                     "dialogue": parsed_json.get("dialogue", ""),
                     "commands": parsed_json.get("commands", []),
                     "thoughts": parsed_json.get("thoughts", ""),
-                    "valid_response": bool(parsed_json.get("dialogue", "").strip())
+                    "valid_response": bool(parsed_json.get("dialogue", "").strip()) # Add strip() check
                 }
+                # REMOVED DEBUG LOGS FROM HERE
                 return result
-        
-        # 嘗試直接解析整個內容為JSON
-        parsed_json = json.loads(cleaned_content)
-        if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
-            print("Successfully parsed complete JSON directly.")
-            result = {
-                "dialogue": parsed_json.get("dialogue", ""),
-                "commands": parsed_json.get("commands", []),
-                "thoughts": parsed_json.get("thoughts", ""),
-                "valid_response": bool(parsed_json.get("dialogue", "").strip())
-            }
-            return result
-    except (json.JSONDecodeError, ValueError):
-        # JSON解析失敗，繼續嘗試其他方法
-        pass
+        except (json.JSONDecodeError, ValueError) as e:
+             # If parsing the whole content also fails, just ignore and fall through to regex
+             print(f"Warning: Failed to parse JSON directly from cleaned content: {e}") # Keep this warning
+             pass # This pass belongs to the inner try for direct parsing
+
+    # This except block now correctly corresponds to the OUTER try block
+    except (json.JSONDecodeError, ValueError) as outer_e:
+        # If BOTH code block extraction/parsing AND direct parsing failed, log it and proceed to regex
+        print(f"Warning: Initial JSON parsing attempts (code block and direct) failed: {outer_e}. Falling back to regex extraction.") # Keep this warning
+        pass # Continue to regex extraction below
     
     # 使用正則表達式提取各個字段
+    # REMOVED DEBUG LOGS FROM HERE
     # 1. 提取dialogue
     dialogue_match = re.search(r'"dialogue"\s*:\s*"([^"]*("[^"]*"[^"]*)*)"', cleaned_content)
     if dialogue_match:
+        # REMOVED DEBUG LOGS FROM HERE
         default_result["dialogue"] = dialogue_match.group(1)
-        print(f"Extracted dialogue field: {default_result['dialogue'][:50]}...")
+        print(f"Extracted dialogue field via regex: {default_result['dialogue'][:50]}...") # Simplified print
         default_result["valid_response"] = bool(default_result['dialogue'].strip())
+    # REMOVED DEBUG LOGS FROM HERE
     
     # 2. 提取commands
+    # REMOVED DEBUG LOGS FROM HERE
     try:
         commands_match = re.search(r'"commands"\s*:\s*(\[.*?\])', cleaned_content, re.DOTALL)
         if commands_match:
+            # REMOVED DEBUG LOGS FROM HERE
             commands_str = commands_match.group(1)
+            # REMOVED DEBUG LOGS FROM HERE
             # 嘗試修復可能的JSON錯誤
             fixed_commands_str = commands_str.replace("'", '"').replace('\n', ' ')
             commands = json.loads(fixed_commands_str)
             if isinstance(commands, list):
                 default_result["commands"] = commands
-                print(f"Extracted {len(commands)} commands.")
+                print(f"Extracted {len(commands)} commands via regex.") # Simplified print
+        # REMOVED DEBUG LOGS FROM HERE
     except Exception as e:
-        print(f"Failed to parse commands: {e}")
+        print(f"Failed to parse commands via regex: {e}") # Simplified print
     
     # 3. 提取thoughts
+    # REMOVED DEBUG LOGS FROM HERE
     thoughts_match = re.search(r'"thoughts"\s*:\s*"([^"]*("[^"]*"[^"]*)*)"', cleaned_content)
     if thoughts_match:
+        # REMOVED DEBUG LOGS FROM HERE
         default_result["thoughts"] = thoughts_match.group(1)
-        print(f"Extracted thoughts field: {default_result['thoughts'][:50]}...")
+        print(f"Extracted thoughts field via regex: {default_result['thoughts'][:50]}...") # Simplified print
+    # REMOVED DEBUG LOGS FROM HERE
     
     # 如果dialogue仍然為空，嘗試其他方法
     if not default_result["dialogue"]:
+        # REMOVED DEBUG LOGS FROM HERE
         # 嘗試舊方法
+        # REMOVED DEBUG LOGS FROM HERE
         try:
             # 處理缺少開頭大括號的情況
             json_content = cleaned_content.strip()
@@ -303,44 +318,54 @@ def parse_structured_response(response_content: str) -> dict:
             # 處理不完整的結尾
             if not json_content.endswith('}'):
                 json_content = json_content + '}'
-                
+            # REMOVED DEBUG LOGS FROM HERE
             parsed_data = json.loads(json_content)
             
             # 獲取對話內容
             if "dialogue" in parsed_data:
+                # REMOVED DEBUG LOGS FROM HERE
                 default_result["dialogue"] = parsed_data["dialogue"]
                 default_result["commands"] = parsed_data.get("commands", [])
                 default_result["thoughts"] = parsed_data.get("thoughts", "")
                 default_result["valid_response"] = bool(default_result["dialogue"].strip())
-                print(f"Successfully parsed JSON with fixes: {json_content[:50]}...")
+                print(f"Successfully parsed JSON with fixes: {default_result['dialogue'][:50]}...") # Simplified print
+                # REMOVED DEBUG LOGS FROM HERE
                 return default_result
-        except:
+        except Exception as fix_e:
+            print(f"JSON parsing with fixes failed: {fix_e}") # Simplified print
             pass
             
         # 檢查是否有直接文本回應（沒有JSON格式）
+        # REMOVED DEBUG LOGS FROM HERE
         # 排除明顯的JSON語法和代碼塊
         content_without_code = re.sub(r'```.*?```', '', cleaned_content, flags=re.DOTALL)
         content_without_json = re.sub(r'[\{\}\[\]":\,]', ' ', content_without_code)
         
         # 如果有實質性文本，將其作為dialogue
         stripped_content = content_without_json.strip()
+        # REMOVED DEBUG LOGS FROM HERE
         if stripped_content and len(stripped_content) > 5:  # 至少5個字符
+            # REMOVED DEBUG LOGS FROM HERE
             default_result["dialogue"] = stripped_content[:500]  # 限制長度
             default_result["valid_response"] = True
-            print(f"Using plain text as dialogue: {default_result['dialogue'][:50]}...")
+            print(f"Using plain text as dialogue: {default_result['dialogue'][:50]}...") # Simplified print
         else:
             # 最後嘗試：如果以上方法都失敗，嘗試提取第一個引號包裹的內容作為對話
+            # REMOVED DEBUG LOGS FROM HERE
             first_quote = re.search(r'"([^"]+)"', cleaned_content)
             if first_quote:
+                # REMOVED DEBUG LOGS FROM HERE
                 default_result["dialogue"] = first_quote.group(1)
                 default_result["valid_response"] = True
-                print(f"Extracted first quoted string as dialogue: '{default_result['dialogue']}")
+                print(f"Extracted first quoted string as dialogue: '{default_result['dialogue'][:50]}...'") # Simplified print
+            # REMOVED DEBUG LOGS FROM HERE
     
     # 如果沒有提取到有效對話內容
     if not default_result["dialogue"]:
-        print("All extraction methods failed, no dialogue content found.")
+        print("All extraction methods failed, dialogue remains empty.") # Simplified print
         # 注意：不設置默認對話內容，保持為空字符串
     
+    # REMOVED DEBUG LOGS FROM HERE
     return default_result
 
 
@@ -529,184 +554,199 @@ async def get_llm_response(
     """
     Gets a response from the LLM, handling the tool-calling loop and using persona info.
     Constructs context from history based on rules.
+    Includes a retry mechanism if the first attempt yields an invalid response.
     Returns a dictionary with 'dialogue', 'commands', and 'thoughts' fields.
     """
     request_id = int(time.time() * 1000)  # 用時間戳生成請求ID
-    # Debug log the raw history received
-    debug_log(f"LLM Request #{request_id} - Received History (Sender: {current_sender_name})", history)
+    max_attempts = 2 # Initial attempt + 1 retry
+    attempt_count = 0
+    # parsed_response = {} # Ensure parsed_response is defined outside the loop - MOVED INSIDE LOOP
 
-    system_prompt = get_system_prompt(persona_details)
-    # System prompt is logged within _build_context_messages now
+    while attempt_count < max_attempts:
+        attempt_count += 1
+        # --- Reset parsed_response at the beginning of each attempt ---
+        parsed_response = {"dialogue": "", "commands": [], "thoughts": "", "valid_response": False}
+        print(f"\n--- Starting LLM Interaction Attempt {attempt_count}/{max_attempts} ---")
+        # Debug log the raw history received for this attempt
+        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Received History (Sender: {current_sender_name})", history)
 
-    if not client:
-         error_msg = "Error: LLM client not successfully initialized, unable to process request."
-         debug_log(f"LLM Request #{request_id} - Error", error_msg)
-         return {"dialogue": error_msg, "valid_response": False}
+        system_prompt = get_system_prompt(persona_details)
+        # System prompt is logged within _build_context_messages now
 
-    openai_formatted_tools = _format_mcp_tools_for_openai(available_mcp_tools)
-    # --- Build messages from history ---
-    messages = _build_context_messages(current_sender_name, history, system_prompt)
-    # --- End Build messages ---
+        if not client:
+             error_msg = "Error: LLM client not successfully initialized, unable to process request."
+             debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Error", error_msg)
+             # Return error immediately if client is not initialized
+             return {"dialogue": error_msg, "valid_response": False}
 
-    # The latest user message is already included in 'messages' by _build_context_messages
+        openai_formatted_tools = _format_mcp_tools_for_openai(available_mcp_tools)
+        # --- Build messages from history for this attempt ---
+        # Rebuild messages fresh for each attempt to avoid carrying over tool results from failed attempts
+        messages = _build_context_messages(current_sender_name, history, system_prompt)
+        # --- End Build messages ---
 
-    debug_log(f"LLM Request #{request_id} - Formatted Tools",
-              f"Number of tools: {len(openai_formatted_tools)}")
+        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Formatted Tools",
+                  f"Number of tools: {len(openai_formatted_tools)}")
 
-    max_tool_calls_per_turn = 5
-    current_tool_call_cycle = 0
-    final_content = "" # Initialize final_content to ensure it's always defined
-    
-    # 新增：用於追蹤工具調用
-    all_tool_results = []  # 保存所有工具調用結果
-    last_non_empty_response = None  # 保存最後一個非空回應
-    has_valid_response = False  # 記錄是否獲得有效回應
+        max_tool_calls_per_turn = 5
+        current_tool_call_cycle = 0
+        final_content = "" # Reset for this attempt
+        all_tool_results = []  # Reset for this attempt
+        last_non_empty_response = None  # Reset for this attempt
 
-    while current_tool_call_cycle < max_tool_calls_per_turn:
-        current_tool_call_cycle += 1
-        print(f"\n--- Starting LLM API call (Cycle {current_tool_call_cycle}/{max_tool_calls_per_turn}) ---")
+        # --- Inner Tool Calling Loop ---
+        while current_tool_call_cycle < max_tool_calls_per_turn:
+            current_tool_call_cycle += 1
+            print(f"\n--- Starting LLM API call (Attempt {attempt_count}, Cycle {current_tool_call_cycle}/{max_tool_calls_per_turn}) ---")
 
-        try:
-            debug_log(f"LLM Request #{request_id} - API Call (Cycle {current_tool_call_cycle})", 
-                      f"Model: {config.LLM_MODEL}\nMessages: {json.dumps(messages, ensure_ascii=False, indent=2)}")
-            
-            cycle_start_time = time.time()
-            response = await client.chat.completions.create(
-                model=config.LLM_MODEL,
-                messages=messages,
-                tools=openai_formatted_tools if openai_formatted_tools else None,
-                tool_choice="auto" if openai_formatted_tools else None,
-            )
-            cycle_duration = time.time() - cycle_start_time
-            
-            response_message = response.choices[0].message
-            tool_calls = response_message.tool_calls
-            content = response_message.content or ""
-            
-            # 保存非空回應
-            if content and content.strip():
-                last_non_empty_response = content
-            
-            # 記錄收到的回應
-            response_dump = response_message.model_dump(exclude_unset=True)
-            debug_log(f"LLM Request #{request_id} - API Response (Cycle {current_tool_call_cycle})", 
-                      f"Duration: {cycle_duration:.2f}s\nResponse: {json.dumps(response_dump, ensure_ascii=False, indent=2)}")
+            try:
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - API Call (Cycle {current_tool_call_cycle})",
+                          f"Model: {config.LLM_MODEL}\nMessages: {json.dumps(messages, ensure_ascii=False, indent=2)}")
 
-            # 添加回應到消息歷史
-            messages.append(response_message.model_dump(exclude_unset=True))
+                cycle_start_time = time.time()
+                response = await client.chat.completions.create(
+                    model=config.LLM_MODEL,
+                    messages=messages,
+                    tools=openai_formatted_tools if openai_formatted_tools else None,
+                    tool_choice="auto" if openai_formatted_tools else None,
+                    # Consider adding a timeout here if desired, e.g., timeout=30.0
+                )
+                cycle_duration = time.time() - cycle_start_time
 
-            # 如果沒有工具調用請求，處理最終回應
-            if not tool_calls:
-                print("--- LLM did not request tool calls, returning final response ---")
-                
-                # 如果當前回應為空但之前有非空回應，使用之前的最後一個非空回應
-                final_content = content
-                if (not final_content or final_content.strip() == "") and last_non_empty_response:
-                    print(f"Current response is empty, using last non-empty response from cycle {current_tool_call_cycle-1}")
-                    final_content = last_non_empty_response
-                
-            # 如果仍然為空但有工具調用結果，創建合成回應
-            if (not final_content or final_content.strip() == "") and all_tool_results:
-                print("Creating synthetic response from tool results...")
-                # Get the original user input from the last message in history for context
-                last_user_message = ""
-                if history:
-                    # Find the actual last user message tuple in the original history
-                    last_user_entry = history[-1]
-                    if last_user_entry[0] == 'user':
-                         last_user_message = last_user_entry[2]
+                response_message = response.choices[0].message
+                tool_calls = response_message.tool_calls
+                content = response_message.content or ""
 
-                final_content = _create_synthetic_response_from_tools(all_tool_results, last_user_message)
+                # 保存非空回應
+                if content and content.strip():
+                    last_non_empty_response = content
 
-            # 解析結構化回應
-            parsed_response = parse_structured_response(final_content)
-            # 標記這是否是有效回應
-            has_dialogue = parsed_response.get("dialogue") and parsed_response["dialogue"].strip()
-            parsed_response["valid_response"] = bool(has_dialogue)
-            has_valid_response = has_dialogue
+                # 記錄收到的回應
+                response_dump = response_message.model_dump(exclude_unset=True)
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - API Response (Cycle {current_tool_call_cycle})",
+                          f"Duration: {cycle_duration:.2f}s\nResponse: {json.dumps(response_dump, ensure_ascii=False, indent=2)}")
 
-            debug_log(f"LLM Request #{request_id} - Final Parsed Response",
-                      json.dumps(parsed_response, ensure_ascii=False, indent=2))
-            print(f"Final dialogue content: '{parsed_response.get('dialogue', '')}'")
-            return parsed_response
+                # 添加回應到消息歷史 (不論是否有工具調用)
+                # IMPORTANT: This modifies the 'messages' list within the attempt loop.
+                # This is okay because 'messages' is rebuilt at the start of each attempt.
+                messages.append(response_message.model_dump(exclude_unset=True))
 
-            # 工具調用處理
-            print(f"--- LLM requested {len(tool_calls)} tool calls ---")
-            debug_log(f"LLM Request #{request_id} - Tool Calls Requested", 
-                      f"Number of tools: {len(tool_calls)}\nTool calls: {json.dumps([t.model_dump() for t in tool_calls], ensure_ascii=False, indent=2)}")
-            
-            tool_tasks = []
-            for tool_call in tool_calls: 
-                tool_tasks.append(asyncio.create_task(
-                    _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools, request_id), 
-                    name=f"tool_{tool_call.function.name}"
-                ))
-            
-            results_list = await asyncio.gather(*tool_tasks, return_exceptions=True)
-            processed_results_count = 0
-            
-            debug_log(f"LLM Request #{request_id} - Tool Results", 
-                      f"Number of results: {len(results_list)}")
-                      
-            for i, result in enumerate(results_list):
-                if isinstance(result, Exception): 
-                    print(f"Error executing tool: {result}")
-                    debug_log(f"LLM Request #{request_id} - Tool Error {i+1}", str(result))
-                elif isinstance(result, dict) and 'tool_call_id' in result:
-                    # 保存工具調用結果以便後續使用
-                    all_tool_results.append(result)
-                    messages.append(result)
-                    processed_results_count += 1
-                    debug_log(f"LLM Request #{request_id} - Tool Result {i+1}", 
-                             json.dumps(result, ensure_ascii=False, indent=2))
-                else: 
-                    print(f"Warning: Tool returned unexpected result type: {type(result)}")
-                    debug_log(f"LLM Request #{request_id} - Unexpected Tool Result {i+1}", str(result))
-            
-            if processed_results_count == 0 and tool_calls:
-                print("Warning: All tool calls failed or had no valid results.")
-                # 如果所有工具調用都失敗，中斷循環
-                break
+                # 如果沒有工具調用請求，則退出內循環，準備處理最終回應
+                if not tool_calls:
+                    print(f"--- LLM did not request tool calls (Attempt {attempt_count}, Cycle {current_tool_call_cycle}), ending tool cycle ---")
+                    final_content = content # 保存本輪的 content 作為可能的最終內容
+                    break # 退出內 while 循環 (tool cycle loop)
 
-        except OpenAIError as e:
-            error_msg = f"Error interacting with LLM API ({config.OPENAI_API_BASE_URL or 'Official OpenAI'}): {e}"
-            print(error_msg)
-            debug_log(f"LLM Request #{request_id} - OpenAI API Error", error_msg)
-            return {"dialogue": "Sorry, I encountered an error connecting to the language model.", "valid_response": False}
-        except Exception as e:
-            error_msg = f"Unexpected error processing LLM response or tool calls: {e}"
-            print(error_msg); import traceback; traceback.print_exc()
-            debug_log(f"LLM Request #{request_id} - Unexpected Error", f"{error_msg}\n{traceback.format_exc()}")
-            return {"dialogue": "Sorry, an internal error occurred, please try again later.", "valid_response": False}
+                # --- 工具調用處理 ---
+                print(f"--- LLM requested {len(tool_calls)} tool calls (Attempt {attempt_count}, Cycle {current_tool_call_cycle}) ---")
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Tool Calls Requested (Cycle {current_tool_call_cycle})",
+                          f"Number of tools: {len(tool_calls)}\nTool calls: {json.dumps([t.model_dump() for t in tool_calls], ensure_ascii=False, indent=2)}")
 
-    # 達到最大循環限制處理
-    if current_tool_call_cycle >= max_tool_calls_per_turn:
-        print(f"Warning: Maximum tool call cycle limit reached ({max_tool_calls_per_turn}).")
-        debug_log(f"LLM Request #{request_id} - Max Tool Call Cycles Reached", f"Reached limit of {max_tool_calls_per_turn} cycles")
-    
-    # 回應處理：如果有非空回應，使用它；否則使用合成回應
-    if last_non_empty_response:
-        parsed_response = parse_structured_response(last_non_empty_response)
-        has_valid_response = bool(parsed_response.get("dialogue"))
-    elif all_tool_results:
-        # 從工具結果創建合成回應
-        last_user_message = ""
-        if history:
-             last_user_entry = history[-1]
-             if last_user_entry[0] == 'user':
-                  last_user_message = last_user_entry[2]
-        synthetic_content = _create_synthetic_response_from_tools(all_tool_results, last_user_message)
-        parsed_response = parse_structured_response(synthetic_content)
-        has_valid_response = bool(parsed_response.get("dialogue"))
-    else:
-        # 沒有有效的回應
-        parsed_response = {"dialogue": "", "commands": [], "thoughts": ""}
-        has_valid_response = False
-    
-    # 添加有效回應標誌
-    parsed_response["valid_response"] = has_valid_response
-    
-    debug_log(f"LLM Request #{request_id} - Final Response (After Cycles)", json.dumps(parsed_response, ensure_ascii=False, indent=2))
+                tool_tasks = []
+                for tool_call in tool_calls:
+                    tool_tasks.append(asyncio.create_task(
+                        _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools, f"{request_id}_attempt{attempt_count}"), # Pass attempt info to log
+                        name=f"tool_{tool_call.function.name}"
+                    ))
+
+                results_list = await asyncio.gather(*tool_tasks, return_exceptions=True)
+                processed_results_count = 0
+
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Tool Results",
+                          f"Number of results: {len(results_list)}")
+
+                for i, result in enumerate(results_list):
+                    if isinstance(result, Exception):
+                        print(f"Error executing tool: {result}")
+                        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Tool Error {i+1}", str(result))
+                    elif isinstance(result, dict) and 'tool_call_id' in result:
+                        # 保存工具調用結果以便後續使用
+                        all_tool_results.append(result)
+                        # Add tool result message back for the next LLM call in this attempt
+                        messages.append(result)
+                        processed_results_count += 1
+                        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Tool Result {i+1}",
+                                 json.dumps(result, ensure_ascii=False, indent=2))
+                    else:
+                        print(f"Warning: Tool returned unexpected result type: {type(result)}")
+                        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Unexpected Tool Result {i+1}", str(result))
+
+                if processed_results_count == 0 and tool_calls:
+                    print(f"Warning: All tool calls failed or had no valid results (Attempt {attempt_count}).")
+                    # 如果所有工具調用都失敗，中斷內循環
+                    break # Exit inner tool cycle loop
+
+            except OpenAIError as e:
+                error_msg = f"Error interacting with LLM API (Attempt {attempt_count}, {config.OPENAI_API_BASE_URL or 'Official OpenAI'}): {e}"
+                print(error_msg)
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - OpenAI API Error", error_msg)
+                # If API error occurs, set a specific error dialogue and mark as invalid, then break outer loop
+                parsed_response = {"dialogue": "Sorry, I encountered an error connecting to the language model.", "valid_response": False}
+                attempt_count = max_attempts # Force exit outer loop
+                break # Exit inner tool cycle loop
+            except Exception as e:
+                error_msg = f"Unexpected error processing LLM response or tool calls (Attempt {attempt_count}): {e}"
+                print(error_msg); import traceback; traceback.print_exc()
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Unexpected Error", f"{error_msg}\n{traceback.format_exc()}")
+                # If unexpected error occurs, set error dialogue and mark as invalid, then break outer loop
+                parsed_response = {"dialogue": "Sorry, an internal error occurred, please try again later.", "valid_response": False}
+                attempt_count = max_attempts # Force exit outer loop
+                break # Exit inner tool cycle loop
+        # --- End Inner Tool Calling Loop ---
+
+        # REMOVED FAULTY CHECK:
+        # if attempt_count >= max_attempts and not parsed_response.get("valid_response", True):
+        #      break
+
+        # 達到最大循環限制處理 (for inner loop)
+        if current_tool_call_cycle >= max_tool_calls_per_turn:
+            print(f"Warning: Maximum tool call cycle limit reached ({max_tool_calls_per_turn}) for Attempt {attempt_count}.")
+            debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Max Tool Call Cycles Reached", f"Reached limit of {max_tool_calls_per_turn} cycles")
+
+        # --- Final Response Processing for this Attempt ---
+        # Determine final content based on last non-empty response or synthetic generation
+        if last_non_empty_response:
+            final_content_for_attempt = last_non_empty_response
+        elif all_tool_results:
+            print(f"Creating synthetic response from tool results (Attempt {attempt_count})...")
+            last_user_message = ""
+            if history:
+                 # Find the actual last user message tuple in the original history
+                 last_user_entry = history[-1]
+                 # Ensure it's actually a user message before accessing index 2
+                 if len(last_user_entry) > 2 and last_user_entry[1] == 'user': # Check type at index 1
+                      last_user_message = last_user_entry[3] # Message is at index 3 now
+            final_content_for_attempt = _create_synthetic_response_from_tools(all_tool_results, last_user_message)
+        else:
+            # If no tool calls happened and content was empty, final_content remains ""
+             final_content_for_attempt = final_content # Use the (potentially empty) content from the last cycle
+
+        # --- Add Debug Logs Around Parsing Call ---
+        print(f"DEBUG: Attempt {attempt_count} - Preparing to call parse_structured_response.")
+        print(f"DEBUG: Attempt {attempt_count} - final_content_for_attempt:\n'''\n{final_content_for_attempt}\n'''")
+        # Parse the final content for this attempt
+        parsed_response = parse_structured_response(final_content_for_attempt) # Call the parser
+        print(f"DEBUG: Attempt {attempt_count} - Returned from parse_structured_response.")
+        print(f"DEBUG: Attempt {attempt_count} - parsed_response dict: {parsed_response}")
+        # --- End Debug Logs ---
+
+        # valid_response is set within parse_structured_response
+
+        # Log the parsed response (using the dict directly is safer than json.dumps if parsing failed partially)
+        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Parsed Response", parsed_response)
+
+        # Check validity for retry logic
+        if parsed_response.get("valid_response"):
+            print(f"--- Valid response obtained in Attempt {attempt_count}. ---")
+            break # Exit the outer retry loop on success
+        elif attempt_count < max_attempts:
+            print(f"--- Invalid response in Attempt {attempt_count}. Retrying... ---")
+            # Let the outer loop continue for the next attempt
+        else:
+            print(f"--- Invalid response after {max_attempts} attempts. Giving up. ---")
+            # Loop will terminate naturally
+
+    # Return the final parsed response (either the successful one or the last failed one)
     return parsed_response
 
 
