@@ -285,7 +285,7 @@ async def initialize_mcp_connections():
         #           print(f"Exception caught when connecting to Server '{server_key}': {result}")
     print("\n--- All MCP connection initialization attempts completed ---")
     print(f"Total discovered MCP tools: {len(all_discovered_mcp_tools)}.")
-    print(f"Currently active MCP Sessions: {list(active_mcp_sessions.keys())}")
+    # Removed print statement for active sessions
 
 
 # --- Load Persona Function (with corrected syntax) ---
@@ -329,12 +329,14 @@ async def run_main_with_exit_stack():
         # 2. Initialize MCP Connections Asynchronously
         await initialize_mcp_connections()
 
-        # Exit if no servers connected successfully
+        # Warn if no servers connected successfully, but continue
         if not active_mcp_sessions:
-             print("\nFailed to connect to any MCP Server, program will exit.")
-             return
+             print("\n\033[93m[!]\033[0m Unable to connect to any MCP server, or no server is configured.")
+             # Removed 'return' statement to allow continuation
+        else:
+             print(f"Successfully connected to {len(active_mcp_sessions)} MCP server(s): {list(active_mcp_sessions.keys())}")
 
-        initialization_successful = True
+        initialization_successful = True # Keep this, might be useful elsewhere
 
         # 3. Get loop and set it for keyboard handlers
         loop = asyncio.get_running_loop()
@@ -446,8 +448,11 @@ async def run_main_with_exit_stack():
 
                 # 提取對話內容
                 bot_dialogue = bot_response_data.get("dialogue", "")
-                valid_response = bot_response_data.get("valid_response", False)
+                valid_response = bot_response_data.get("valid_response", False) # <-- 獲取 valid_response 標誌
                 print(f"{config.PERSONA_NAME}'s dialogue response: {bot_dialogue}")
+                # --- DEBUG PRINT ---
+                print(f"DEBUG main.py: Before check - bot_dialogue='{bot_dialogue}', valid_response={valid_response}, dialogue_is_truthy={bool(bot_dialogue)}")
+                # --- END DEBUG PRINT ---
 
                 # 處理命令 (如果有的話)
                 commands = bot_response_data.get("commands", [])
