@@ -285,7 +285,7 @@ async def initialize_mcp_connections():
         #           print(f"Exception caught when connecting to Server '{server_key}': {result}")
     print("\n--- All MCP connection initialization attempts completed ---")
     print(f"Total discovered MCP tools: {len(all_discovered_mcp_tools)}.")
-    print(f"Currently active MCP Sessions: {list(active_mcp_sessions.keys())}")
+    # Removed print statement for active sessions
 
 
 # --- Load Persona Function (with corrected syntax) ---
@@ -329,12 +329,14 @@ async def run_main_with_exit_stack():
         # 2. Initialize MCP Connections Asynchronously
         await initialize_mcp_connections()
 
-        # Exit if no servers connected successfully
+        # Warn if no servers connected successfully, but continue
         if not active_mcp_sessions:
-             print("\nFailed to connect to any MCP Server, program will exit.")
-             return
+             print("\n\033[93m[!]\033[0m Unable to connect to any MCP server, or no server is configured.")
+             # Removed 'return' statement to allow continuation
+        else:
+             print(f"Successfully connected to {len(active_mcp_sessions)} MCP server(s): {list(active_mcp_sessions.keys())}")
 
-        initialization_successful = True
+        initialization_successful = True # Keep this, might be useful elsewhere
 
         # 3. Get loop and set it for keyboard handlers
         loop = asyncio.get_running_loop()

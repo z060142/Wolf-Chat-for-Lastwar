@@ -979,7 +979,7 @@ def remove_user_position(detector: DetectionModule,
         return False # Indicate failure, but let main loop decide next step
     interactor.click_at(confirm_locs[0][0], confirm_locs[0][1])
     print("Clicked Confirm button. Position should be dismissed.")
-    time.sleep(0.1) # Wait for action to complete
+    time.sleep(0.05) # Wait for action to complete (Reduced from 0.1)
 
     # 9. Cleanup: Return to Chat Room
     # Click Close on position page (should now be back on capitol page implicitly)
@@ -987,7 +987,7 @@ def remove_user_position(detector: DetectionModule,
     if close_locs:
         interactor.click_at(close_locs[0][0], close_locs[0][1])
         print("Clicked Close button (returning to Capitol).")
-        time.sleep(0.1)
+        time.sleep(0.05) # Reduced from 0.1
     else:
         print("Warning: Close button not found after confirm, attempting back arrow anyway.")
 
@@ -996,7 +996,7 @@ def remove_user_position(detector: DetectionModule,
     if back_arrow_locs:
         interactor.click_at(back_arrow_locs[0][0], back_arrow_locs[0][1])
         print("Clicked Back Arrow (returning to Profile).")
-        time.sleep(0.1)
+        time.sleep(0.05) # Reduced from 0.1
     else:
         print("Warning: Back arrow not found on Capitol page, attempting ESC cleanup.")
 

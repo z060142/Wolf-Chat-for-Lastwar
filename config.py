@@ -35,29 +35,29 @@ exa_config_arg_string_single_dump = json.dumps(exa_config_dict) # Use this one
 
 # --- MCP Server Configuration ---
 MCP_SERVERS = {
-    "exa": { # Temporarily commented out to prevent blocking startup
-        "command": "cmd",
-        "args": [
-            "/c",
-            "npx",
-            "-y",
-            "@smithery/cli@latest",
-            "run",
-            "exa",
-            "--config",
-            # Pass the dynamically created config string with the environment variable key
-            exa_config_arg_string_single_dump # Use the single dump variable
-        ],
-    },
-    "github.com/modelcontextprotocol/servers/tree/main/src/memory": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-memory"
-      ],
-      "disabled": False
-    }
-    # Add or remove servers as needed
+    #"exa": { # Temporarily commented out to prevent blocking startup
+    #    "command": "cmd",
+    ##    "args": [
+    #        "/c",
+    #        "npx",
+    #        "-y",
+    #        "@smithery/cli@latest",
+    #        "run",
+    #        "exa",
+    #        "--config",
+    #        # Pass the dynamically created config string with the environment variable key
+    #        exa_config_arg_string_single_dump # Use the single dump variable
+    #    ],
+    #},
+    #"github.com/modelcontextprotocol/servers/tree/main/src/memory": {
+    #  "command": "npx",
+    #  "args": [
+    #    "-y",
+    #    "@modelcontextprotocol/server-memory"
+    #  ],
+    #  "disabled": False
+    #}
+    ## Add or remove servers as needed
 }
 
 # MCP Client Configuration
