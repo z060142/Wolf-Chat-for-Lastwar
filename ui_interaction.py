@@ -119,7 +119,7 @@ REPLY_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "reply_button.png") # Added for re
 CHAT_INPUT_REGION = None # Example: (100, 800, 500, 50)
 CHAT_INPUT_CENTER_X = 400
 CHAT_INPUT_CENTER_Y = 1280
-SCREENSHOT_REGION = None
+SCREENSHOT_REGION = (70, 50, 800, 1365) # Updated region
 CONFIDENCE_THRESHOLD = 0.9 # Increased threshold for corner matching
 STATE_CONFIDENCE_THRESHOLD = 0.7
 AVATAR_OFFSET_X = -45 # Original offset, used for non-reply interactions like position removal
@@ -241,17 +241,20 @@ class DetectionModule:
         regular_tl_keys = ['corner_tl', 'corner_tl_type2', 'corner_tl_type3', 'corner_tl_type4'] # Added type4
         regular_br_keys = ['corner_br', 'corner_br_type2', 'corner_br_type3', 'corner_br_type4'] # Added type4
 
+        bubble_detection_region = (150, 330, 600, 880) # Define the specific region for bubbles
+        print(f"DEBUG: Using specific region for bubble corner detection: {bubble_detection_region}")
+
         all_regular_tl_boxes = []
         for key in regular_tl_keys:
-            all_regular_tl_boxes.extend(self._find_template_raw(key))
+            all_regular_tl_boxes.extend(self._find_template_raw(key, region=bubble_detection_region)) # Pass region
 
         all_regular_br_boxes = []
         for key in regular_br_keys:
-            all_regular_br_boxes.extend(self._find_template_raw(key))
+            all_regular_br_boxes.extend(self._find_template_raw(key, region=bubble_detection_region)) # Pass region
 
         # --- Find Bot Bubble Corners (Raw Coordinates - Single Type) ---
-        bot_tl_boxes = self._find_template_raw('bot_corner_tl') # Modified
-        bot_br_boxes = self._find_template_raw('bot_corner_br') # Modified
+        bot_tl_boxes = self._find_template_raw('bot_corner_tl', region=bubble_detection_region) # Pass region
+        bot_br_boxes = self._find_template_raw('bot_corner_br', region=bubble_detection_region) # Pass region
 
         # --- Match Regular Bubbles (Any Type TL with Any Type BR) ---
         if all_regular_tl_boxes and all_regular_br_boxes:
