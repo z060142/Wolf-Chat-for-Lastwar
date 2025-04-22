@@ -366,6 +366,18 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     - LLM 現在可以利用最近的對話歷史來生成更符合上下文的回應。
     - 可以選擇性地將所有成功的聊天互動記錄到按日期組織的文件中，方便日後分析或調試。
 
+### 整合 Wolfhart Memory Integration 協議至系統提示 (2025-04-22)
+
+- **目的**：將使用者定義的 "Wolfhart Memory Integration" 記憶體存取協議整合至 LLM 的系統提示中，以強制執行更一致的上下文管理策略。
+- **`llm_interaction.py` (`get_system_prompt`)**：
+    - **替換記憶體協議**：移除了先前基於知識圖譜工具 (`search_nodes`, `open_nodes` 等) 的記憶體強制執行區塊。
+    - **新增 Wolfhart 協議**：加入了新的 `=== MANDATORY MEMORY PROTOCOL - Wolfhart Memory Integration ===` 區塊，其內容基於使用者提供的說明，包含以下核心要求：
+        1.  **強制用戶識別與基本檢索**：在回應前，必須先識別用戶名，並立即使用 `read_note` (主要) 或 `search_notes` (備用) 工具調用來獲取用戶的 Profile (`memory/users/[Username]-user-profile`)。
+        2.  **決策點 - 擴展檢索**：根據查詢內容和用戶 Profile 決定是否需要使用 `read_note` 檢索對話日誌、關係評估或回應模式，或使用 `recent_activity` 工具。
+        3.  **實施指南**：強調必須先檢查 Profile，使用正確的工具，以用戶偏好語言回應，且絕不向用戶解釋此內部流程。
+        4.  **工具優先級**：明確定義了內部工具使用的優先順序：`read_note` > `search_notes` > `recent_activity`。
+- **效果**：預期 LLM 在回應前會更穩定地執行記憶體檢索步驟，特別是強制性的用戶 Profile 檢查，從而提高回應的上下文一致性和角色扮演的準確性。
+
 ## 開發建議
 
 ### 優化方向

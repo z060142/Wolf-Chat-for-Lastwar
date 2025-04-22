@@ -22,6 +22,8 @@ LLM_MODEL = "deepseek/deepseek-chat-v3-0324"      # <--- Ensure this matches the
 #LLM_MODEL = "openai/gpt-4.1-nano"
 
 EXA_API_KEY = os.getenv("EXA_API_KEY")
+MCP_REDIS_API_KEY = os.getenv("MCP_REDIS_APU_KEY")
+MCP_REDIS_PATH = os.getenv("MCP_REDIS_PATH")
 
 # --- Dynamically build Exa server args ---
 exa_config_dict = {"exaApiKey": EXA_API_KEY if EXA_API_KEY else "YOUR_EXA_KEY_MISSING"}
@@ -56,8 +58,29 @@ MCP_SERVERS = {
     #    "@modelcontextprotocol/server-memory"
     #  ],
     #  "disabled": False
-    #}
-    ## Add or remove servers as needed
+    #},
+    #"redis": {
+    #      "command": "uv",
+    #        "args": [
+    #            "--directory",
+    #            MCP_REDIS_PATH,
+    #            "run",
+    #            "src/main.py"
+    #        ],
+    #        "env": {
+    #            "REDIS_HOST": "127.0.0.1",
+    #            "REDIS_PORT": "6379",
+    #            "REDIS_SSL": "False",
+    #            "REDIS_CLUSTER_MODE": "False"
+    #        }
+    #    }
+    "basic-memory": {
+      "command": "uvx",
+      "args": [
+        "basic-memory",
+        "mcp"
+      ],
+    }
 }
 
 # MCP Client Configuration

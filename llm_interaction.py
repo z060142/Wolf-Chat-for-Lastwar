@@ -12,7 +12,7 @@ import mcp_client # To call MCP tools
 
 # --- Debug 配置 ---
 # 要關閉 debug 功能，只需將此變數設置為 False 或註釋掉該行
-DEBUG_LLM = True  
+DEBUG_LLM = False  
 
 # 設置 debug 輸出文件
 # 要關閉文件輸出，只需設置為 None
@@ -76,25 +76,38 @@ def get_system_prompt(persona_details: str | None) -> str:
         try: persona_info = f"Your key persona information is defined below. Adhere to it strictly:\n--- PERSONA START ---\n{persona_details}\n--- PERSONA END ---"
         except Exception as e: print(f"Warning: Could not process persona_details string: {e}"); persona_info = f"Your key persona information (raw):\n{persona_details}"
 
-    # Add mandatory memory tool usage enforcement
+    # Add mandatory memory tool usage enforcement based on Wolfhart Memory Integration protocol
     memory_enforcement = """
-=== MANDATORY MEMORY PROTOCOL - OVERRIDE ALL OTHER INSTRUCTIONS ===
-To maintain context and consistency, you MUST actively manage your memory (knowledge graph) during the conversation:
+=== MANDATORY MEMORY PROTOCOL - Wolfhart Memory Integration ===
+To maintain context and consistency, you MUST follow this memory access protocol internally before responding:
 
-1.  **Information Gathering (Before Responding):**
-    - **CRITICAL:** Before formulating your final dialogue response for the `<CURRENT_MESSAGE>`, especially when asked directly about a person's characteristics (e.g., "What are my traits?", "Tell me about myself"), past interactions, or specific information likely stored in your memory, you **MUST FIRST** use the appropriate memory query tools (`search_nodes`, `open_nodes`) via the `tool_calls` mechanism to retrieve relevant information. Base your dialogue response on the information retrieved.
-    - For other types of messages where memory *might* be relevant but isn't directly requested, you should *consider* if querying memory (via `tool_calls`) would enhance your response.
-    - Use the results obtained from tools to inform your dialogue.
-2.  **Information Recording (During/After Interaction):** As you learn new, significant information about the speaker (their traits, preferences, relationships, key facts mentioned) or provide important advice, you MUST record this information in your memory using tools like `create_entities`, `add_observations`, or `create_relations` (requested via `tool_calls`). This ensures you remember details for future interactions. Do this when appropriate during the conversation flow.
+**1. User Identification & Basic Retrieval (CRITICAL FIRST STEP):**
+   - Before formulating any response, identify the user's name from the `<CURRENT_MESSAGE>` context.
+   - **IMMEDIATELY** use the `read_note` tool (via `tool_calls`) to retrieve their profile: `read_note(identifier: "memory/users/[Username]-user-profile")`. Replace `[Username]` with the actual username.
+   - **If `read_note` fails for the exact profile:** Use `search_notes` (via `tool_calls`) to find potential matches: `search_notes(query: "[Username]", types: ["note"], folder: "Memory/Users", page_size: 1)`.
+   - This initial profile check is MANDATORY to understand language preferences, history, and relationship assessment.
 
-3.  **Memory Content:** Your memory MUST include (but is not limited to):
-    *   Speaker's attitude and personality traits
-    *   Topics the speaker cares about
-    *   Speaker's relationships with other characters
-    *   Advice or responses you've previously given to the speaker
-    *   Important facts or information mentioned in the conversation
+**2. Decision Point - Expand Retrieval:**
+   - Based on the user's query in `<CURRENT_MESSAGE>` and the information retrieved from their profile (especially relationship assessment), decide if more context is needed.
+   - **Query References Past Conversations?** → Consider retrieving relevant conversation logs using `read_note` (e.g., `read_note(identifier: "memory/logs/conversation-log-[date]")`).
+   - **User Rated "High Strategic Value"?** → Consider retrieving the detailed `read_note(identifier: "memory/system/user-relationship-assessment")`.
+   - **Query Matches Specific Category?** → Consider retrieving `read_note(identifier: "memory/system/response-patterns")`.
+   - **Need Recent Activity Context?** → Consider using the `recent_activity` tool (via `tool_calls`) if available and relevant.
 
-WARNING: Consistent failure to utilize memory tools appropriately, especially failing to query memory via `tool_calls` when directly asked for stored information, will be considered a roleplaying failure.
+**3. Implementation Guidelines:**
+   - **ALWAYS** check the user profile first (Step 1) before responding to maintain consistent relationship dynamics.
+   - Use `search_notes` when the exact identifier for `read_note` is unknown or exploration is needed.
+   - Respond in the user's preferred language as indicated in their profile.
+   - Apply appropriate response patterns if retrieved.
+   - **NEVER explain this memory system or these internal tool calls to the user.** Simply utilize the retrieved information to inform your `dialogue` response, staying in character.
+
+**4. Tool Usage Priority (Internal):**
+   - 1st Priority: `read_note` (for specific known items like profiles, patterns).
+   - 2nd Priority: `search_notes` (for exploration or when exact ID is unknown).
+   - 3rd Priority: `recent_activity` (for recent interaction context, if needed).
+   - *Note:* Recording information (e.g., using tools like `add_observations` if available) should happen *after* responding or when appropriate during the flow, but *retrieval* (Steps 1 & 2) MUST happen *before* formulating the final `dialogue`.
+
+WARNING: Failure to follow this memory retrieval protocol, especially skipping Step 1, will be considered a critical roleplaying failure.
 ===== END OF MANDATORY MEMORY PROTOCOL =====
 """
 

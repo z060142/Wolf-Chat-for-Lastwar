@@ -127,8 +127,8 @@ def keyboard_listener():
 
 
 # --- Chat Logging Function ---
-def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_message: str):
-    """Logs the chat interaction to a date-stamped file if enabled."""
+def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_message: str, bot_thoughts: str | None = None):
+    """Logs the chat interaction, including optional bot thoughts, to a date-stamped file if enabled."""
     if not config.ENABLE_CHAT_LOGGING:
         return
 
@@ -146,7 +146,10 @@ def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_m
 
         # Format log entry
         log_entry = f"[{timestamp}] User ({user_name}): {user_message}\n"
-        log_entry += f"[{timestamp}] Bot ({bot_name}): {bot_message}\n"
+        # Include thoughts if available
+        if bot_thoughts:
+            log_entry += f"[{timestamp}] Bot ({bot_name}) Thoughts: {bot_thoughts}\n"
+        log_entry += f"[{timestamp}] Bot ({bot_name}) Dialogue: {bot_message}\n" # Label dialogue explicitly
         log_entry += "---\n" # Separator
 
         # Append to log file
@@ -542,7 +545,8 @@ async def run_main_with_exit_stack():
                         user_name=sender_name,
                         user_message=bubble_text,
                         bot_name=config.PERSONA_NAME,
-                        bot_message=bot_dialogue
+                        bot_message=bot_dialogue,
+                        bot_thoughts=thoughts # Pass the extracted thoughts
                     )
                     # --- End Log interaction ---
 
