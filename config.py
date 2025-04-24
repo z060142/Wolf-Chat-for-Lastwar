@@ -74,13 +74,24 @@ MCP_SERVERS = {
     #            "REDIS_CLUSTER_MODE": "False"
     #        }
     #    }
-    "basic-memory": {
-      "command": "uvx",
-      "args": [
-        "basic-memory",
-        "mcp"
-      ],
-    }
+    #"basic-memory": {
+    #  "command": "uvx",
+    #  "args": [
+    #    "basic-memory",
+    #    "mcp"
+    #  ],
+    #}
+    "chroma": {
+		"command": "uvx",
+		"args": [
+			"chroma-mcp",
+			"--client-type",
+			"persistent",
+			"--data-dir",
+			"Z:/mcp/Server/Chroma-MCP"
+		]
+	}
+
 }
 
 # MCP Client Configuration
