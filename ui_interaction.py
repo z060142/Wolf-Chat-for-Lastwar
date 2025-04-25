@@ -121,7 +121,7 @@ CHAT_INPUT_CENTER_X = 400
 CHAT_INPUT_CENTER_Y = 1280
 SCREENSHOT_REGION = (70, 50, 800, 1365) # Updated region
 CONFIDENCE_THRESHOLD = 0.9 # Increased threshold for corner matching
-STATE_CONFIDENCE_THRESHOLD = 0.7
+STATE_CONFIDENCE_THRESHOLD = 0.9
 AVATAR_OFFSET_X = -45 # Original offset, used for non-reply interactions like position removal
 # AVATAR_OFFSET_X_RELOCATED = -50 # Replaced by specific reply offsets
 AVATAR_OFFSET_X_REPLY = -45 # Horizontal offset for avatar click after re-location (for reply context)
@@ -1163,7 +1163,26 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                     if monitoring_paused_flag[0]: # Avoid redundant prints if already running
                          print("UI Thread: Processing resume command. Resuming monitoring.")
                          monitoring_paused_flag[0] = False
-                    # No continue needed here
+                         # No state reset here, reset_state command handles that
+
+                elif action == 'handle_restart_complete': # Added for game monitor restart signal
+                    print("UI Thread: Received 'handle_restart_complete' command. Initiating internal pause/wait/resume sequence.")
+                    # --- Internal Pause/Wait/Resume Sequence ---
+                    if not monitoring_paused_flag[0]: # Only pause if not already paused
+                        print("UI Thread: Pausing monitoring internally for restart.")
+                        monitoring_paused_flag[0] = True
+                        # No need to send command back to main loop, just update flag
+
+                    print("UI Thread: Waiting 30 seconds for game to stabilize after restart.")
+                    time.sleep(30) # Wait for game to launch and stabilize
+
+                    print("UI Thread: Resuming monitoring internally after restart wait.")
+                    monitoring_paused_flag[0] = False
+                    # Clear state to ensure fresh detection after restart
+                    recent_texts.clear()
+                    last_processed_bubble_info = None
+                    print("UI Thread: Monitoring resumed and state reset after restart.")
+                    # --- End Internal Sequence ---
 
                 elif action == 'clear_history': # Added for F7
                     print("UI Thread: Processing clear_history command.")

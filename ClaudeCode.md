@@ -54,9 +54,23 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
    - 持續監控遊戲視窗 (`config.WINDOW_TITLE`)。
    - 確保視窗維持在設定檔 (`config.py`) 中指定的位置 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`) 和大小 (`GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)。
    - 確保視窗維持在最上層 (Always on Top)。
-   - **作為獨立進程運行**：由 `main.py` 使用 `subprocess.Popen` 啟動，以隔離執行環境，確保縮放行為一致。
+   - **定時遊戲重啟** (如果 `config.ENABLE_SCHEDULED_RESTART` 為 True)：
+     - 根據 `config.RESTART_INTERVAL_MINUTES` 設定的間隔執行。
+     - **簡化流程 (2025-04-25)**：
+       1. 通過 `stdout` 向 `main.py` 發送 JSON 訊號 (`{'action': 'pause_ui'}`)，請求暫停 UI 監控。
+       2. 等待固定時間（30 秒）。
+       3. 調用 `restart_game_process` 函數，**嘗試**終止 (`terminate`/`kill`) `LastWar.exe` 進程（**無驗證**）。
+       4. 等待固定時間（2 秒）。
+       5. **嘗試**使用 `os.startfile` 啟動 `config.GAME_EXECUTABLE_PATH`（**無驗證**）。
+       6. 等待固定時間（30 秒）。
+       7. 使用 `try...finally` 結構確保**總是**執行下一步。
+       8. 通過 `stdout` 向 `main.py` 發送 JSON 訊號 (`{'action': 'resume_ui'}`)，請求恢復 UI 監控。
+     - **視窗調整**：遊戲視窗的位置/大小/置頂狀態的調整完全由 `monitor_game_window` 的主循環持續負責，重啟流程不再進行立即調整。
+   - **作為獨立進程運行**：由 `main.py` 使用 `subprocess.Popen` 啟動，捕獲其 `stdout` (用於 JSON 訊號) 和 `stderr` (用於日誌)。
+   - **進程間通信**：
+     - `game_monitor.py` -> `main.py`：通過 `stdout` 發送 JSON 格式的 `pause_ui` 和 `resume_ui` 訊號。
+     - **日誌處理**：`game_monitor.py` 的日誌被配置為輸出到 `stderr`，以保持 `stdout` 清潔，確保訊號傳遞可靠性。`main.py` 會讀取 `stderr` 並可能顯示這些日誌。
    - **生命週期管理**：由 `main.py` 在啟動時創建，並在 `shutdown` 過程中嘗試終止 (`terminate`)。
-   - 僅在進行調整時打印訊息。
 
 ### 資料流程
 
@@ -380,6 +394,28 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
         3.  **實施指南**：強調必須先檢查 Profile，使用正確的工具，以用戶偏好語言回應，且絕不向用戶解釋此內部流程。
         4.  **工具優先級**：明確定義了內部工具使用的優先順序：`read_note` > `search_notes` > `recent_activity`。
 - **效果**：預期 LLM 在回應前會更穩定地執行記憶體檢索步驟，特別是強制性的用戶 Profile 檢查，從而提高回應的上下文一致性和角色扮演的準確性。
+
+### 遊戲監控與定時重啟穩定性改進 (2025-04-25)
+
+- **目的**：解決 `game_monitor.py` 在執行定時重啟時，可能出現遊戲未成功關閉/重啟，且 UI 監控未恢復的問題。
+- **`game_monitor.py` (第一階段修改)**：
+    - **日誌重定向**：將所有 `logging` 輸出重定向到 `stderr`，確保 `stdout` 只用於傳輸 JSON 訊號 (`pause_ui`, `resume_ui`) 給 `main.py`，避免訊號被日誌干擾。
+    - **終止驗證**：在 `restart_game_process` 中，嘗試終止遊戲進程後，加入循環檢查（最多 10 秒），使用 `psutil.pid_exists` 確認進程確實已結束。
+    - **啟動驗證**：在 `restart_game_process` 中，嘗試啟動遊戲後，使用循環檢查（最多 90 秒），調用 `find_game_window` 確認遊戲視窗已出現，取代固定的等待時間。
+    - **立即調整嘗試**：在 `perform_scheduled_restart` 中，於成功驗證遊戲啟動後，立即嘗試調整一次視窗位置/大小/置頂。
+    - **保證恢復訊號**：在 `perform_scheduled_restart` 中，使用 `try...finally` 結構包裹遊戲重啟邏輯，確保無論重啟成功與否，都會嘗試通過 `stdout` 發送 `resume_ui` 訊號給 `main.py`。
+- **`game_monitor.py` (第二階段修改 - 簡化)**：
+    - **移除驗證與立即調整**：根據使用者回饋，移除了終止驗證、啟動驗證以及立即調整視窗的邏輯。
+    - **恢復固定等待**：重啟流程恢復使用固定的 `time.sleep()` 等待時間。
+    - **發送重啟完成訊號**：在重啟流程結束後，發送 `{'action': 'restart_complete'}` JSON 訊號給 `main.py`。
+- **`main.py`**：
+    - **轉發重啟完成訊號**：`read_monitor_output` 線程接收到 `game_monitor.py` 的 `{'action': 'restart_complete'}` 訊號後，將 `{'action': 'handle_restart_complete'}` 命令放入 `command_queue`。
+- **`ui_interaction.py`**：
+    - **內部處理重啟完成**：`run_ui_monitoring_loop` 接收到 `{'action': 'handle_restart_complete'}` 命令後，在 UI 線程內部執行：
+        1. 暫停 UI 監控。
+        2. 等待固定時間（30 秒），讓遊戲啟動並穩定。
+        3. 恢復 UI 監控並重置狀態（清除 `recent_texts` 和 `last_processed_bubble_info`）。
+- **效果**：將暫停/恢復 UI 監控的時序控制權移至 `ui_interaction.py` 內部，減少了模塊間的直接依賴和潛在干擾，依賴持續監控來確保最終視窗狀態。
 
 ## 開發建議
 

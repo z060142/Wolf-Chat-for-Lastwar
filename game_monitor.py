@@ -23,8 +23,15 @@ import logging
 
 # --- Setup Logging ---
 monitor_logger = logging.getLogger('GameMonitor')
-# Basic config for direct run, main.py might configure differently
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+monitor_logger.setLevel(logging.INFO) # Set level for the logger
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Create handler for stderr
+stderr_handler = logging.StreamHandler(sys.stderr) # Explicitly use stderr
+stderr_handler.setFormatter(log_formatter)
+# Add handler to the logger
+if not monitor_logger.hasHandlers(): # Avoid adding multiple handlers if run multiple times
+    monitor_logger.addHandler(stderr_handler)
+monitor_logger.propagate = False # Prevent propagation to root logger if basicConfig was called elsewhere
 
 # --- Helper Functions ---
 
@@ -64,6 +71,7 @@ def restart_game_process():
                 except Exception as wait_kill_err:
                      monitor_logger.error(f"等待進程 {proc_info['pid']} 強制結束時出錯: {wait_kill_err}", exc_info=False)
 
+                # Removed Termination Verification - Rely on main loop for eventual state correction
                 monitor_logger.info(f"已處理匹配的進程 PID: {proc_info['pid']}，停止搜索。(Processed matching process PID: {proc_info['pid']}, stopping search.)")
                 break # Exit the loop once a process is handled
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -97,43 +105,43 @@ def restart_game_process():
          monitor_logger.error(f"啟動錯誤 (OSError): {ose} - 檢查路徑和權限。(Launch Error (OSError): {ose} - Check path and permissions.)", exc_info=True)
     except Exception as e:
         monitor_logger.error(f"啟動遊戲時發生未預期錯誤: {e}", exc_info=True)
+        # Don't return False here, let the process continue to send resume signal
+    # Removed Startup Verification - Rely on main loop for eventual state correction
+    # Always return True (or nothing) to indicate the attempt was made
+    return # Or return True, doesn't matter much now
 
 def perform_scheduled_restart():
     """Handles the sequence of pausing UI, restarting game, resuming UI."""
     monitor_logger.info("開始執行定時重啟流程。(Starting scheduled restart sequence.)")
 
-    # 1. Signal main process to pause UI monitoring via stdout
-    pause_signal_data = {'action': 'pause_ui'}
+    # Removed pause_ui signal - UI will handle its own pause/resume based on restart_complete
+
     try:
-        json_signal = json.dumps(pause_signal_data)
-        monitor_logger.info(f"準備發送暫停訊號: {json_signal} (Preparing to send pause signal)") # Log before print
-        print(json_signal, flush=True)
-        monitor_logger.info("已發送暫停 UI 監控訊號。(Sent pause UI monitoring signal.)")
-    except Exception as e:
-         monitor_logger.error(f"發送暫停訊號 '{json_signal}' 失敗: {e}", exc_info=True) # Log signal data on error
+        # 1. Attempt to restart the game (no verification)
+        monitor_logger.info("嘗試執行遊戲重啟。(Attempting game restart process.)")
+        restart_game_process() # Fire and forget restart attempt
+        monitor_logger.info("遊戲重啟嘗試已執行。(Game restart attempt executed.)")
 
-    # 2. Wait 1 minute
-    monitor_logger.info("等待 60 秒以暫停 UI。(Waiting 60 seconds for UI pause...)")
-    time.sleep(30)
+        # 2. Wait fixed time after restart attempt
+        monitor_logger.info("等待 30 秒讓遊戲啟動（無驗證）。(Waiting 30 seconds for game to launch (no verification)...)")
+        time.sleep(30) # Fixed wait
 
-    # 3. Restart the game
-    restart_game_process()
+    except Exception as restart_err:
+        monitor_logger.error(f"執行 restart_game_process 時發生未預期錯誤: {restart_err}", exc_info=True)
+        # Continue to finally block even on error
 
-    # 4. Wait 1 minute
-    monitor_logger.info("等待 60 秒讓遊戲啟動。(Waiting 60 seconds for game to launch...)")
-    time.sleep(30)
+    finally:
+        # 3. Signal main process that restart attempt is complete via stdout
+        monitor_logger.info("發送重啟完成訊號。(Sending restart complete signal.)")
+        restart_complete_signal_data = {'action': 'restart_complete'}
+        try:
+            json_signal = json.dumps(restart_complete_signal_data)
+            print(json_signal, flush=True)
+            monitor_logger.info("已發送重啟完成訊號。(Sent restart complete signal.)")
+        except Exception as e:
+             monitor_logger.error(f"發送重啟完成訊號 '{json_signal}' 失敗: {e}", exc_info=True) # Log signal data on error
 
-    # 5. Signal main process to resume UI monitoring via stdout
-    resume_signal_data = {'action': 'resume_ui'}
-    try:
-        json_signal = json.dumps(resume_signal_data)
-        monitor_logger.info(f"準備發送恢復訊號: {json_signal} (Preparing to send resume signal)") # Log before print
-        print(json_signal, flush=True)
-        monitor_logger.info("已發送恢復 UI 監控訊號。(Sent resume UI monitoring signal.)")
-    except Exception as e:
-         monitor_logger.error(f"發送恢復訊號 '{json_signal}' 失敗: {e}", exc_info=True) # Log signal data on error
-
-    monitor_logger.info("定時重啟流程完成。(Scheduled restart sequence complete.)")
+    monitor_logger.info("定時重啟流程（包括 finally 塊）執行完畢。(Scheduled restart sequence (including finally block) finished.)")
 # Configure logger (basic example, adjust as needed)
 # (Logging setup moved earlier)
 
@@ -229,19 +237,18 @@ def monitor_game_window():
                         pass # Keep silent
 
             except gw.PyGetWindowException as e:
-                # monitor_logger.warning(f"無法訪問視窗屬性 (可能已關閉): {e} (Could not access window properties (may be closed): {e})")
-                pass # Window might have closed between find and access
+                # Log PyGetWindowException specifically, might indicate window closed during check
+                monitor_logger.warning(f"監控循環中無法訪問視窗屬性 (可能已關閉): {e} (Could not access window properties in monitor loop (may be closed): {e})")
             except Exception as e:
+                # Log other exceptions during monitoring
                 monitor_logger.error(f"監控遊戲視窗時發生未預期錯誤: {e} (Unexpected error during game window monitoring: {e})", exc_info=True)
 
-        # Print adjustment message only if an adjustment was made and it's different from the last one
+        # Log adjustment message only if an adjustment was made and it's different from the last one
         # This should NOT print JSON signals
         if adjustment_made and current_message and current_message != last_adjustment_message:
-            # monitor_logger.info(f"遊戲視窗狀態已調整: {current_message.strip()}") # Log instead of print
-            # Keep print for now for visibility of adjustments, but ensure ONLY JSON goes for signals
-             # print(f"[GameMonitor] {current_message.strip()}") # REMOVED to prevent non-JSON output
-             monitor_logger.info(f"[GameMonitor] {current_message.strip()}") # Log instead
-             last_adjustment_message = current_message
+            # Log the adjustment message instead of printing to stdout
+            monitor_logger.info(f"[GameMonitor] {current_message.strip()}")
+            last_adjustment_message = current_message
         elif not window:
             # Reset last message if window disappears
             last_adjustment_message = ""

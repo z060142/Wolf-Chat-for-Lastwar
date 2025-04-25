@@ -168,14 +168,22 @@ def read_monitor_output(process: subprocess.Popen, queue: ThreadSafeQueue, loop:
                         loop.call_soon_threadsafe(queue.put_nowait, command)
                         print("[Monitor Reader Thread] 暫停命令已放入隊列。(Pause command queued.)") # Log after queueing
                     elif action == 'resume_ui':
-                        command = {'action': 'resume'}
-                        print(f"[Monitor Reader Thread] 準備將命令放入隊列: {command} (Preparing to queue command)") # Log before queueing
-                        loop.call_soon_threadsafe(queue.put_nowait, command)
-                        print("[Monitor Reader Thread] 恢復命令已放入隊列。(Resume command queued.)") # Log after queueing
+                        # Removed direct resume_ui handling - ui_interaction will handle pause/resume based on restart_complete
+                        print("[Monitor Reader Thread] 收到舊的 'resume_ui' 訊號，忽略。(Received old 'resume_ui' signal, ignoring.)")
+                    elif action == 'restart_complete':
+                        command = {'action': 'handle_restart_complete'}
+                        print(f"[Monitor Reader Thread] 收到 'restart_complete' 訊號，準備將命令放入隊列: {command} (Received 'restart_complete' signal, preparing to queue command)")
+                        try:
+                            loop.call_soon_threadsafe(queue.put_nowait, command)
+                            print("[Monitor Reader Thread] 'handle_restart_complete' 命令已放入隊列。(handle_restart_complete command queued.)")
+                        except Exception as q_err:
+                            print(f"[Monitor Reader Thread] 將 'handle_restart_complete' 命令放入隊列時出錯: {q_err} (Error putting 'handle_restart_complete' command in queue: {q_err})")
                     else:
                         print(f"[Monitor Reader Thread] 從監控器收到未知動作: {action} (Received unknown action from monitor: {action})")
                 except json.JSONDecodeError:
                     print(f"[Monitor Reader Thread] ERROR: 無法解析來自監控器的 JSON: '{line}' (Could not decode JSON from monitor: '{line}')")
+                    # Log the raw line that failed to parse
+                    # print(f"[Monitor Reader Thread] Raw line that failed JSON decode: '{line}'") # Already logged raw line earlier
                 except Exception as e:
                     print(f"[Monitor Reader Thread] 處理監控器輸出時出錯: {e} (Error processing monitor output: {e})")
             # No sleep needed here as readline() is blocking

@@ -37,30 +37,30 @@ exa_config_arg_string_single_dump = json.dumps(exa_config_dict) # Use this one
 
 # --- MCP Server Configuration ---
 MCP_SERVERS = {
-    "exa": { # Temporarily commented out to prevent blocking startup
-        "command": "cmd",
-        "args": [
-            "/c",
-            "npx",
-            "-y",
-            "@smithery/cli@latest",
-            "run",
-            "exa",
-            "--config",
-            # Pass the dynamically created config string with the environment variable key
-            exa_config_arg_string_single_dump # Use the single dump variable
-        ],
-    },
-    #"exa": {
-    #  "command": "npx",
-    #  "args": [
-    #    "Z:/mcp/Server/exa-mcp-server/build/index.js",
-    #    "--tools=web_search,research_paper_search,twitter_search,company_research,crawling,competitor_finder"
-    #  ],
-    #  "env": {
-    #    "EXA_API_KEY": EXA_API_KEY
-    #  }
+    #"exa": { # Temporarily commented out to prevent blocking startup
+    ##    "command": "cmd",
+    #    "args": [
+    #        "/c",
+    #        "npx",
+    #        "-y",
+    #        "@smithery/cli@latest",
+    #        "run",
+    #        "exa",
+    #        "--config",
+    #        # Pass the dynamically created config string with the environment variable key
+    #        exa_config_arg_string_single_dump # Use the single dump variable
+    #    ],
     #},
+    "exa": {
+      "command": "npx",
+      "args": [
+        "C:/Users/Bigspring/AppData/Roaming/npm/exa-mcp-server",
+        "--tools=web_search,research_paper_search,twitter_search,company_research,crawling,competitor_finder"
+      ],
+      "env": {
+        "EXA_API_KEY": EXA_API_KEY
+      }
+    },
     #"github.com/modelcontextprotocol/servers/tree/main/src/memory": {
     #  "command": "npx",
     #  "args": [
