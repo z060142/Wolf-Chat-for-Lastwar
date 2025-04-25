@@ -29,6 +29,8 @@ import mcp_client
 import llm_interaction
 # Import UI module
 import ui_interaction
+# import game_monitor # No longer importing, will run as subprocess
+import subprocess # Import subprocess module
 
 # --- Global Variables ---
 active_mcp_sessions: dict[str, ClientSession] = {}
@@ -45,6 +47,9 @@ trigger_queue: ThreadSafeQueue = ThreadSafeQueue() # UI Thread -> Main Loop
 command_queue: ThreadSafeQueue = ThreadSafeQueue() # Main Loop -> UI Thread
 # --- End Change ---
 ui_monitor_task: asyncio.Task | None = None # To track the UI monitor task
+game_monitor_process: subprocess.Popen | None = None # To store the game monitor subprocess
+monitor_reader_task: asyncio.Future | None = None # Store the future from run_in_executor
+stop_reader_event = threading.Event() # Event to signal the reader thread to stop
 
 # --- Keyboard Shortcut State ---
 script_paused = False
@@ -126,6 +131,62 @@ def keyboard_listener():
 # --- End Keyboard Shortcut Handlers ---
 
 
+# --- Game Monitor Signal Reader (Threaded Blocking Version) ---
+def read_monitor_output(process: subprocess.Popen, queue: ThreadSafeQueue, loop: asyncio.AbstractEventLoop, stop_event: threading.Event):
+    """Runs in a separate thread, reads stdout blocking, parses JSON, and puts commands in the queue."""
+    print("遊戲監控輸出讀取線程已啟動。(Game monitor output reader thread started.)")
+    try:
+        while not stop_event.is_set():
+            if not process.stdout:
+                print("[Monitor Reader Thread] Subprocess stdout is None. Exiting thread.")
+                break
+
+            try:
+                # Blocking read - this is fine in a separate thread
+                line = process.stdout.readline()
+            except ValueError:
+                # Can happen if the pipe is closed during readline
+                print("[Monitor Reader Thread] ValueError on readline (pipe likely closed). Exiting thread.")
+                break
+
+            if not line:
+                # EOF reached (process terminated)
+                print("[Monitor Reader Thread] EOF reached on stdout. Exiting thread.")
+                break
+
+            line = line.strip()
+            if line:
+                # Log raw line immediately
+                print(f"[Monitor Reader Thread] Received raw line: '{line}'")
+                try:
+                    data = json.loads(line)
+                    action = data.get('action')
+                    print(f"[Monitor Reader Thread] Parsed action: '{action}'") # Log parsed action
+                    if action == 'pause_ui':
+                        command = {'action': 'pause'}
+                        print(f"[Monitor Reader Thread] 準備將命令放入隊列: {command} (Preparing to queue command)") # Log before queueing
+                        loop.call_soon_threadsafe(queue.put_nowait, command)
+                        print("[Monitor Reader Thread] 暫停命令已放入隊列。(Pause command queued.)") # Log after queueing
+                    elif action == 'resume_ui':
+                        command = {'action': 'resume'}
+                        print(f"[Monitor Reader Thread] 準備將命令放入隊列: {command} (Preparing to queue command)") # Log before queueing
+                        loop.call_soon_threadsafe(queue.put_nowait, command)
+                        print("[Monitor Reader Thread] 恢復命令已放入隊列。(Resume command queued.)") # Log after queueing
+                    else:
+                        print(f"[Monitor Reader Thread] 從監控器收到未知動作: {action} (Received unknown action from monitor: {action})")
+                except json.JSONDecodeError:
+                    print(f"[Monitor Reader Thread] ERROR: 無法解析來自監控器的 JSON: '{line}' (Could not decode JSON from monitor: '{line}')")
+                except Exception as e:
+                    print(f"[Monitor Reader Thread] 處理監控器輸出時出錯: {e} (Error processing monitor output: {e})")
+            # No sleep needed here as readline() is blocking
+    except Exception as e:
+        # Catch broader errors in the thread loop itself
+        print(f"[Monitor Reader Thread] Thread loop error: {e}")
+    finally:
+        print("遊戲監控輸出讀取線程已停止。(Game monitor output reader thread stopped.)")
+# --- End Game Monitor Signal Reader ---
+
+
 # --- Chat Logging Function ---
 def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_message: str, bot_thoughts: str | None = None):
     """Logs the chat interaction, including optional bot thoughts, to a date-stamped file if enabled."""
@@ -163,8 +224,8 @@ def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_m
 
 # --- Cleanup Function ---
 async def shutdown():
-    """Gracefully closes connections and stops monitoring task."""
-    global wolfhart_persona_details, ui_monitor_task, shutdown_requested
+    """Gracefully closes connections and stops monitoring tasks/processes."""
+    global wolfhart_persona_details, ui_monitor_task, shutdown_requested, game_monitor_process, monitor_reader_task # Add monitor_reader_task
     # Ensure shutdown is requested if called externally (e.g., Ctrl+C)
     if not shutdown_requested:
         print("Shutdown initiated externally (e.g., Ctrl+C).")
@@ -184,7 +245,42 @@ async def shutdown():
         except Exception as e:
             print(f"Error while waiting for UI monitoring task cancellation: {e}")
 
-    # 2. Close MCP connections via AsyncExitStack
+    # 1b. Signal and Wait for Monitor Reader Thread
+    if monitor_reader_task: # Check if the future exists
+        if not stop_reader_event.is_set():
+            print("Signaling monitor output reader thread to stop...")
+            stop_reader_event.set()
+
+        # Wait for the thread to finish (the future returned by run_in_executor)
+        # This might block briefly, but it's necessary to ensure clean thread shutdown
+        # We don't await it directly in the async shutdown, but check if it's done
+        # A better approach might be needed if the thread blocks indefinitely
+        print("Waiting for monitor output reader thread to finish (up to 2s)...")
+        try:
+            # Wait for the future to complete with a timeout
+            await asyncio.wait_for(monitor_reader_task, timeout=2.0)
+            print("Monitor output reader thread finished.")
+        except asyncio.TimeoutError:
+            print("Warning: Monitor output reader thread did not finish within timeout.")
+        except asyncio.CancelledError:
+             print("Monitor output reader future was cancelled.") # Should not happen if we don't cancel it
+        except Exception as e:
+            print(f"Error waiting for monitor reader thread future: {e}")
+
+    # 2. Terminate Game Monitor Subprocess (after signaling reader thread)
+    if game_monitor_process:
+        print("Terminating game monitor subprocess...")
+        try:
+            game_monitor_process.terminate()
+            # Optionally wait for a short period or check return code
+            # game_monitor_process.wait(timeout=1)
+            print("Game monitor subprocess terminated.")
+        except Exception as e:
+            print(f"Error terminating game monitor subprocess: {e}")
+        finally:
+             game_monitor_process = None # Clear the reference
+
+    # 3. Close MCP connections via AsyncExitStack
     print(f"Closing MCP Server connections (via AsyncExitStack)...")
     try:
         await exit_stack.aclose()
@@ -324,7 +420,7 @@ def load_persona_from_file(filename="persona.json"):
 # --- Main Async Function ---
 async def run_main_with_exit_stack():
     """Initializes connections, loads persona, starts UI monitor and main processing loop."""
-    global initialization_successful, main_task, loop, wolfhart_persona_details, trigger_queue, ui_monitor_task, shutdown_requested, script_paused, command_queue
+    global initialization_successful, main_task, loop, wolfhart_persona_details, trigger_queue, ui_monitor_task, shutdown_requested, script_paused, command_queue, game_monitor_process, monitor_reader_task # Add monitor_reader_task to globals
     try:
         # 1. Load Persona Synchronously (before async loop starts)
         load_persona_from_file() # Corrected function
@@ -358,6 +454,51 @@ async def run_main_with_exit_stack():
             name="ui_monitor"
         )
         ui_monitor_task = monitor_task # Store task reference for shutdown
+        # Note: UI task cancellation is handled in shutdown()
+
+        # 5b. Start Game Window Monitoring as a Subprocess
+        # global game_monitor_process, monitor_reader_task # Already declared global at function start
+        print("\n--- Starting Game Window monitoring as a subprocess ---")
+        try:
+            # Use sys.executable to ensure the same Python interpreter is used
+            # Capture stdout to read signals
+            game_monitor_process = subprocess.Popen(
+                [sys.executable, 'game_monitor.py'],
+                stdout=subprocess.PIPE, # Capture stdout
+                stderr=subprocess.PIPE, # Capture stderr for logging/debugging
+                text=True, # Decode stdout/stderr as text (UTF-8 by default)
+                bufsize=1, # Line buffered
+                # Ensure process creation flags are suitable for Windows if needed
+                # creationflags=subprocess.CREATE_NO_WINDOW # Example: Hide console window
+            )
+            print(f"Game monitor subprocess started (PID: {game_monitor_process.pid}).")
+
+            # Start the thread to read monitor output if process started successfully
+            if game_monitor_process.stdout:
+                 # Run the blocking reader function in a separate thread using the default executor
+                 monitor_reader_task = loop.run_in_executor(
+                     None, # Use default ThreadPoolExecutor
+                     read_monitor_output, # The function to run
+                     game_monitor_process, # Arguments for the function...
+                     command_queue,
+                     loop,
+                     stop_reader_event # Pass the stop event
+                 )
+                 print("Monitor output reader thread submitted to executor.")
+            else:
+                 print("Error: Could not access game monitor subprocess stdout.")
+                 monitor_reader_task = None
+
+            # Optionally, start a task to read stderr as well for debugging
+            # stderr_reader_task = loop.create_task(read_stderr(game_monitor_process), name="monitor_stderr_reader")
+
+        except FileNotFoundError:
+             print("Error: 'game_monitor.py' not found. Cannot start game monitor subprocess.")
+             game_monitor_process = None
+        except Exception as e:
+             print(f"Error starting game monitor subprocess: {e}")
+             game_monitor_process = None
+
 
         # 6. Start the main processing loop (non-blocking check on queue)
         print("\n--- Wolfhart chatbot has started (waiting for triggers) ---")
@@ -599,9 +740,44 @@ async def run_main_with_exit_stack():
         print("\n--- Performing final cleanup (AsyncExitStack aclose and task cancellation) ---")
         await shutdown() # Call the combined shutdown function
 
+# --- Function to set DPI Awareness ---
+def set_dpi_awareness():
+    """Attempts to set the process DPI awareness for better scaling handling on Windows."""
+    try:
+        import ctypes
+        # DPI Awareness constants (Windows 10, version 1607 and later)
+        # DPI_AWARENESS_CONTEXT_UNAWARE = -1
+        DPI_AWARENESS_CONTEXT_SYSTEM_AWARE = -2
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE = -3
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+
+        # Try setting System Aware first
+        result = ctypes.windll.shcore.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE)
+        if result == 0: # S_OK or E_ACCESSDENIED if already set
+             print("Process DPI awareness set to System Aware (or already set).")
+             return True
+        else:
+             # Try getting last error if needed: ctypes.get_last_error()
+             print(f"Warning: Failed to set DPI awareness (SetProcessDpiAwarenessContext returned {result}). Window scaling might be incorrect.")
+             return False
+    except ImportError:
+        print("Warning: 'ctypes' module not found. Cannot set DPI awareness.")
+        return False
+    except AttributeError:
+        print("Warning: SetProcessDpiAwarenessContext not found (likely older Windows version or missing shcore.dll). Cannot set DPI awareness.")
+        return False
+    except Exception as e:
+        print(f"Warning: An unexpected error occurred while setting DPI awareness: {e}")
+        return False
+
 # --- Program Entry Point ---
 if __name__ == "__main__":
     print("Program starting...")
+
+    # --- Set DPI Awareness early ---
+    set_dpi_awareness()
+    # --- End DPI Awareness setting ---
+
     try:
         # Run the main async function that handles setup and the loop
         asyncio.run(run_main_with_exit_stack())

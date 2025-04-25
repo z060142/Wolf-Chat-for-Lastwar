@@ -50,13 +50,13 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
    - 包含外觀、說話風格、個性特點等資訊
    - 提供給 LLM 以確保角色扮演一致性
 
-7. **視窗設定工具 (window-setup-script.py)**
-   - 輔助工具，用於設置遊戲視窗的位置和大小
-   - 方便開發階段截取 UI 元素樣本
-8. **視窗監視工具 (window-monitor-script.py)**
-   - (新增) 強化腳本，用於持續監視遊戲視窗
-   - 確保目標視窗維持在最上層 (Always on Top)
-   - 自動將視窗移回指定的位置
+7. **遊戲視窗監控模組 (game_monitor.py)** (取代 window-setup-script.py 和舊的 window-monitor-script.py)
+   - 持續監控遊戲視窗 (`config.WINDOW_TITLE`)。
+   - 確保視窗維持在設定檔 (`config.py`) 中指定的位置 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`) 和大小 (`GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)。
+   - 確保視窗維持在最上層 (Always on Top)。
+   - **作為獨立進程運行**：由 `main.py` 使用 `subprocess.Popen` 啟動，以隔離執行環境，確保縮放行為一致。
+   - **生命週期管理**：由 `main.py` 在啟動時創建，並在 `shutdown` 過程中嘗試終止 (`terminate`)。
+   - 僅在進行調整時打印訊息。
 
 ### 資料流程
 
@@ -165,7 +165,10 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 1. **API 設定**：通過 .env 文件或環境變數設置 API 密鑰
 2. **MCP 服務器配置**：在 config.py 中配置要連接的 MCP 服務器
 3. **UI 樣本**：需要提供特定遊戲界面元素的截圖模板
-4. **視窗位置**：可使用 window-setup-script.py 調整遊戲視窗位置
+4. **遊戲視窗設定**：
+   - 遊戲執行檔路徑 (`GAME_EXECUTABLE_PATH`)：用於未來可能的自動啟動功能。
+   - 目標視窗位置與大小 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`, `GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)：由 `game_monitor.py` 使用。
+   - 監控間隔 (`MONITOR_INTERVAL_SECONDS`)：`game_monitor.py` 檢查視窗狀態的頻率。
 
 ## 最近改進（2025-04-17）
 
