@@ -1,6 +1,8 @@
 .env
 *.log
 llm_debug.log
+config.py
 __pycache__/
 debug_screenshots/
 chat_logs/
+backup/
