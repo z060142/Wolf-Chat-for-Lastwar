@@ -65,6 +65,13 @@ def save_env_file(env_data):
 
 def load_current_config():
     """Extract settings from existing config.py if it exists"""
+    # 新增一個幫助函數來標準化路徑
+    def normalize_path(path):
+        """Convert backslashes to forward slashes in paths"""
+        if path:
+            return path.replace("\\", "/")
+        return path
+    
     config_data = {
         "OPENAI_API_BASE_URL": "",
         "LLM_MODEL": "deepseek/deepseek-chat-v3-0324",
@@ -72,7 +79,7 @@ def load_current_config():
             "exa": {
                 "enabled": True,
                 "use_smithery": False,
-                "server_path": f"C:/Users/{CURRENT_USERNAME}/AppData/Roaming/npm/exa-mcp-server"
+                "server_path": normalize_path(f"C:/Users/{CURRENT_USERNAME}/AppData/Roaming/npm/exa-mcp-server")
             }
         },
         "ENABLE_CHAT_LOGGING": True,
@@ -81,7 +88,7 @@ def load_current_config():
             "WINDOW_TITLE": "Last War-Survival Game",
             "ENABLE_SCHEDULED_RESTART": True,
             "RESTART_INTERVAL_MINUTES": 60,
-            "GAME_EXECUTABLE_PATH": fr"C:\Users\{CURRENT_USERNAME}\AppData\Local\TheLastWar\Launch.exe",
+            "GAME_EXECUTABLE_PATH": normalize_path(fr"C:\Users\{CURRENT_USERNAME}\AppData\Local\TheLastWar\Launch.exe"),
             "GAME_WINDOW_X": 50,
             "GAME_WINDOW_Y": 30,
             "GAME_WINDOW_WIDTH": 600,
@@ -216,6 +223,12 @@ def generate_config_file(config_data, env_data):
         backup_path = "config.py.bak"
         shutil.copy2("config.py", backup_path)
         print(f"Created backup of existing config at {backup_path}")
+    
+    def normalize_path(path):
+        """Convert backslashes to forward slashes in paths"""
+        if path:
+            return path.replace("\\", "/")
+        return path
     
     # Helper function to ensure absolute path
     def ensure_absolute_path(path):
@@ -955,7 +968,9 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.expanduser("~")
         )
         if file_path:
-            self.exa_path_var.set(file_path)
+            # 標準化路徑格式（將反斜線改為正斜線）
+            normalized_path = file_path.replace("\\", "/")
+            self.exa_path_var.set(normalized_path)
     
     def browse_chroma_dir(self):
         """Browse for Chroma data directory"""
@@ -964,8 +979,9 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.dirname(DEFAULT_CHROMA_DATA_PATH)
         )
         if dir_path:
-            # Always store as absolute path
-            self.chroma_dir_var.set(os.path.abspath(dir_path))
+            # 標準化路徑格式（將反斜線改為正斜線）
+            normalized_path = os.path.abspath(dir_path).replace("\\", "/")
+            self.chroma_dir_var.set(normalized_path)
     
     def browse_game_path(self):
         """Browse for game executable"""
@@ -975,7 +991,9 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.expanduser("~")
         )
         if file_path:
-            self.game_path_var.set(file_path)
+            # 標準化路徑格式（將反斜線改為正斜線）
+            normalized_path = file_path.replace("\\", "/")
+            self.game_path_var.set(normalized_path)
     
     def update_servers_list(self):
         """Update the servers listbox with current servers"""
