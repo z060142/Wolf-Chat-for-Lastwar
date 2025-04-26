@@ -50,13 +50,27 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
    - 包含外觀、說話風格、個性特點等資訊
    - 提供給 LLM 以確保角色扮演一致性
 
-7. **視窗設定工具 (window-setup-script.py)**
-   - 輔助工具，用於設置遊戲視窗的位置和大小
-   - 方便開發階段截取 UI 元素樣本
-8. **視窗監視工具 (window-monitor-script.py)**
-   - (新增) 強化腳本，用於持續監視遊戲視窗
-   - 確保目標視窗維持在最上層 (Always on Top)
-   - 自動將視窗移回指定的位置
+7. **遊戲視窗監控模組 (game_monitor.py)** (取代 window-setup-script.py 和舊的 window-monitor-script.py)
+   - 持續監控遊戲視窗 (`config.WINDOW_TITLE`)。
+   - 確保視窗維持在設定檔 (`config.py`) 中指定的位置 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`) 和大小 (`GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)。
+   - 確保視窗維持在最上層 (Always on Top)。
+   - **定時遊戲重啟** (如果 `config.ENABLE_SCHEDULED_RESTART` 為 True)：
+     - 根據 `config.RESTART_INTERVAL_MINUTES` 設定的間隔執行。
+     - **簡化流程 (2025-04-25)**：
+       1. 通過 `stdout` 向 `main.py` 發送 JSON 訊號 (`{'action': 'pause_ui'}`)，請求暫停 UI 監控。
+       2. 等待固定時間（30 秒）。
+       3. 調用 `restart_game_process` 函數，**嘗試**終止 (`terminate`/`kill`) `LastWar.exe` 進程（**無驗證**）。
+       4. 等待固定時間（2 秒）。
+       5. **嘗試**使用 `os.startfile` 啟動 `config.GAME_EXECUTABLE_PATH`（**無驗證**）。
+       6. 等待固定時間（30 秒）。
+       7. 使用 `try...finally` 結構確保**總是**執行下一步。
+       8. 通過 `stdout` 向 `main.py` 發送 JSON 訊號 (`{'action': 'resume_ui'}`)，請求恢復 UI 監控。
+     - **視窗調整**：遊戲視窗的位置/大小/置頂狀態的調整完全由 `monitor_game_window` 的主循環持續負責，重啟流程不再進行立即調整。
+   - **作為獨立進程運行**：由 `main.py` 使用 `subprocess.Popen` 啟動，捕獲其 `stdout` (用於 JSON 訊號) 和 `stderr` (用於日誌)。
+   - **進程間通信**：
+     - `game_monitor.py` -> `main.py`：通過 `stdout` 發送 JSON 格式的 `pause_ui` 和 `resume_ui` 訊號。
+     - **日誌處理**：`game_monitor.py` 的日誌被配置為輸出到 `stderr`，以保持 `stdout` 清潔，確保訊號傳遞可靠性。`main.py` 會讀取 `stderr` 並可能顯示這些日誌。
+   - **生命週期管理**：由 `main.py` 在啟動時創建，並在 `shutdown` 過程中嘗試終止 (`terminate`)。
 
 ### 資料流程
 
@@ -83,6 +97,7 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 1. **泡泡檢測（含 Y 軸優先配對）**：通過辨識聊天泡泡的左上角 (TL) 和右下角 (BR) 角落圖案定位聊天訊息。
     - **多外觀支援**：為了適應玩家可能使用的不同聊天泡泡外觀 (skin)，一般用戶泡泡的偵測機制已被擴充，可以同時尋找多組不同的角落模板 (例如 `corner_tl_type2.png`, `corner_br_type2.png` 等)。機器人泡泡目前僅偵測預設的角落模板。
     - **配對邏輯優化**：在配對 TL 和 BR 角落時，系統現在會優先選擇與 TL 角落 **Y 座標最接近** 的有效 BR 角落，以更好地區分垂直堆疊的聊天泡泡。
+    - **偵測區域限制 (2025-04-21)**：為了提高效率並減少誤判，聊天泡泡角落（`corner_*.png`, `bot_corner_*.png`）的圖像辨識**僅**在螢幕的特定區域 `(150, 330, 600, 880)` 內執行。其他 UI 元素的偵測（如按鈕、關鍵字等）不受此限制。
 2. **關鍵字檢測**：在泡泡區域內搜尋 "wolf" 或 "Wolf" 關鍵字圖像。
 3. **內容獲取**：點擊關鍵字位置，使用剪貼板複製聊天內容。
 4. **發送者識別（含氣泡重新定位與偏移量調整）**：**關鍵步驟** - 為了提高在動態聊天環境下的穩定性，系統在獲取發送者名稱前，會執行以下步驟：
@@ -164,7 +179,10 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 1. **API 設定**：通過 .env 文件或環境變數設置 API 密鑰
 2. **MCP 服務器配置**：在 config.py 中配置要連接的 MCP 服務器
 3. **UI 樣本**：需要提供特定遊戲界面元素的截圖模板
-4. **視窗位置**：可使用 window-setup-script.py 調整遊戲視窗位置
+4. **遊戲視窗設定**：
+   - 遊戲執行檔路徑 (`GAME_EXECUTABLE_PATH`)：用於未來可能的自動啟動功能。
+   - 目標視窗位置與大小 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`, `GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)：由 `game_monitor.py` 使用。
+   - 監控間隔 (`MONITOR_INTERVAL_SECONDS`)：`game_monitor.py` 檢查視窗狀態的頻率。
 
 ## 最近改進（2025-04-17）
 
@@ -364,6 +382,40 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 - **效果**：
     - LLM 現在可以利用最近的對話歷史來生成更符合上下文的回應。
     - 可以選擇性地將所有成功的聊天互動記錄到按日期組織的文件中，方便日後分析或調試。
+
+### 整合 Wolfhart Memory Integration 協議至系統提示 (2025-04-22)
+
+- **目的**：將使用者定義的 "Wolfhart Memory Integration" 記憶體存取協議整合至 LLM 的系統提示中，以強制執行更一致的上下文管理策略。
+- **`llm_interaction.py` (`get_system_prompt`)**：
+    - **替換記憶體協議**：移除了先前基於知識圖譜工具 (`search_nodes`, `open_nodes` 等) 的記憶體強制執行區塊。
+    - **新增 Wolfhart 協議**：加入了新的 `=== MANDATORY MEMORY PROTOCOL - Wolfhart Memory Integration ===` 區塊，其內容基於使用者提供的說明，包含以下核心要求：
+        1.  **強制用戶識別與基本檢索**：在回應前，必須先識別用戶名，並立即使用 `read_note` (主要) 或 `search_notes` (備用) 工具調用來獲取用戶的 Profile (`memory/users/[Username]-user-profile`)。
+        2.  **決策點 - 擴展檢索**：根據查詢內容和用戶 Profile 決定是否需要使用 `read_note` 檢索對話日誌、關係評估或回應模式，或使用 `recent_activity` 工具。
+        3.  **實施指南**：強調必須先檢查 Profile，使用正確的工具，以用戶偏好語言回應，且絕不向用戶解釋此內部流程。
+        4.  **工具優先級**：明確定義了內部工具使用的優先順序：`read_note` > `search_notes` > `recent_activity`。
+- **效果**：預期 LLM 在回應前會更穩定地執行記憶體檢索步驟，特別是強制性的用戶 Profile 檢查，從而提高回應的上下文一致性和角色扮演的準確性。
+
+### 遊戲監控與定時重啟穩定性改進 (2025-04-25)
+
+- **目的**：解決 `game_monitor.py` 在執行定時重啟時，可能出現遊戲未成功關閉/重啟，且 UI 監控未恢復的問題。
+- **`game_monitor.py` (第一階段修改)**：
+    - **日誌重定向**：將所有 `logging` 輸出重定向到 `stderr`，確保 `stdout` 只用於傳輸 JSON 訊號 (`pause_ui`, `resume_ui`) 給 `main.py`，避免訊號被日誌干擾。
+    - **終止驗證**：在 `restart_game_process` 中，嘗試終止遊戲進程後，加入循環檢查（最多 10 秒），使用 `psutil.pid_exists` 確認進程確實已結束。
+    - **啟動驗證**：在 `restart_game_process` 中，嘗試啟動遊戲後，使用循環檢查（最多 90 秒），調用 `find_game_window` 確認遊戲視窗已出現，取代固定的等待時間。
+    - **立即調整嘗試**：在 `perform_scheduled_restart` 中，於成功驗證遊戲啟動後，立即嘗試調整一次視窗位置/大小/置頂。
+    - **保證恢復訊號**：在 `perform_scheduled_restart` 中，使用 `try...finally` 結構包裹遊戲重啟邏輯，確保無論重啟成功與否，都會嘗試通過 `stdout` 發送 `resume_ui` 訊號給 `main.py`。
+- **`game_monitor.py` (第二階段修改 - 簡化)**：
+    - **移除驗證與立即調整**：根據使用者回饋，移除了終止驗證、啟動驗證以及立即調整視窗的邏輯。
+    - **恢復固定等待**：重啟流程恢復使用固定的 `time.sleep()` 等待時間。
+    - **發送重啟完成訊號**：在重啟流程結束後，發送 `{'action': 'restart_complete'}` JSON 訊號給 `main.py`。
+- **`main.py`**：
+    - **轉發重啟完成訊號**：`read_monitor_output` 線程接收到 `game_monitor.py` 的 `{'action': 'restart_complete'}` 訊號後，將 `{'action': 'handle_restart_complete'}` 命令放入 `command_queue`。
+- **`ui_interaction.py`**：
+    - **內部處理重啟完成**：`run_ui_monitoring_loop` 接收到 `{'action': 'handle_restart_complete'}` 命令後，在 UI 線程內部執行：
+        1. 暫停 UI 監控。
+        2. 等待固定時間（30 秒），讓遊戲啟動並穩定。
+        3. 恢復 UI 監控並重置狀態（清除 `recent_texts` 和 `last_processed_bubble_info`）。
+- **效果**：將暫停/恢復 UI 監控的時序控制權移至 `ui_interaction.py` 內部，減少了模塊間的直接依賴和潛在干擾，依賴持續監控來確保最終視窗狀態。
 
 ## 開發建議
 
