@@ -7,3 +7,4 @@ __pycache__/
 debug_screenshots/
 chat_logs/
 backup/
+chroma_data/

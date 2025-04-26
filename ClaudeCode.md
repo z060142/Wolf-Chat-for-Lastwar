@@ -176,13 +176,20 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 ### 環境設定
 
-1. **API 設定**：通過 .env 文件或環境變數設置 API 密鑰
-2. **MCP 服務器配置**：在 config.py 中配置要連接的 MCP 服務器
-3. **UI 樣本**：需要提供特定遊戲界面元素的截圖模板
-4. **遊戲視窗設定**：
-   - 遊戲執行檔路徑 (`GAME_EXECUTABLE_PATH`)：用於未來可能的自動啟動功能。
-   - 目標視窗位置與大小 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`, `GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)：由 `game_monitor.py` 使用。
-   - 監控間隔 (`MONITOR_INTERVAL_SECONDS`)：`game_monitor.py` 檢查視窗狀態的頻率。
+1.  **首次設定 (Setup.py)**：
+    *   執行 `python Setup.py`。
+    *   此腳本會檢查 `config.py` 和 `.env` 文件是否存在。
+    *   如果 `config.py` 不存在，它會使用 `config_template.py` 作為模板來創建一個新的 `config.py`。
+    *   如果 `.env` 不存在，它會提示使用者輸入必要的 API 金鑰（例如 OpenAI API Key）和其他敏感配置，然後創建 `.env` 文件。
+    *   **重要**：`.env` 文件應加入 `.gitignore` 以避免提交敏感資訊。`config.py` 通常也應加入 `.gitignore`，因為它可能包含本地路徑或由 `Setup.py` 生成。
+2.  **API 設定**：API 金鑰和其他敏感資訊儲存在 `.env` 文件中，由 `config.py` 讀取。
+3.  **核心配置 (config.py)**：包含非敏感的系統參數、MCP 伺服器列表、UI 模板路徑、遊戲視窗設定等。此文件現在由 `Setup.py` 根據 `config_template.py` 生成（如果不存在）。
+4.  **MCP 服務器配置**：在 `config.py` 中配置要連接的 MCP 服務器。
+5.  **UI 樣本**：需要提供特定遊戲界面元素的截圖模板，路徑在 `config.py` 中定義。
+6.  **遊戲視窗設定**：在 `config.py` 中配置：
+    *   遊戲執行檔路徑 (`GAME_EXECUTABLE_PATH`)。
+    *   目標視窗位置與大小 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`, `GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)。
+    *   監控間隔 (`MONITOR_INTERVAL_SECONDS`)。
 
 ## 最近改進（2025-04-17）
 
