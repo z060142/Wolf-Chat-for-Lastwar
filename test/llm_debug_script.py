@@ -146,6 +146,16 @@ async def shutdown():
         all_discovered_mcp_tools.clear()
         print("Cleanup completed.")
 
+# --- Get Username Function ---
+async def get_username():
+    """Prompt the user for their name and return it."""
+    print("\nPlease enter your name (or press Enter to use 'Debugger'): ", end="")
+    user_input = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+    user_name = user_input.strip()
+    if not user_name:
+        user_name = "Debugger"  # Default name if nothing is entered
+    return user_name
+
 # --- Main Debug Loop ---
 async def debug_loop():
     """Main loop for interactive LLM debugging."""
@@ -162,12 +172,14 @@ async def debug_loop():
         if confirm.strip().lower() != 'y':
             return
 
+    # 3. Get username
+    user_name = await get_username()
+    print(f"Debug session started as: {user_name}")
+
     print("\n--- LLM Debug Interface ---")
     print("Enter your message to the LLM.")
     print("Type 'quit' or 'exit' to stop.")
     print("-----------------------------")
-
-    user_name = "Debugger" # Fixed user name for this script
 
     while not shutdown_requested:
         try:
