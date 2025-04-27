@@ -162,6 +162,16 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     - **傳遞**：將 `reply_context_activated` 標記連同其他觸發資訊（發送者、內容、氣泡區域）一起放入隊列。
     - **發送**：主控模塊 (`main.py`) 在處理 `send_reply` 命令時，不再需要執行點擊回覆的操作，只需直接調用 `send_chat_message` 即可（因為如果 `reply_context_activated` 為 `True`，輸入框應已準備好）。
 
+## 最近改進（2025-04-28）
+
+### LLM 回應 JSON 輸出順序調整
+
+- **目的**：調整 LLM 結構化回應的 JSON 輸出格式，將 `commands` 欄位移至最前方，接著是 `dialogue` 和 `thoughts`，以期改善後續處理流程或提高 LLM 對工具調用（tool_calls）與指令（commands）區分的清晰度。
+- **`llm_interaction.py`**：
+    - 修改了 `parse_structured_response` 函數中構建結果字典的順序。
+    - 現在，當成功解析來自 LLM 的有效 JSON 時，輸出的字典鍵順序將優先排列 `commands`。
+- **效果**：標準化了 JSON 回應的結構順序，有助於下游處理，並可能間接幫助 LLM 更清晰地組織其輸出，尤其是在涉及工具調用和特定指令時。
+
 ## 配置與部署
 
 ### 依賴項

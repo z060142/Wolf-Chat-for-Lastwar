@@ -205,10 +205,10 @@ def parse_structured_response(response_content: str) -> dict:
     """
     # REMOVED DEBUG LOGS FROM HERE
     default_result = {
-        "dialogue": "",
         "commands": [],
+        "valid_response": False,  # 添加標誌表示解析是否成功 (Internal flag)
+        "dialogue": "",
         "thoughts": "",
-        "valid_response": False  # 添加標誌表示解析是否成功
     }
     
     # 如果輸入為空，直接返回默認結果
@@ -235,11 +235,10 @@ def parse_structured_response(response_content: str) -> dict:
                 if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
                     # REMOVED DEBUG LOGS FROM HERE
                     result = {
-                        "dialogue": parsed_json.get("dialogue", ""),
                         "commands": parsed_json.get("commands", []),
+                        "valid_response": bool(parsed_json.get("dialogue", "").strip()), # Internal flag
+                        "dialogue": parsed_json.get("dialogue", ""),
                         "thoughts": parsed_json.get("thoughts", ""),
-                        # Ensure valid_response reflects non-empty dialogue *after stripping*
-                        "valid_response": bool(parsed_json.get("dialogue", "").strip())
                     }
                     # REMOVED DEBUG LOGS FROM HERE
                     return result
@@ -260,10 +259,10 @@ def parse_structured_response(response_content: str) -> dict:
             if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
                 # REMOVED DEBUG LOGS FROM HERE
                 result = {
-                    "dialogue": parsed_json.get("dialogue", ""),
                     "commands": parsed_json.get("commands", []),
+                    "valid_response": bool(parsed_json.get("dialogue", "").strip()), # Internal flag, add strip() check
+                    "dialogue": parsed_json.get("dialogue", ""),
                     "thoughts": parsed_json.get("thoughts", ""),
-                    "valid_response": bool(parsed_json.get("dialogue", "").strip()) # Add strip() check
                 }
                 # REMOVED DEBUG LOGS FROM HERE
                 return result
