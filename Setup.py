@@ -389,6 +389,9 @@ class WolfChatSetup(tk.Tk):
         # Create bottom buttons
         self.create_bottom_buttons()
         
+        # Initialize running process tracker
+        self.running_process = None
+        
         # Set initial states based on loaded data
         self.update_ui_from_data()
     
@@ -844,17 +847,27 @@ class WolfChatSetup(tk.Tk):
         version_label = ttk.Label(btn_frame, text=f"v{VERSION}")
         version_label.pack(side=tk.LEFT, padx=5)
         
-        # Install dependencies button
-        install_deps_btn = ttk.Button(btn_frame, text="Install Dependencies", command=self.install_dependencies)
-        install_deps_btn.pack(side=tk.RIGHT, padx=5)
+        # Action buttons on right (order matters for packing)
+        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.quit)
+        cancel_btn.pack(side=tk.RIGHT, padx=5)
         
-        # Action buttons on right
         save_btn = ttk.Button(btn_frame, text="Save Settings", command=self.save_settings)
         save_btn.pack(side=tk.RIGHT, padx=5)
         
-        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.quit)
-        cancel_btn.pack(side=tk.RIGHT, padx=5)
-    
+        install_deps_btn = ttk.Button(btn_frame, text="Install Dependencies", command=self.install_dependencies)
+        install_deps_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Run buttons
+        self.run_test_btn = ttk.Button(btn_frame, text="Run Test", command=self.run_test_script)
+        self.run_test_btn.pack(side=tk.RIGHT, padx=5)
+        
+        self.run_bot_btn = ttk.Button(btn_frame, text="Run Chat Bot", command=self.run_chat_bot)
+        self.run_bot_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Stop button
+        self.stop_btn = ttk.Button(btn_frame, text="Stop Process", command=self.stop_process, state=tk.DISABLED)
+        self.stop_btn.pack(side=tk.RIGHT, padx=5)
+        
     def install_dependencies(self):
         """Run the installation script for dependencies"""
         try:
@@ -872,6 +885,72 @@ class WolfChatSetup(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch installer: {str(e)}")
 
+    def run_chat_bot(self):
+        """Run the main chat bot script"""
+        try:
+            import subprocess
+            import sys
+            if not os.path.exists("main.py"):
+                messagebox.showerror("Error", "Could not find main.py script")
+                return
+            
+            if self.running_process is not None:
+                 messagebox.showwarning("Already Running", "Another process is already running. Please stop it first.")
+                 return
+
+            self.running_process = subprocess.Popen([sys.executable, "main.py"])
+            print("Attempting to start main.py...")
+            self.update_run_button_states(False) # Disable run buttons, enable stop
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch main.py: {str(e)}")
+            self.update_run_button_states(True) # Re-enable buttons on failure
+
+    def run_test_script(self):
+        """Run the LLM debug script"""
+        try:
+            import subprocess
+            import sys
+            test_script_path = os.path.join("test", "llm_debug_script.py")
+            if not os.path.exists(test_script_path):
+                messagebox.showerror("Error", f"Could not find {test_script_path}")
+                return
+
+            if self.running_process is not None:
+                 messagebox.showwarning("Already Running", "Another process is already running. Please stop it first.")
+                 return
+
+            self.running_process = subprocess.Popen([sys.executable, test_script_path])
+            print(f"Attempting to start {test_script_path}...")
+            self.update_run_button_states(False) # Disable run buttons, enable stop
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch {test_script_path}: {str(e)}")
+            self.update_run_button_states(True) # Re-enable buttons on failure
+
+    def stop_process(self):
+        """Stop the currently running process"""
+        if hasattr(self, 'running_process') and self.running_process is not None:
+            try:
+                print("Attempting to terminate running process...")
+                self.running_process.terminate() # Or .kill() for a more forceful stop
+                self.running_process = None
+                messagebox.showinfo("Process Stopped", "The running process has been terminated.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to terminate process: {str(e)}")
+            finally:
+                # Re-enable run buttons and disable stop button
+                self.update_run_button_states(True)
+        else:
+            messagebox.showinfo("No Process", "No process is currently running.")
+
+    def update_run_button_states(self, enable):
+        """Enable or disable the run buttons and update stop button state"""
+        # Assuming run_bot_btn and run_test_btn exist and are class attributes
+        if hasattr(self, 'run_bot_btn'):
+             self.run_bot_btn.config(state=tk.NORMAL if enable else tk.DISABLED)
+        if hasattr(self, 'run_test_btn'):
+             self.run_test_btn.config(state=tk.NORMAL if enable else tk.DISABLED)
+        if hasattr(self, 'stop_btn'):
+             self.stop_btn.config(state=tk.DISABLED if enable else tk.NORMAL)
     
     def update_ui_from_data(self):
         """Update UI controls from loaded data"""
@@ -1190,7 +1269,7 @@ class WolfChatSetup(tk.Tk):
             generate_config_file(self.config_data, self.env_data)
             
             messagebox.showinfo("Success", "Settings saved successfully.\nRestart Wolf Chat for changes to take effect.")
-            self.destroy()
+            # self.destroy() # Removed to keep the window open after saving
             
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred while saving settings:\n{str(e)}")
