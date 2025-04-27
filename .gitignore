@@ -2,7 +2,9 @@
 *.log
 llm_debug.log
 config.py
+config.py.bak
 __pycache__/
 debug_screenshots/
 chat_logs/
 backup/
+chroma_data/

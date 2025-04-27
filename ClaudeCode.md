@@ -176,13 +176,20 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 ### 環境設定
 
-1. **API 設定**：通過 .env 文件或環境變數設置 API 密鑰
-2. **MCP 服務器配置**：在 config.py 中配置要連接的 MCP 服務器
-3. **UI 樣本**：需要提供特定遊戲界面元素的截圖模板
-4. **遊戲視窗設定**：
-   - 遊戲執行檔路徑 (`GAME_EXECUTABLE_PATH`)：用於未來可能的自動啟動功能。
-   - 目標視窗位置與大小 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`, `GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)：由 `game_monitor.py` 使用。
-   - 監控間隔 (`MONITOR_INTERVAL_SECONDS`)：`game_monitor.py` 檢查視窗狀態的頻率。
+1.  **首次設定 (Setup.py)**：
+    *   執行 `python Setup.py`。
+    *   此腳本會檢查 `config.py` 和 `.env` 文件是否存在。
+    *   如果 `config.py` 不存在，它會使用 `config_template.py` 作為模板來創建一個新的 `config.py`。
+    *   如果 `.env` 不存在，它會提示使用者輸入必要的 API 金鑰（例如 OpenAI API Key）和其他敏感配置，然後創建 `.env` 文件。
+    *   **重要**：`.env` 文件應加入 `.gitignore` 以避免提交敏感資訊。`config.py` 通常也應加入 `.gitignore`，因為它可能包含本地路徑或由 `Setup.py` 生成。
+2.  **API 設定**：API 金鑰和其他敏感資訊儲存在 `.env` 文件中，由 `config.py` 讀取。
+3.  **核心配置 (config.py)**：包含非敏感的系統參數、MCP 伺服器列表、UI 模板路徑、遊戲視窗設定等。此文件現在由 `Setup.py` 根據 `config_template.py` 生成（如果不存在）。
+4.  **MCP 服務器配置**：在 `config.py` 中配置要連接的 MCP 服務器。
+5.  **UI 樣本**：需要提供特定遊戲界面元素的截圖模板，路徑在 `config.py` 中定義。
+6.  **遊戲視窗設定**：在 `config.py` 中配置：
+    *   遊戲執行檔路徑 (`GAME_EXECUTABLE_PATH`)。
+    *   目標視窗位置與大小 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`, `GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)。
+    *   監控間隔 (`MONITOR_INTERVAL_SECONDS`)。
 
 ## 最近改進（2025-04-17）
 
@@ -416,6 +423,18 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
         2. 等待固定時間（30 秒），讓遊戲啟動並穩定。
         3. 恢復 UI 監控並重置狀態（清除 `recent_texts` 和 `last_processed_bubble_info`）。
 - **效果**：將暫停/恢復 UI 監控的時序控制權移至 `ui_interaction.py` 內部，減少了模塊間的直接依賴和潛在干擾，依賴持續監控來確保最終視窗狀態。
+
+## 最近改進（2025-04-27）
+
+### Setup.py 功能增強
+
+- **目的**：增強 `Setup.py` 設定工具的功能，使其在保存設定後保持開啟，並提供直接啟動和終止 Chat Bot 及 Test 腳本的按鈕。
+- **修改內容**：
+    - 修改 `save_settings` 方法，移除關閉視窗的邏輯，僅顯示保存成功的提示訊息。
+    - 在 GUI 底部新增 "Run Chat Bot" 和 "Run Test" 按鈕，分別用於啟動 `main.py` 和 `test/llm_debug_script.py`。
+    - 新增 "Stop Process" 按鈕，用於終止由上述兩個按鈕啟動的腳本。
+    - 實現進程追蹤和按鈕狀態管理，確保在有腳本運行時禁用運行按鈕，啟用停止按鈕。
+- **效果**：提高了 `Setup.py` 的易用性，方便使用者在調整設定後直接啟動腳本進行測試，並提供了便捷的終止方式。
 
 ## 開發建議
 
