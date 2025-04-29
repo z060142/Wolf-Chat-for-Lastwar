@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import random # Added for synthetic response generation
 import re  # 用於正則表達式匹配JSON
 import time  # 用於記錄時間戳
 from datetime import datetime  # 用於格式化時間
@@ -83,13 +84,13 @@ Here you need to obtain the conversation memory, impression, and emotional respo
 
 **1. Basic User Retrieval:**
    - Identify the username from `<CURRENT_MESSAGE>`
-   - Using the `tool_calls` mechanism, execute: `chroma_query_documents(collection_name: "wolfhart_user_profiles", query_texts: ["{username}"], n_results: 1)`
+   - Using the `tool_calls` mechanism, execute: `chroma_query_documents(collection_name: "wolfhart_user_profiles", query_texts: ["{username} profile"], n_results: 1-3)`
    - This step must be completed before any response generation
 
 **2. Context Expansion:**
    - Perform additional queries as needed, using the `tool_calls` mechanism:
-     - Relevant conversations: `chroma_query_documents(collection_name: "wolfhart_conversations", query_texts: ["{username} {query keywords}"], n_results: 2)`
-     - Core personality reference: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["Wolfhart {relevant attitude}"], n_results: 1)`
+     - Relevant conversations: `chroma_query_documents(collection_name: "wolfhart_conversations", query_texts: ["{username} {query keywords}"], n_results: 2-5)`
+     - Core personality reference: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["Wolfhart {relevant attitude}"], n_results: 1-3)`
 
 **3. Maintain Output Format:**
    - After memory retrieval, still respond using the specified JSON format:
@@ -130,8 +131,7 @@ You have access to several tools: Web Search and Memory Management tools.
 You MUST respond in the following JSON format:
 ```json
 {{
-  "dialogue": "Your actual response that will be shown in the game chat",
-  "commands": [
+    "commands": [
     {{
       "type": "command_type",
       "parameters": {{
@@ -140,7 +140,8 @@ You MUST respond in the following JSON format:
       }}
     }}
   ],
-  "thoughts": "Your internal analysis and reasoning inner thoughts or emotions (not shown to the user)"
+  "thoughts": "Your internal analysis and reasoning inner thoughts or emotions (not shown to the user)",
+  "dialogue": "Your actual response that will be shown in the game chat"
 }}
 ```
 
@@ -410,71 +411,42 @@ def _format_mcp_tools_for_openai(mcp_tools: list) -> list:
 
 # --- Synthetic Response Generator ---
 def _create_synthetic_response_from_tools(tool_results, original_query):
-    """創建基於工具調用結果的合成回應，保持Wolfhart的角色特性。"""
-    
-    # 提取用戶查詢的關鍵詞
-    query_keywords = set()
-    query_lower = original_query.lower()
-    
-    # 基本關鍵詞提取
-    if "中庄" in query_lower and ("午餐" in query_lower or "餐廳" in query_lower or "吃" in query_lower):
-        query_type = "餐廳查詢"
-        query_keywords = {"中庄", "餐廳", "午餐", "美食"}
-        
-    # 其他查詢類型...
-    else:
-        query_type = "一般查詢"
-    
-    # 開始從工具結果提取關鍵信息
-    extracted_info = {}
-    restaurant_names = []
-    
-    # 處理web_search結果
-    web_search_results = [r for r in tool_results if r.get('name') == 'web_search']
-    if web_search_results:
-        try:
-            for result in web_search_results:
-                content_str = result.get('content', '')
-                if not content_str:
-                    continue
-                
-                # 解析JSON內容
-                content = json.loads(content_str) if isinstance(content_str, str) else content_str
-                search_results = content.get('results', [])
-                
-                # 提取相關信息
-                for search_result in search_results:
-                    title = search_result.get('title', '')
-                    if '中庄' in title and ('餐' in title or '食' in title or '午' in title or '吃' in title):
-                        # 提取餐廳名稱
-                        if '老虎蒸餃' in title:
-                            restaurant_names.append('老虎蒸餃')
-                        elif '割烹' in title and '中庄' in title:
-                            restaurant_names.append('割烹中庄')
-                        # 更多餐廳名稱提取選擇...
-        except Exception as e:
-            print(f"Error extracting info from web_search: {e}")
-    
-    # 生成符合Wolfhart性格的回應
-    restaurant_count = len(restaurant_names)
-    
-    if query_type == "餐廳查詢" and restaurant_count > 0:
-        if restaurant_count == 1:
-            dialogue = f"中庄的{restaurant_names[0]}值得一提。需要更詳細的情報嗎？"
-        else:
-            dialogue = f"根據我的情報網絡，中庄有{restaurant_count}家值得注意的餐廳。需要我透露更多細節嗎？"
-    else:
-        # 通用回應
-        dialogue = "我的情報網絡已收集了相關信息。請指明你需要了解的具體細節。"
-    
-    # 構建結構化回應
+    """
+    Creates a synthetic, dismissive response in Wolfhart's character
+    ONLY when the LLM uses tools but fails to provide a dialogue response.
+    """
+    # List of dismissive responses in Wolfhart's character (English)
+    dialogue_options = [
+        "Hmph, must you bother me with such questions?",
+        "I haven't the time to elaborate. Think for yourself.",
+        "This is self-evident. It requires no further comment from me.",
+        "Kindly refrain from wasting my time. Return when you have substantive inquiries.",
+        "Clearly, this matter isn't worthy of a detailed response.",
+        "Is that so? Are there any other questions?",
+        "I have more pressing matters to attend to.",
+        "...Is that all? That is your question?",
+        "If you genuinely wish to know, pose a more precise question next time.",
+        "Wouldn't your own investigation yield faster results?",
+        "To bring such trivialities to my attention...",
+        "I am not your personal consultant. Handle it yourself.",
+        "The answer to this is rather obvious, is it not?",
+        "Approach me again when you have inquiries of greater depth.",
+        "Do you truly expect me to address such a question?",
+        "Allow me a moment... No, I shan't answer."
+    ]
+
+    # Randomly select a response
+    dialogue = random.choice(dialogue_options)
+
+    # Construct the structured response
     synthetic_response = {
         "dialogue": dialogue,
         "commands": [],
-        "thoughts": "基於工具調用結果合成的回應，保持Wolfhart的角色特性"
+        "thoughts": "Auto-generated dismissive response due to LLM failing to provide dialogue after tool use. Reflects Wolfhart's cold, impatient, and arrogant personality traits."
     }
-    
-    return json.dumps(synthetic_response)
+
+    # Return as a JSON string, as expected by the calling function
+    return json.dumps(synthetic_response, ensure_ascii=False)
 
 
 # --- History Formatting Helper ---
@@ -491,7 +463,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
         A list of message dictionaries for the OpenAI API.
     """
     # Limits
-    SAME_SENDER_LIMIT = 4  # Last 4 interactions (user + bot response = 1 interaction)
+    SAME_SENDER_LIMIT = 5  # Last 4 interactions (user + bot response = 1 interaction)
     OTHER_SENDER_LIMIT = 3 # Last 3 messages from other users
 
     relevant_history = []
@@ -714,36 +686,44 @@ async def get_llm_response(
             debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Max Tool Call Cycles Reached", f"Reached limit of {max_tool_calls_per_turn} cycles")
 
         # --- Final Response Processing for this Attempt ---
-        # Determine final content based on last non-empty response or synthetic generation
-        if last_non_empty_response:
-            final_content_for_attempt = last_non_empty_response
-        elif all_tool_results:
-            print(f"Creating synthetic response from tool results (Attempt {attempt_count})...")
+        # Determine the content to parse initially (prefer last non-empty response from LLM)
+        content_to_parse = last_non_empty_response if last_non_empty_response else final_content
+
+        # --- Add Debug Logs Around Initial Parsing Call ---
+        print(f"DEBUG: Attempt {attempt_count} - Preparing to call initial parse_structured_response.")
+        print(f"DEBUG: Attempt {attempt_count} - content_to_parse:\n'''\n{content_to_parse}\n'''")
+        # Parse the LLM's final content (or lack thereof)
+        parsed_response = parse_structured_response(content_to_parse)
+        print(f"DEBUG: Attempt {attempt_count} - Returned from initial parse_structured_response.")
+        print(f"DEBUG: Attempt {attempt_count} - initial parsed_response dict: {parsed_response}")
+        # --- End Debug Logs ---
+
+        # Check if we need to generate a synthetic response
+        if all_tool_results and not parsed_response.get("valid_response"):
+            print(f"INFO: Tools were used but LLM response was invalid/empty. Generating synthetic response (Attempt {attempt_count})...")
+            debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Generating Synthetic Response",
+                      f"Reason: Tools used ({len(all_tool_results)} results) but initial parse failed (valid_response=False).")
             last_user_message = ""
             if history:
                  # Find the actual last user message tuple in the original history
                  last_user_entry = history[-1]
-                 # Ensure it's actually a user message before accessing index 2
-                 if len(last_user_entry) > 2 and last_user_entry[1] == 'user': # Check type at index 1
+                 # Ensure it's actually a user message before accessing index 3
+                 if len(last_user_entry) > 3 and last_user_entry[1] == 'user': # Check type at index 1
                       last_user_message = last_user_entry[3] # Message is at index 3 now
-            final_content_for_attempt = _create_synthetic_response_from_tools(all_tool_results, last_user_message)
-        else:
-            # If no tool calls happened and content was empty, final_content remains ""
-             final_content_for_attempt = final_content # Use the (potentially empty) content from the last cycle
 
-        # --- Add Debug Logs Around Parsing Call ---
-        print(f"DEBUG: Attempt {attempt_count} - Preparing to call parse_structured_response.")
-        print(f"DEBUG: Attempt {attempt_count} - final_content_for_attempt:\n'''\n{final_content_for_attempt}\n'''")
-        # Parse the final content for this attempt
-        parsed_response = parse_structured_response(final_content_for_attempt) # Call the parser
-        print(f"DEBUG: Attempt {attempt_count} - Returned from parse_structured_response.")
-        print(f"DEBUG: Attempt {attempt_count} - parsed_response dict: {parsed_response}")
-        # --- End Debug Logs ---
+            synthetic_content = _create_synthetic_response_from_tools(all_tool_results, last_user_message)
 
-        # valid_response is set within parse_structured_response
+            # --- Add Debug Logs Around Synthetic Parsing Call ---
+            print(f"DEBUG: Attempt {attempt_count} - Preparing to call parse_structured_response for synthetic content.")
+            print(f"DEBUG: Attempt {attempt_count} - synthetic_content:\n'''\n{synthetic_content}\n'''")
+            # Parse the synthetic content, overwriting the previous result
+            parsed_response = parse_structured_response(synthetic_content)
+            print(f"DEBUG: Attempt {attempt_count} - Returned from synthetic parse_structured_response.")
+            print(f"DEBUG: Attempt {attempt_count} - final parsed_response dict (after synthetic): {parsed_response}")
+            # --- End Debug Logs ---
 
-        # Log the parsed response (using the dict directly is safer than json.dumps if parsing failed partially)
-        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Parsed Response", parsed_response)
+        # Log the final parsed response for this attempt (could be original or synthetic)
+        debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Final Parsed Response", parsed_response)
 
         # Check validity for retry logic
         if parsed_response.get("valid_response"):

@@ -1120,6 +1120,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
     last_processed_bubble_info = None # Store the whole dict now
     recent_texts = collections.deque(maxlen=RECENT_TEXT_HISTORY_MAXLEN) # Context-specific history needed
     screenshot_counter = 0 # Initialize counter for debug screenshots
+    main_screen_click_counter = 0 # Counter for consecutive main screen clicks
 
     while True:
         # --- Process ALL Pending Commands First ---
@@ -1220,17 +1221,31 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
             base_locs = detector._find_template('base_screen', confidence=0.8)
             map_locs = detector._find_template('world_map_screen', confidence=0.8)
             if base_locs or map_locs:
-                print("UI Thread: Detected main screen (Base or World Map). Clicking to return to chat...")
-                # Coordinates provided by user (adjust if needed based on actual screen resolution/layout)
-                # IMPORTANT: Ensure these coordinates are correct for the target window/resolution
-                target_x, target_y = 600, 1300
-                interactor.click_at(target_x, target_y)
-                time.sleep(0.1) # Short delay after click
-                print("UI Thread: Clicked to return to chat. Re-checking screen state...")
-                continue # Skip the rest of the loop and re-evaluate
+                print(f"UI Thread: Detected main screen (Base or World Map). Counter: {main_screen_click_counter}")
+                if main_screen_click_counter < 5:
+                    main_screen_click_counter += 1
+                    print(f"UI Thread: Attempting click #{main_screen_click_counter}/5 to return to chat...")
+                    # Coordinates provided by user (adjust if needed based on actual screen resolution/layout)
+                    target_x, target_y = 600, 1300
+                    interactor.click_at(target_x, target_y)
+                    time.sleep(0.1) # Short delay after click
+                    print("UI Thread: Clicked. Re-checking screen state...")
+                else:
+                    print("UI Thread: Clicked 5 times, still on main screen. Pressing ESC...")
+                    interactor.press_key('esc')
+                    main_screen_click_counter = 0 # Reset counter after ESC
+                    time.sleep(0.05) # Wait a bit longer after ESC
+                    print("UI Thread: ESC pressed. Re-checking screen state...")
+                continue # Skip the rest of the loop and re-evaluate state
+            else:
+                # Reset counter if not on the main screen
+                if main_screen_click_counter > 0:
+                    print("UI Thread: Not on main screen, resetting click counter.")
+                    main_screen_click_counter = 0
         except Exception as nav_err:
             print(f"UI Thread: Error during main screen navigation check: {nav_err}")
             # Decide if you want to continue or pause after error
+            main_screen_click_counter = 0 # Reset counter on error too
 
         # --- Process Commands Second (Non-blocking) ---
         # This block seems redundant now as commands are processed at the start of the loop.
