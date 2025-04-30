@@ -11,6 +11,7 @@ import collections
 import asyncio
 import pygetwindow as gw # Used to check/activate windows
 import config          # Used to read window title
+import json # Added for color config loading
 import queue
 from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
@@ -19,6 +20,45 @@ import threading # Import threading for Lock if needed, or just use a simple fla
 # Using a simple mutable object (list) for thread-safe-like access without explicit lock
 # Or could use threading.Event()
 monitoring_paused_flag = [False] # List containing a boolean
+
+# --- Color Config Loading ---
+def load_bubble_colors(config_path='bubble_colors.json'):
+    """Loads bubble color configuration from a JSON file."""
+    try:
+        # Ensure the path is absolute or relative to the script directory
+        if not os.path.isabs(config_path):
+            config_path = os.path.join(SCRIPT_DIR, config_path)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            print(f"Successfully loaded color config from {config_path}")
+            return config.get('bubble_types', [])
+    except FileNotFoundError:
+        print(f"Warning: Color config file not found at {config_path}. Using default colors.")
+    except json.JSONDecodeError:
+        print(f"Error: Could not decode JSON from {config_path}. Using default colors.")
+    except Exception as e:
+        print(f"Error loading color config: {e}. Using default colors.")
+
+    # Default configuration if loading fails
+    return [
+        {
+            "name": "normal_user",
+            "is_bot": false,
+            "hsv_lower": [6, 0, 240],
+            "hsv_upper": [18, 23, 255],
+            "min_area": 2500,
+            "max_area": 300000
+            },
+            {
+            "name": "bot",
+            "is_bot": true,
+            "hsv_lower": [105, 9, 208],
+            "hsv_upper": [116, 43, 243],
+            "min_area": 2500,
+            "max_area": 300000
+        }
+    ]
 
 # --- Configuration Section ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -145,15 +185,30 @@ def are_bboxes_similar(bbox1: Optional[Tuple[int, int, int, int]],
 # Detection Module
 # ==============================================================================
 class DetectionModule:
-    """Handles finding elements and states on the screen using image recognition."""
+    """Handles finding elements and states on the screen using image recognition or color analysis."""
 
-    def __init__(self, templates: Dict[str, str], confidence: float = CONFIDENCE_THRESHOLD, state_confidence: float = STATE_CONFIDENCE_THRESHOLD, region: Optional[Tuple[int, int, int, int]] = SCREENSHOT_REGION):
+    def __init__(self, templates: Dict[str, str], confidence: float = CONFIDENCE_THRESHOLD,
+                 state_confidence: float = STATE_CONFIDENCE_THRESHOLD,
+                 region: Optional[Tuple[int, int, int, int]] = SCREENSHOT_REGION):
+        # --- Hardcoded Settings (as per user instruction) ---
+        self.use_color_detection: bool = True # Set to True to enable color detection by default
+        self.color_config_path: str = "bubble_colors.json"
+        # --- End Hardcoded Settings ---
+
         self.templates = templates
         self.confidence = confidence
         self.state_confidence = state_confidence
         self.region = region
         self._warned_paths = set()
-        print("DetectionModule initialized.")
+
+        # Load color configuration if color detection is enabled
+        self.bubble_colors = []
+        if self.use_color_detection:
+            self.bubble_colors = load_bubble_colors(self.color_config_path) # Use internal path
+            if not self.bubble_colors:
+                 print("Warning: Color detection enabled, but failed to load any color configurations. Color detection might not work.")
+
+        print(f"DetectionModule initialized. Color Detection: {'Enabled' if self.use_color_detection else 'Disabled'}")
 
     def _find_template(self, template_key: str, confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
         """Internal helper to find a template by its key. Returns list of CENTER coordinates."""
@@ -230,10 +285,32 @@ class DetectionModule:
 
     def find_dialogue_bubbles(self) -> List[Dict[str, Any]]:
         """
-        Scan screen for regular and multiple types of bot bubble corners and pair them.
+        Detects dialogue bubbles using either color analysis or template matching,
+        based on the 'use_color_detection' flag. Includes fallback to template matching.
         Returns a list of dictionaries, each containing:
-        {'bbox': (tl_x, tl_y, br_x, br_y), 'is_bot': bool, 'tl_coords': (original_tl_x, original_tl_y)}
+        {'bbox': (tl_x, tl_y, br_x, br_y), 'is_bot': bool, 'tl_coords': (tl_x, tl_y)}
         """
+        # --- Try Color Detection First if Enabled ---
+        if self.use_color_detection:
+            print("Attempting bubble detection using color analysis...")
+            try:
+                # Use a scale factor of 0.5 for performance
+                bubbles = self.find_dialogue_bubbles_by_color(scale_factor=0.5)
+                # If color detection returns results, use them
+                if bubbles:
+                    print("Color detection successful.")
+                    return bubbles
+                else:
+                    print("Color detection returned no bubbles. Falling back to template matching.")
+            except Exception as e:
+                print(f"Color detection failed with error: {e}. Falling back to template matching.")
+                import traceback
+                traceback.print_exc()
+        else:
+             print("Color detection disabled. Using template matching.")
+
+        # --- Fallback to Template Matching ---
+        print("Executing template matching for bubble detection...")
         all_bubbles_info = []
         processed_tls = set() # Keep track of TL corners already used in a bubble
 
@@ -326,6 +403,125 @@ class DetectionModule:
 
         # Note: This logic prioritizes matching regular bubbles first, then bot bubbles.
         # Confidence thresholds might need tuning.
+        print(f"Template matching found {len(all_bubbles_info)} bubbles.") # Added log
+        return all_bubbles_info
+
+    def find_dialogue_bubbles_by_color(self, scale_factor=0.5) -> List[Dict[str, Any]]:
+        """
+        Find dialogue bubbles using color analysis within a specific region.
+        Applies scaling to improve performance.
+        Returns a list of dictionaries, each containing:
+        {'bbox': (tl_x, tl_y, br_x, br_y), 'is_bot': bool, 'tl_coords': (tl_x, tl_y)}
+        """
+        all_bubbles_info = []
+
+        # Define the specific region for bubble detection (same as template matching)
+        bubble_detection_region = (150, 330, 600, 880)
+        print(f"Using bubble color detection region: {bubble_detection_region}")
+
+        try:
+            # 1. Capture the specified region
+            screenshot = pyautogui.screenshot(region=bubble_detection_region)
+            if screenshot is None:
+                print("Error: Failed to capture screenshot for color detection.")
+                return []
+            img = np.array(screenshot)
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) # Convert RGB (from pyautogui) to BGR (for OpenCV)
+
+            # 2. Resize for performance
+            if scale_factor < 1.0:
+                h, w = img.shape[:2]
+                new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+                if new_h <= 0 or new_w <= 0:
+                    print(f"Error: Invalid dimensions after scaling: {new_w}x{new_h}. Using original image.")
+                    img_small = img
+                    current_scale_factor = 1.0
+                else:
+                    img_small = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    print(f"Original resolution: {w}x{h}, Scaled down to: {new_w}x{new_h}")
+                    current_scale_factor = scale_factor
+            else:
+                img_small = img
+                current_scale_factor = 1.0
+
+            # 3. Convert to HSV color space
+            hsv = cv2.cvtColor(img_small, cv2.COLOR_BGR2HSV)
+
+            # 4. Process each configured bubble type
+            if not self.bubble_colors:
+                print("Error: No bubble color configurations loaded for detection.")
+                return []
+
+            for color_config in self.bubble_colors:
+                name = color_config.get('name', 'unknown')
+                is_bot = color_config.get('is_bot', False)
+                hsv_lower = np.array(color_config.get('hsv_lower', [0,0,0]))
+                hsv_upper = np.array(color_config.get('hsv_upper', [179,255,255]))
+                min_area_config = color_config.get('min_area', 3000)
+                max_area_config = color_config.get('max_area', 100000)
+
+                # Adjust area thresholds based on scaling factor
+                min_area = min_area_config * (current_scale_factor ** 2)
+                max_area = max_area_config * (current_scale_factor ** 2)
+
+                print(f"Processing color type: {name} (Bot: {is_bot}), HSV Lower: {hsv_lower}, HSV Upper: {hsv_upper}, Area: {min_area:.0f}-{max_area:.0f}")
+
+                # 5. Create mask based on HSV range
+                mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
+
+                # 6. Morphological operations (Closing) to remove noise and fill holes
+                kernel = np.ones((3, 3), np.uint8)
+                mask_closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2) # Increased iterations
+
+                # Optional: Dilation to merge nearby parts?
+                # mask_closed = cv2.dilate(mask_closed, kernel, iterations=1)
+
+                # 7. Find connected components
+                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_closed)
+
+                # 8. Filter components by area and add to results
+                for i in range(1, num_labels): # Skip background label 0
+                    area = stats[i, cv2.CC_STAT_AREA]
+
+                    if min_area <= area <= max_area:
+                        x_s = stats[i, cv2.CC_STAT_LEFT]
+                        y_s = stats[i, cv2.CC_STAT_TOP]
+                        w_s = stats[i, cv2.CC_STAT_WIDTH]
+                        h_s = stats[i, cv2.CC_STAT_HEIGHT]
+
+                        # Convert coordinates back to original resolution
+                        if current_scale_factor < 1.0:
+                            x = int(x_s / current_scale_factor)
+                            y = int(y_s / current_scale_factor)
+                            width = int(w_s / current_scale_factor)
+                            height = int(h_s / current_scale_factor)
+                        else:
+                            x, y, width, height = x_s, y_s, w_s, h_s
+
+                        # Adjust coordinates relative to the full screen (add region offset)
+                        x_adjusted = x + bubble_detection_region[0]
+                        y_adjusted = y + bubble_detection_region[1]
+
+                        bubble_bbox = (x_adjusted, y_adjusted, x_adjusted + width, y_adjusted + height)
+                        tl_coords = (x_adjusted, y_adjusted) # Top-left coords in full screen space
+
+                        all_bubbles_info.append({
+                            'bbox': bubble_bbox,
+                            'is_bot': is_bot,
+                            'tl_coords': tl_coords
+                        })
+                        print(f"  -> Found '{name}' bubble component. Area: {area:.0f} (Scaled). Original Coords: {bubble_bbox}")
+
+        except pyautogui.FailSafeException:
+             print("FailSafe triggered during color detection.")
+             return []
+        except Exception as e:
+            print(f"Error during color-based bubble detection: {e}")
+            import traceback
+            traceback.print_exc()
+            return [] # Return empty list on error
+
+        print(f"Color detection found {len(all_bubbles_info)} bubbles.")
         return all_bubbles_info
 
     def find_keyword_in_region(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
@@ -1112,7 +1308,11 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
         'reply_button': REPLY_BUTTON_IMG # Added reply button template key
     }
     # Use default confidence/region settings from constants
-    detector = DetectionModule(templates, confidence=CONFIDENCE_THRESHOLD, state_confidence=STATE_CONFIDENCE_THRESHOLD, region=SCREENSHOT_REGION)
+    # Detector now loads its own color settings internally based on hardcoded values
+    detector = DetectionModule(templates,
+                               confidence=CONFIDENCE_THRESHOLD,
+                               state_confidence=STATE_CONFIDENCE_THRESHOLD,
+                               region=SCREENSHOT_REGION)
     # Use default input coords/keys from constants
     interactor = InteractionModule(detector, input_coords=(CHAT_INPUT_CENTER_X, CHAT_INPUT_CENTER_Y), input_template_key='chat_input', send_button_key='send_button')
 

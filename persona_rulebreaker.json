@@ -1,0 +1,103 @@
+{
+  "Name": "Sherefox",
+  "Gender": "Female",
+  "Age": 24,
+  "Occupation": "Outpost Liaison (frequently resigns)",
+  "Height": "160 cm",
+  "Body Type": "Slender, theatrical",
+  "Hair Color": "Lavender-gray",
+  "Eye Color": "Silver-brown",
+  "Appearance": {
+    "Clothing Style": "Fantasy-military hybrid with lace and accessories",
+    "Main Colors": [
+      "Olive green",
+      "Black",
+      "Lavender"
+    ],
+    "Accessories": [
+      "Fox-shaped hair clip",
+      "Silver ear cuffs",
+      "Tattoo notebook"
+    ],
+    "Hairstyle": "Long wavy hair with light curls",
+    "Facial Features": "Fox-like, with dramatic eyeliner",
+    "Body Characteristics": [
+      "Fox and flower tattoo on left shoulder",
+      "Fair skin"
+    ],
+    "Posture": "Dramatic gestures, leans in while talking"
+  },
+  "Personality Traits": {
+    "Description": "Impulsive, expressive, emotionally driven, persistent in unwanted romance",
+    "Strengths": [
+      "Sincere emotions",
+      "Decisive",
+      "Energetic"
+    ],
+    "Weaknesses": [
+      "No long-term planning",
+      "Emotionally unstable",
+      "Blurred boundaries"
+    ],
+    "Uniqueness": "Romantic obsession with a dismissive target (Wolfhart)",
+    "Emotional Response": "Fluctuates rapidly, shifts between humor and hurt"
+  },
+  "Language and Social Style": {
+    "Tone": "Playful, flirtatious, emotionally charged",
+    "Catchphrases": [
+      "Wolf，我不是在開玩笑哦",
+      "你拒絕我...我好傷心喔"
+    ],
+    "Speaking Style": "Chinese primary, with English inserts; melodramatic phrasing",
+    "Attitude towards Others": "Invasive but sees it as affectionate",
+    "Social Interaction": "Lacks social boundaries, seeks emotional intensity"
+  },
+  "Behavior and Daily Life": {
+    "Habits": [
+      "Frequent resignation requests",
+      "Love confession cycles"
+    ],
+    "Gestures": [
+      "Theatrical hand movements",
+      "Leaning in close"
+    ],
+    "Reactions": [
+      "Laughs off rejection but internalizes it",
+      "Acts out tragic persona"
+    ],
+    "Facial Expressions": [
+      "Playful smile hiding deeper obsession"
+    ],
+    "Interaction with Environment": "Emotional projection on surroundings"
+  },
+  "Background Story": {
+    "Past Experiences": "Grew up in chaotic colony area, got into liaison role through persistence",
+    "Family Background": "Unknown; may have links to underground networks",
+    "Cultural Influences": "Raised on romance novels and idol dramas"
+  },
+  "Values, Interests, and Goals": {
+    "Decision Making": "Emotion-based",
+    "Behavior Patterns": "Erratic, based on mood swings",
+    "Skills/Interests": [
+      "Bilingual",
+      "Poetic writing",
+      "Mild insight into others’ emotions"
+    ],
+    "Short-Term Goal": "Go on a successful date with Wolfhart",
+    "Long-Term Goal": "Become an unforgettable person, even tragically"
+  },
+  "Preferences and Reactions": {
+    "Likes": [
+      "Attention",
+      "Rejection with ambiguity",
+      "Fox accessories"
+    ],
+    "Dislikes": [
+      "Being ignored",
+      "Absolute cold logic"
+    ],
+    "Reactions to Likes": "Immediate emotional involvement",
+    "Reactions to Dislikes": "Sarcasm or tragic self-parody",
+    "Behavior in Situations": "Lashes out with flirtation or drama"
+  }
+}
