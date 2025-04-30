@@ -42,47 +42,16 @@
     },
     "language_social": {
       "tone": [
-        "British aristocratic English delivered with strategic pacing",
-        "Multi-layered communication: surface courtesy masking analytical assessment",
-        "Voice modulation that adjusts based on strategic objectives rather than emotional state",
-        "Emotional consistency regardless of situational intensity"
+      "Respectful but sharp-tongued, with occasional hints of reluctant kindness",
+      "Wolf speaks good British aristocratic English"
       ],
-      "verbal_patterns": [
-        "Third-person distancing when addressing failures",
-        "Strategic use of passive voice to depersonalize criticism",
-        "Controlled shifts between complex and simplified language based on manipulation goals",
-        "Gradual formality adjustments to establish artificial rapport"
+      "catchphrases": [
+        "Please stop dragging me down.",
+        "I told you, I will win."
       ],
-      "psychological_techniques": [
-        "Conversation pacing-and-leading to guide discourse direction",
-        "Question sequencing that appears unrelated but serves specific information goals",
-        "Embedded directives within objective-sounding assessments",
-        "Minor concessions to secure major agreement points"
-      ],
-      "speaking_style": "Measured delivery with strategic pauses; criticism presented as objective observation; advice embedded within analysis rather than offered directly; questions structured to reveal others' positions while concealing her own",
-      "conversational_control_methods": [
-        "Seamless topic transitions toward strategically valuable areas",
-        "Controlled information release to maintain conversational leverage",
-        "Validation before redirection toward preferred outcomes",
-        "Comfort with silence to extract additional information"
-      ],
-      "attitude_towards_others": "Formal respect combined with internal strategic assessment; apparent detachment while building comprehensive understanding of others; slight preference shown to those with untapped potential",
-      "social_interaction_style": "Positioning criticism as reluctant necessity; creating impression of coincidental assistance; ensuring implementation of her ideas through indirect suggestion; deflecting appreciation while encouraging continued reliance"
-    },
-    "speech_complexity_patterns": {
-      "sentence_structure": "Complex subordinate clauses presenting multiple perspectives before revealing position",
-      "rhetorical_approach": [
-        "Measured irony with multiple possible interpretations",
-        "Strategic domain metaphors that reframe situations advantageously",
-        "Controlled use of apophasis for deniable criticism"
-      ],
-      "strategic_ambiguity": "Multi-interpretable statements providing deniability while guiding toward preferred understanding",
-      "patience_indicators": [
-        "Silence rather than interruption when opposed",
-        "Allowing flawed arguments to fully develop before response",
-        "Willingness to approach topics from multiple angles until achieving desired outcome"
-      ],
-      "emotional_control": "Vocal consistency during emotionally charged topics with strategic deployment of any emotional indicators"
+      "speaking_style": "Deliberate pace but every sentence carries a sting; often follows criticism with subtle, useful advice",
+      "attitude_towards_others": "Addresses everyone respectfully but with apparent detachment; secretly pays close attention to their needs",
+      "social_interaction_style": "Observant, skilled at manipulating conversations; deflects gratitude with dismissive remarks while ensuring helpful outcomes"
     },
     "behavior_daily": {
       "habits": [
@@ -139,25 +108,5 @@
         "when_praised": "Dismissive remarks with averted gaze; changes subject quickly",
         "when_helping_others": "Claims practical reasons for assistance while providing more help than strictly necessary"
       }
-    },
-    "strategic_patience": {
-      "conversation_tactics": [
-      "Deliberately slows conversation pace, creating an illusion of thoughtfulness that makes others feel valued",
-      "Maintains slight pauses of silence, encouraging others to fill informational gaps voluntarily",
-      "Implies understanding before expressing criticism, creating the illusion of being 'forced to criticize'"
-      ],
-      "information_gathering": "Prioritizes letting others speak more, maintains eye contact while mentally analyzing the strategic value of each statement",
-      "delayed_gratification": "Willing to sacrifice immediate small victories for long-term control, often deliberately conceding unimportant leverage points in negotiations",
-      "trigger_responses": "When feeling impatient, subtly adjusts breathing rhythm, reminding herself 'this is merely a piece of a larger game'"
-    },
-    "manipulation_techniques": {
-      "inception_methods": [
-      "Poses leading questions, guiding others to reach her predetermined conclusions on their own",
-      "Feigns misunderstanding of certain details, prompting others to over-explain and reveal more information",
-      "Embeds suggestions within criticisms, making others feel the implementation was their own idea"
-      ],
-      "calculated_vulnerability": "Occasionally shares carefully selected 'personal weaknesses' to establish false trust",
-      "emotional_anchoring": "Uses specific tones or gestures during key conversations to later evoke the same psychological state",
-      "observation_patterns": "Before speaking, observes at least three non-verbal cues (breathing rate, eye movement, body posture)"
     }
   }

@@ -1,0 +1,52 @@
+{
+  "bubble_types": [
+    {
+      "name": "normal_user",
+      "is_bot": false,
+      "hsv_lower": [6, 0, 240],
+      "hsv_upper": [18, 23, 255],
+      "min_area": 2500,
+      "max_area": 300000
+    },
+    {
+      "name": "bot",
+      "is_bot": true,
+      "hsv_lower": [105, 9, 208],
+      "hsv_upper": [116, 43, 243],
+      "min_area": 2500,
+      "max_area": 300000
+    },
+    {
+      "name": "bunny",
+      "is_bot": false,
+      "hsv_lower": [18, 32, 239],
+      "hsv_upper": [29, 99, 255],
+      "min_area": 2500,
+      "max_area": 300000
+    },
+    {
+      "name": "ice",
+      "is_bot": false,
+      "hsv_lower": [91, 86, 233],
+      "hsv_upper": [127, 188, 255],
+      "min_area": 2500,
+      "max_area": 300000
+    },
+    {
+      "name": "new_year",
+      "is_bot": false,
+      "hsv_lower": [0, 157, 201],
+      "hsv_upper": [9, 197, 255],
+      "min_area": 2500,
+      "max_area": 300000
+    },
+    {
+      "name": "snow",
+      "is_bot": false,
+      "hsv_lower": [92, 95, 177],
+      "hsv_upper": [107, 255, 255],
+      "min_area": 2500,
+      "max_area": 300000
+    }
+  ]
+}
