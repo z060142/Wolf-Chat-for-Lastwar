@@ -15,6 +15,7 @@ import json # Added for color config loading
 import queue
 from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
+import math # Added for distance calculation in dual method
 
 # --- Global Pause Flag ---
 # Using a simple mutable object (list) for thread-safe-like access without explicit lock
@@ -44,7 +45,7 @@ def load_bubble_colors(config_path='bubble_colors.json'):
     return [
         {
             "name": "normal_user",
-            "is_bot": false,
+            "is_bot": False, # Corrected boolean value
             "hsv_lower": [6, 0, 240],
             "hsv_upper": [18, 23, 255],
             "min_area": 2500,
@@ -52,7 +53,7 @@ def load_bubble_colors(config_path='bubble_colors.json'):
             },
             {
             "name": "bot",
-            "is_bot": true,
+            "is_bot": True, # Corrected boolean value
             "hsv_lower": [105, 9, 208],
             "hsv_upper": [116, 43, 243],
             "min_area": 2500,
@@ -69,6 +70,7 @@ os.makedirs(TEMPLATE_DIR, exist_ok=True)
 DEBUG_SCREENSHOT_DIR = os.path.join(SCRIPT_DIR, "debug_screenshots")
 MAX_DEBUG_SCREENSHOTS = 8
 os.makedirs(DEBUG_SCREENSHOT_DIR, exist_ok=True)
+DEBUG_LEVEL = 1 # 0=Off, 1=Basic Info, 2=Detailed, 3=Visual Debug
 # --- End Debugging ---
 
 # --- Template Paths (Consider moving to config.py or loading dynamically) ---
@@ -97,21 +99,21 @@ BOT_CORNER_BR_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "bot_corner_br_type2.png")
 BOT_CORNER_TL_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "bot_corner_tl_type3.png")
 BOT_CORNER_BR_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "bot_corner_br_type3.png")
 # --- End Additional Types ---
-# Keywords
-KEYWORD_wolf_LOWER_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower.png")
-KEYWORD_Wolf_UPPER_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper.png")
-KEYWORD_wolf_LOWER_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type2.png") # Added for type3 bubbles
-KEYWORD_Wolf_UPPER_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type2.png") # Added for type3 bubbles
-KEYWORD_wolf_LOWER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type3.png") # Added for type3 bubbles
-KEYWORD_Wolf_UPPER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type3.png") # Added for type3 bubbles
-KEYWORD_wolf_LOWER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type4.png") # Added for type4 bubbles
-KEYWORD_Wolf_UPPER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type4.png") # Added for type4 bubbles
-# --- Reply Keywords ---
-KEYWORD_WOLF_REPLY_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply.png") # Added for reply detection
-KEYWORD_WOLF_REPLY_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type2.png") # Added for reply detection type2
-KEYWORD_WOLF_REPLY_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type3.png") # Added for reply detection type3
-KEYWORD_WOLF_REPLY_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type4.png") # Added for reply detection type4
-# --- End Reply Keywords ---
+# Keywords (Refactored based on guide)
+KEYWORD_wolf_LOWER_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower.png")  # Active Core
+KEYWORD_Wolf_UPPER_IMG = os.path.join(TEMPLATE_DIR, "keyword_Wolf_upper.png")  # Active Core
+KEYWORD_WOLF_REPLY_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply.png")  # Active Core
+
+# Deprecated but kept for potential legacy fallback or reference
+KEYWORD_wolf_LOWER_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type2.png") # Deprecated
+KEYWORD_Wolf_UPPER_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type2.png") # Deprecated
+KEYWORD_wolf_LOWER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type3.png") # Deprecated
+KEYWORD_Wolf_UPPER_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type3.png") # Deprecated
+KEYWORD_wolf_LOWER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_lower_type4.png") # Deprecated
+KEYWORD_Wolf_UPPER_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_upper_type4.png") # Deprecated
+KEYWORD_WOLF_REPLY_TYPE2_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type2.png") # Deprecated
+KEYWORD_WOLF_REPLY_TYPE3_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type3.png") # Deprecated
+KEYWORD_WOLF_REPLY_TYPE4_IMG = os.path.join(TEMPLATE_DIR, "keyword_wolf_reply_type4.png") # Deprecated
 # UI Elements
 COPY_MENU_ITEM_IMG = os.path.join(TEMPLATE_DIR, "copy_menu_item.png")
 PROFILE_OPTION_IMG = os.path.join(TEMPLATE_DIR, "profile_option.png")
@@ -171,6 +173,14 @@ BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6 # Lower confidence for fallback attemp
 BBOX_SIMILARITY_TOLERANCE = 10
 RECENT_TEXT_HISTORY_MAXLEN = 5 # This state likely belongs in the coordinator
 
+# --- New Constants for Dual Method ---
+CLAHE_CLIP_LIMIT = 2.0  # CLAHE enhancement parameter
+CLAHE_TILE_SIZE = (8, 8)  # CLAHE grid size
+MATCH_DISTANCE_THRESHOLD = 10  # Threshold for considering detections as overlapping (pixels)
+DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.85 # Confidence threshold for individual methods in dual mode
+DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD = 0.85 # Threshold for accepting single method result directly
+DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD = 0.8 # Threshold for accepting single method result in fallback
+
 # --- Helper Function (Module Level) ---
 def are_bboxes_similar(bbox1: Optional[Tuple[int, int, int, int]],
                        bbox2: Optional[Tuple[int, int, int, int]],
@@ -189,17 +199,40 @@ class DetectionModule:
 
     def __init__(self, templates: Dict[str, str], confidence: float = CONFIDENCE_THRESHOLD,
                  state_confidence: float = STATE_CONFIDENCE_THRESHOLD,
-                 region: Optional[Tuple[int, int, int, int]] = SCREENSHOT_REGION):
+                 region: Optional[Tuple[int, int, int, int]] = SCREENSHOT_REGION,
+                 use_dual_method: bool = True): # Added use_dual_method flag
         # --- Hardcoded Settings (as per user instruction) ---
         self.use_color_detection: bool = True # Set to True to enable color detection by default
         self.color_config_path: str = "bubble_colors.json"
         # --- End Hardcoded Settings ---
 
         self.templates = templates
-        self.confidence = confidence
+        self.confidence = confidence # Default confidence for legacy methods
         self.state_confidence = state_confidence
         self.region = region
         self._warned_paths = set()
+
+        # --- Dual Method Specific Initialization ---
+        self.use_dual_method = use_dual_method
+        self.clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_TILE_SIZE)
+        self.core_keyword_templates = {k: v for k, v in templates.items()
+                                       if k in ['keyword_wolf_lower', 'keyword_Wolf_upper', 'keyword_wolf_reply']}
+        self.last_detection_method = None
+        self.last_detection_confidence = 0.0
+        self.DEBUG_LEVEL = DEBUG_LEVEL # Use global debug level
+
+        # Performance Stats
+        self.performance_stats = {
+            'total_detections': 0,
+            'successful_detections': 0,
+            'gray_only_detections': 0,
+            'clahe_only_detections': 0,
+            'dual_method_detections': 0,
+            'fallback_detections': 0, # Added for fallback tracking
+            'total_detection_time': 0.0,
+            'inverted_matches': 0
+        }
+        # --- End Dual Method Specific Initialization ---
 
         # Load color configuration if color detection is enabled
         self.bubble_colors = []
@@ -208,10 +241,27 @@ class DetectionModule:
             if not self.bubble_colors:
                  print("Warning: Color detection enabled, but failed to load any color configurations. Color detection might not work.")
 
-        print(f"DetectionModule initialized. Color Detection: {'Enabled' if self.use_color_detection else 'Disabled'}")
+        print(f"DetectionModule initialized. Color Detection: {'Enabled' if self.use_color_detection else 'Disabled'}. Dual Keyword Method: {'Enabled' if self.use_dual_method else 'Disabled'}")
+
+    def _apply_clahe(self, image):
+        """Apply CLAHE to enhance image contrast."""
+        if image is None:
+            print("Warning: _apply_clahe received None image.")
+            return None
+        try:
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = image.copy() # Assume already grayscale
+            enhanced = self.clahe.apply(gray)
+            return enhanced
+        except Exception as e:
+            print(f"Error applying CLAHE: {e}")
+            # Return original grayscale image on error
+            return gray if 'gray' in locals() else image
 
     def _find_template(self, template_key: str, confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
-        """Internal helper to find a template by its key. Returns list of CENTER coordinates."""
+        """Internal helper to find a template by its key using PyAutoGUI. Returns list of CENTER coordinates (absolute)."""
         template_path = self.templates.get(template_key)
         if not template_path:
             print(f"Error: Template key '{template_key}' not found in provided templates.")
@@ -524,83 +574,375 @@ class DetectionModule:
         print(f"Color detection found {len(all_bubbles_info)} bubbles.")
         return all_bubbles_info
 
-    def find_keyword_in_region(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
-        """Look for keywords within a specified region. Returns center coordinates."""
+    def _find_keyword_legacy(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
+        """
+        Original find_keyword_in_region implementation using multiple templates and PyAutoGUI.
+        Kept for backward compatibility or fallback. Returns absolute center coordinates or None.
+        """
         if region[2] <= 0 or region[3] <= 0: return None # Invalid region width/height
 
-        # Try original lowercase with color matching
-        locations_lower = self._find_template('keyword_wolf_lower', region=region, grayscale=True) # Changed grayscale to False
-        if locations_lower:
-            print(f"Found keyword (lowercase, color) in region {region}, position: {locations_lower[0]}") # Updated log message
-            return locations_lower[0]
+        # Define the order of templates to check (legacy approach)
+        legacy_keyword_templates = [
+            # Original keywords first
+            'keyword_wolf_lower', 'keyword_wolf_upper',
+            # Deprecated keywords next (order might matter based on visual similarity)
+            'keyword_wolf_lower_type2', 'keyword_wolf_upper_type2',
+            'keyword_wolf_lower_type3', 'keyword_wolf_upper_type3',
+            'keyword_wolf_lower_type4', 'keyword_wolf_upper_type4',
+            # Reply keywords last
+            'keyword_wolf_reply', 'keyword_wolf_reply_type2',
+            'keyword_wolf_reply_type3', 'keyword_wolf_reply_type4'
+        ]
 
-        # Try original uppercase with color matching
-        locations_upper = self._find_template('keyword_wolf_upper', region=region, grayscale=True) # Changed grayscale to False
-        if locations_upper:
-            print(f"Found keyword (uppercase, color) in region {region}, position: {locations_upper[0]}") # Updated log message
-            return locations_upper[0]
-        
-        # Try type2 lowercase (white text, no grayscale)
-        locations_lower_type2 = self._find_template('keyword_wolf_lower_type2', region=region, grayscale=False) # Added type2 check
-        if locations_lower_type2:
-            print(f"Found keyword (lowercase, type2) in region {region}, position: {locations_lower_type2[0]}")
-            return locations_lower_type2[0]
+        for key in legacy_keyword_templates:
+            # Determine grayscale based on key (example logic, adjust as needed)
+            # Original logic seemed to use grayscale=True for lower/upper, False otherwise. Let's replicate that.
+            use_grayscale = ('lower' in key or 'upper' in key) and 'type' not in key and 'reply' not in key
+            # Use the default confidence defined in __init__ for legacy checks
+            locations = self._find_template(key, region=region, grayscale=use_grayscale, confidence=self.confidence)
+            if locations:
+                print(f"Legacy method found keyword ('{key}') in region {region}, position: {locations[0]}")
+                return locations[0] # Return the first match found
 
-        # Try type2 uppercase (white text, no grayscale)
-        locations_upper_type2 = self._find_template('keyword_wolf_upper_type2', region=region, grayscale=False) # Added type2 check
-        if locations_upper_type2:
-            print(f"Found keyword (uppercase, type2) in region {region}, position: {locations_upper_type2[0]}")
-            return locations_upper_type2[0]
+        return None # No keyword found using legacy method
 
-        # Try type3 lowercase (white text, no grayscale) - Corrected
-        locations_lower_type3 = self._find_template('keyword_wolf_lower_type3', region=region, grayscale=False)
-        if locations_lower_type3:
-            print(f"Found keyword (lowercase, type3) in region {region}, position: {locations_lower_type3[0]}")
-            return locations_lower_type3[0]
+    def find_keyword_dual_method(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
+        """
+        Find keywords using grayscale and CLAHE preprocessed images with OpenCV template matching.
+        Applies coordinate correction to return absolute screen coordinates.
+        Returns absolute center coordinates tuple (x, y) or None.
+        """
+        if region is None or len(region) != 4 or region[2] <= 0 or region[3] <= 0:
+            print(f"Error: Invalid region provided to find_keyword_dual_method: {region}")
+            return None
 
-        # Try type3 uppercase (white text, no grayscale) - Corrected
-        locations_upper_type3 = self._find_template('keyword_wolf_upper_type3', region=region, grayscale=False)
-        if locations_upper_type3:
-            print(f"Found keyword (uppercase, type3) in region {region}, position: {locations_upper_type3[0]}")
-            return locations_upper_type3[0]
+        start_time = time.time()
+        region_x, region_y, region_w, region_h = region
 
-        # Try type4 lowercase (white text, no grayscale) - Added type4
-        locations_lower_type4 = self._find_template('keyword_wolf_lower_type4', region=region, grayscale=False)
-        if locations_lower_type4:
-            print(f"Found keyword (lowercase, type4) in region {region}, position: {locations_lower_type4[0]}")
-            return locations_lower_type4[0]
+        try:
+            screenshot = pyautogui.screenshot(region=region)
+            if screenshot is None:
+                print("Error: Failed to capture screenshot for dual method detection.")
+                return None
+            img = np.array(screenshot)
+            img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            print(f"Error capturing or converting screenshot in region {region}: {e}")
+            return None
 
-        # Try type4 uppercase (white text, no grayscale) - Added type4
-        locations_upper_type4 = self._find_template('keyword_wolf_upper_type4', region=region, grayscale=False)
-        if locations_upper_type4:
-            print(f"Found keyword (uppercase, type4) in region {region}, position: {locations_upper_type4[0]}")
-            return locations_upper_type4[0]
+        img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        img_clahe = self._apply_clahe(img_gray) # Use helper method
 
-        # Try reply keyword (normal)
-        locations_reply = self._find_template('keyword_wolf_reply', region=region, grayscale=False)
-        if locations_reply:
-            print(f"Found keyword (reply) in region {region}, position: {locations_reply[0]}")
-            return locations_reply[0]
+        if img_clahe is None:
+            print("Error: CLAHE preprocessing failed. Cannot proceed with CLAHE matching.")
+            # Optionally, could proceed with only grayscale matching here, but for simplicity, we return None.
+            return None
 
-        # Try reply keyword (type2)
-        locations_reply_type2 = self._find_template('keyword_wolf_reply_type2', region=region, grayscale=False)
-        if locations_reply_type2:
-            print(f"Found keyword (reply, type2) in region {region}, position: {locations_reply_type2[0]}")
-            return locations_reply_type2[0]
+        gray_results = []
+        clahe_results = []
+        template_types = { # Map core template keys to types
+            'keyword_wolf_lower': 'standard',
+            'keyword_Wolf_upper': 'standard',
+            'keyword_wolf_reply': 'reply'
+        }
 
-        # Try reply keyword (type3)
-        locations_reply_type3 = self._find_template('keyword_wolf_reply_type3', region=region, grayscale=False)
-        if locations_reply_type3:
-            print(f"Found keyword (reply, type3) in region {region}, position: {locations_reply_type3[0]}")
-            return locations_reply_type3[0]
+        for key, template_path in self.core_keyword_templates.items():
+            if not os.path.exists(template_path):
+                if template_path not in self._warned_paths:
+                    print(f"Warning: Core keyword template not found: {template_path}")
+                    self._warned_paths.add(template_path)
+                continue
 
-        # Try reply keyword (type4)
-        locations_reply_type4 = self._find_template('keyword_wolf_reply_type4', region=region, grayscale=False)
-        if locations_reply_type4:
-            print(f"Found keyword (reply, type4) in region {region}, position: {locations_reply_type4[0]}")
-            return locations_reply_type4[0]
+            template_bgr = cv2.imread(template_path)
+            if template_bgr is None:
+                if template_path not in self._warned_paths:
+                    print(f"Warning: Failed to load core keyword template: {template_path}")
+                    self._warned_paths.add(template_path)
+                continue
 
-        return None
+            template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+            template_clahe = self._apply_clahe(template_gray) # Use helper method
+
+            if template_clahe is None:
+                 print(f"Warning: CLAHE preprocessing failed for template {key}. Skipping CLAHE match for this template.")
+                 continue # Skip CLAHE part for this template
+
+            h_gray, w_gray = template_gray.shape[:2]
+            h_clahe, w_clahe = template_clahe.shape[:2]
+
+            # --- Grayscale Matching ---
+            try:
+                gray_res = cv2.matchTemplate(img_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+                gray_inv_res = cv2.matchTemplate(img_gray, cv2.bitwise_not(template_gray), cv2.TM_CCOEFF_NORMED)
+                gray_combined = np.maximum(gray_res, gray_inv_res)
+                _, gray_max_val, _, gray_max_loc = cv2.minMaxLoc(gray_combined)
+
+                if gray_max_val >= DUAL_METHOD_CONFIDENCE_THRESHOLD:
+                    # Calculate relative center
+                    relative_center_x = gray_max_loc[0] + w_gray // 2
+                    relative_center_y = gray_max_loc[1] + h_gray // 2
+                    # *** COORDINATE CORRECTION ***
+                    absolute_center_x = region_x + relative_center_x
+                    absolute_center_y = region_y + relative_center_y
+
+                    # Check inversion
+                    gray_orig_val = gray_res[gray_max_loc[1], gray_max_loc[0]] # Get value at max_loc from original match
+                    is_inverted = (gray_orig_val < gray_max_val - 0.05)
+
+                    gray_results.append({
+                        'template': key,
+                        'center': (absolute_center_x, absolute_center_y), # Store absolute coords
+                        'confidence': gray_max_val,
+                        'is_inverted': is_inverted,
+                        'type': template_types.get(key, 'standard')
+                    })
+            except cv2.error as e:
+                print(f"OpenCV Error during Grayscale matching for {key}: {e}")
+            except Exception as e:
+                print(f"Unexpected Error during Grayscale matching for {key}: {e}")
+
+
+            # --- CLAHE Matching ---
+            try:
+                clahe_res = cv2.matchTemplate(img_clahe, template_clahe, cv2.TM_CCOEFF_NORMED)
+                clahe_inv_res = cv2.matchTemplate(img_clahe, cv2.bitwise_not(template_clahe), cv2.TM_CCOEFF_NORMED)
+                clahe_combined = np.maximum(clahe_res, clahe_inv_res)
+                _, clahe_max_val, _, clahe_max_loc = cv2.minMaxLoc(clahe_combined)
+
+                if clahe_max_val >= DUAL_METHOD_CONFIDENCE_THRESHOLD:
+                    # Calculate relative center
+                    relative_center_x = clahe_max_loc[0] + w_clahe // 2
+                    relative_center_y = clahe_max_loc[1] + h_clahe // 2
+                    # *** COORDINATE CORRECTION ***
+                    absolute_center_x = region_x + relative_center_x
+                    absolute_center_y = region_y + relative_center_y
+
+                    # Check inversion
+                    clahe_orig_val = clahe_res[clahe_max_loc[1], clahe_max_loc[0]] # Get value at max_loc from original match
+                    is_inverted = (clahe_orig_val < clahe_max_val - 0.05)
+
+                    clahe_results.append({
+                        'template': key,
+                        'center': (absolute_center_x, absolute_center_y), # Store absolute coords
+                        'confidence': clahe_max_val,
+                        'is_inverted': is_inverted,
+                        'type': template_types.get(key, 'standard')
+                    })
+            except cv2.error as e:
+                print(f"OpenCV Error during CLAHE matching for {key}: {e}")
+            except Exception as e:
+                print(f"Unexpected Error during CLAHE matching for {key}: {e}")
+
+        # --- Result Merging and Selection ---
+        elapsed_time = time.time() - start_time
+        self.performance_stats['total_detections'] += 1
+        self.performance_stats['total_detection_time'] += elapsed_time
+
+        best_match = None
+        final_result_coords = None
+        detection_type = "None" # For stats
+
+        if not gray_results and not clahe_results:
+            if self.DEBUG_LEVEL > 1:
+                print(f"[Dual Method] No keywords found by either method. Time: {elapsed_time:.3f}s")
+            self.last_detection_method = None
+            self.last_detection_confidence = 0.0
+            return None
+
+        # Strategy 1: High-confidence single method result
+        best_gray = max(gray_results, key=lambda x: x['confidence']) if gray_results else None
+        best_clahe = max(clahe_results, key=lambda x: x['confidence']) if clahe_results else None
+
+        if best_gray and not best_clahe and best_gray['confidence'] >= DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD:
+            final_result_coords = best_gray['center']
+            self.last_detection_method = "Gray" + (" (Inv)" if best_gray['is_inverted'] else "")
+            self.last_detection_confidence = best_gray['confidence']
+            detection_type = "Gray Only (High Conf)"
+            self.performance_stats['gray_only_detections'] += 1
+            if best_gray['is_inverted']: self.performance_stats['inverted_matches'] += 1
+            print(f"[Dual Method] Using high-confidence Gray result: {best_gray['template']} at {final_result_coords} (Conf: {best_gray['confidence']:.2f})")
+
+        elif best_clahe and not best_gray and best_clahe['confidence'] >= DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD:
+            final_result_coords = best_clahe['center']
+            self.last_detection_method = "CLAHE" + (" (Inv)" if best_clahe['is_inverted'] else "")
+            self.last_detection_confidence = best_clahe['confidence']
+            detection_type = "CLAHE Only (High Conf)"
+            self.performance_stats['clahe_only_detections'] += 1
+            if best_clahe['is_inverted']: self.performance_stats['inverted_matches'] += 1
+            print(f"[Dual Method] Using high-confidence CLAHE result: {best_clahe['template']} at {final_result_coords} (Conf: {best_clahe['confidence']:.2f})")
+
+        # Strategy 2: Find overlapping results if no high-confidence single result yet
+        if final_result_coords is None:
+            best_overlap_match = None
+            highest_overlap_confidence = 0
+
+            for gray_match in gray_results:
+                for clahe_match in clahe_results:
+                    # Check if templates match (or maybe just type?) - let's stick to same template for now
+                    if gray_match['template'] == clahe_match['template']:
+                        dist = math.sqrt((gray_match['center'][0] - clahe_match['center'][0])**2 +
+                                       (gray_match['center'][1] - clahe_match['center'][1])**2)
+
+                        if dist < MATCH_DISTANCE_THRESHOLD:
+                            # Use average confidence or max? Let's use average.
+                            combined_confidence = (gray_match['confidence'] + clahe_match['confidence']) / 2
+                            if combined_confidence > highest_overlap_confidence:
+                                highest_overlap_confidence = combined_confidence
+                                avg_center = (
+                                    (gray_match['center'][0] + clahe_match['center'][0]) // 2,
+                                    (gray_match['center'][1] + clahe_match['center'][1]) // 2
+                                )
+                                best_overlap_match = {
+                                    'template': gray_match['template'],
+                                    'center': avg_center,
+                                    'confidence': combined_confidence,
+                                    'dist': dist,
+                                    'is_inverted': gray_match['is_inverted'] or clahe_match['is_inverted'],
+                                    'type': gray_match['type'] # Type should be same
+                                }
+
+            if best_overlap_match:
+                final_result_coords = best_overlap_match['center']
+                self.last_detection_method = "Dual Overlap" + (" (Inv)" if best_overlap_match['is_inverted'] else "")
+                self.last_detection_confidence = best_overlap_match['confidence']
+                detection_type = "Dual Overlap"
+                self.performance_stats['dual_method_detections'] += 1
+                if best_overlap_match['is_inverted']: self.performance_stats['inverted_matches'] += 1
+                print(f"[Dual Method] Using overlapping result: {best_overlap_match['template']} at {final_result_coords} (Conf: {best_overlap_match['confidence']:.2f}, Dist: {best_overlap_match['dist']:.1f}px)")
+
+        # Strategy 3: Fallback to best single result if no overlap found
+        if final_result_coords is None:
+            all_results = gray_results + clahe_results
+            if all_results:
+                best_overall = max(all_results, key=lambda x: x['confidence'])
+                # Use a slightly lower threshold for fallback
+                if best_overall['confidence'] >= DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD:
+                    final_result_coords = best_overall['center']
+                    method_name = "Gray Fallback" if best_overall in gray_results else "CLAHE Fallback"
+                    method_name += " (Inv)" if best_overall['is_inverted'] else ""
+                    self.last_detection_method = method_name
+                    self.last_detection_confidence = best_overall['confidence']
+                    detection_type = "Fallback"
+                    self.performance_stats['fallback_detections'] += 1 # Track fallbacks
+                    if best_overall in gray_results: self.performance_stats['gray_only_detections'] += 1
+                    else: self.performance_stats['clahe_only_detections'] += 1
+                    if best_overall['is_inverted']: self.performance_stats['inverted_matches'] += 1
+                    print(f"[Dual Method] Using fallback result ({method_name}): {best_overall['template']} at {final_result_coords} (Conf: {best_overall['confidence']:.2f})")
+
+        # --- Final Result Handling & Debug ---
+        if final_result_coords:
+            self.performance_stats['successful_detections'] += 1
+            if self.DEBUG_LEVEL >= 3:
+                # --- Visual Debugging ---
+                try:
+                    # Create side-by-side comparison of gray and clahe
+                    debug_processed_path = os.path.join(DEBUG_SCREENSHOT_DIR, f"dual_processed_{int(time.time())}.png")
+                    # Ensure images have same height for hstack
+                    h_gray_img, w_gray_img = img_gray.shape[:2]
+                    h_clahe_img, w_clahe_img = img_clahe.shape[:2]
+                    max_h = max(h_gray_img, h_clahe_img)
+                    # Resize if needed (convert to BGR for stacking color images if necessary)
+                    img_gray_bgr = cv2.cvtColor(cv2.resize(img_gray, (int(w_gray_img * max_h / h_gray_img), max_h)), cv2.COLOR_GRAY2BGR)
+                    img_clahe_bgr = cv2.cvtColor(cv2.resize(img_clahe, (int(w_clahe_img * max_h / h_clahe_img), max_h)), cv2.COLOR_GRAY2BGR)
+                    debug_img_processed = np.hstack([img_gray_bgr, img_clahe_bgr])
+                    cv2.imwrite(debug_processed_path, debug_img_processed)
+
+                    # Draw results on original BGR image
+                    result_img = img_bgr.copy()
+                    # Draw relative centers for visualization within the region
+                    for result in gray_results:
+                        rel_x = result['center'][0] - region_x
+                        rel_y = result['center'][1] - region_y
+                        cv2.circle(result_img, (rel_x, rel_y), 5, (0, 0, 255), -1) # Red = Gray
+                    for result in clahe_results:
+                        rel_x = result['center'][0] - region_x
+                        rel_y = result['center'][1] - region_y
+                        cv2.circle(result_img, (rel_x, rel_y), 5, (0, 255, 0), -1) # Green = CLAHE
+
+                    # Mark final chosen point (relative)
+                    final_rel_x = final_result_coords[0] - region_x
+                    final_rel_y = final_result_coords[1] - region_y
+                    cv2.circle(result_img, (final_rel_x, final_rel_y), 8, (255, 0, 0), 2) # Blue circle = Final
+
+                    debug_result_path = os.path.join(DEBUG_SCREENSHOT_DIR, f"dual_result_{int(time.time())}.png")
+                    cv2.imwrite(debug_result_path, result_img)
+                    print(f"[Dual Method Debug] Saved processed image to {debug_processed_path}")
+                    print(f"[Dual Method Debug] Saved result image to {debug_result_path}")
+                except Exception as debug_e:
+                    print(f"Error during visual debugging image generation: {debug_e}")
+                # --- End Visual Debugging ---
+
+            return final_result_coords # Return absolute coordinates
+        else:
+            if self.DEBUG_LEVEL > 0: # Log failure only if debug level > 0
+                 print(f"[Dual Method] No sufficiently confident match found. Time: {elapsed_time:.3f}s")
+            self.last_detection_method = None
+            self.last_detection_confidence = 0.0
+            return None
+
+    def find_keyword_in_region(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
+        """
+        Wrapper method to find keywords in a region.
+        Uses either the new dual method or the legacy method based on the 'use_dual_method' flag.
+        Returns absolute center coordinates or None.
+        """
+        if region is None or len(region) != 4 or region[2] <= 0 or region[3] <= 0:
+            print(f"Error: Invalid region provided to find_keyword_in_region: {region}")
+            return None
+
+        if self.use_dual_method:
+            result = self.find_keyword_dual_method(region)
+            # Debug Fallback Check
+            if result is None and self.DEBUG_LEVEL >= 3:
+                print("[DEBUG] Dual method failed. Trying legacy method for comparison...")
+                legacy_result = self._find_keyword_legacy(region)
+                if legacy_result:
+                    print(f"[DEBUG] Legacy method succeeded where dual method failed. Legacy Coords: {legacy_result}")
+                else:
+                    print("[DEBUG] Legacy method also failed.")
+            return result # Return the result from the dual method
+        else:
+            # Use legacy method if dual method is disabled
+            return self._find_keyword_legacy(region)
+
+    def print_detection_stats(self):
+        """Prints the collected keyword detection performance statistics."""
+        stats = self.performance_stats
+        total = stats['total_detections']
+        successful = stats['successful_detections']
+
+        if total == 0:
+            print("\n=== Keyword Detection Performance Stats ===")
+            print("No detections recorded yet.")
+            return
+
+        print("\n=== Keyword Detection Performance Stats ===")
+        print(f"Total Detection Attempts: {total}")
+        success_rate = (successful / total * 100) if total > 0 else 0
+        print(f"Successful Detections: {successful} ({success_rate:.1f}%)")
+        avg_time = (stats['total_detection_time'] / total * 1000) if total > 0 else 0
+        print(f"Average Detection Time: {avg_time:.2f} ms")
+
+        if successful > 0:
+            dual_pct = stats['dual_method_detections'] / successful * 100
+            gray_pct = stats['gray_only_detections'] / successful * 100
+            clahe_pct = stats['clahe_only_detections'] / successful * 100
+            fallback_pct = stats['fallback_detections'] / successful * 100 # Percentage of successful that were fallbacks
+
+            print("\nDetection Method Distribution (Successful Detections):")
+            print(f"  - Dual Overlap: {stats['dual_method_detections']} ({dual_pct:.1f}%)")
+            print(f"  - Gray Only:    {stats['gray_only_detections']} ({gray_pct:.1f}%)")
+            print(f"  - CLAHE Only:   {stats['clahe_only_detections']} ({clahe_pct:.1f}%)")
+            # Note: Gray Only + CLAHE Only might include high-confidence singles and fallbacks.
+            # Fallback count is a subset of Gray/CLAHE Only.
+            print(f"  - Fallback Used:{stats['fallback_detections']} ({fallback_pct:.1f}%)")
+
+
+            if stats['inverted_matches'] > 0:
+                inv_pct = stats['inverted_matches'] / successful * 100
+                print(f"\nInverted Matches Detected: {stats['inverted_matches']} ({inv_pct:.1f}%)")
+        print("==========================================")
+
 
     def calculate_avatar_coords(self, bubble_tl_coords: Tuple[int, int], offset_x: int = AVATAR_OFFSET_X) -> Tuple[int, int]:
         """
@@ -1263,41 +1605,29 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
     print("\n--- Starting UI Monitoring Loop (Thread) ---")
 
     # --- Initialization (Instantiate modules within the thread) ---
-    # Load templates directly using constants defined in this file for now
-    # Consider passing config or a template loader object in the future
-    templates = {
-        # Regular Bubble (Original + Skins) - Keys match those used in find_dialogue_bubbles
+    # --- Template Dictionary Setup (Refactored) ---
+    essential_templates = {
+        # Bubble Corners (All types needed for legacy/color fallback)
         'corner_tl': CORNER_TL_IMG, 'corner_br': CORNER_BR_IMG,
         'corner_tl_type2': CORNER_TL_TYPE2_IMG, 'corner_br_type2': CORNER_BR_TYPE2_IMG,
         'corner_tl_type3': CORNER_TL_TYPE3_IMG, 'corner_br_type3': CORNER_BR_TYPE3_IMG,
         'corner_tl_type4': CORNER_TL_TYPE4_IMG, 'corner_br_type4': CORNER_BR_TYPE4_IMG, # Added type4
-        # Bot Bubble (Single Type)
         'bot_corner_tl': BOT_CORNER_TL_IMG, 'bot_corner_br': BOT_CORNER_BR_IMG,
-        # Keywords & UI Elements
+        # Core Keywords (for dual method)
         'keyword_wolf_lower': KEYWORD_wolf_LOWER_IMG,
-        'keyword_wolf_upper': KEYWORD_Wolf_UPPER_IMG,
-        'keyword_wolf_lower_type2': KEYWORD_wolf_LOWER_TYPE2_IMG,
-        'keyword_wolf_upper_type2': KEYWORD_Wolf_UPPER_TYPE2_IMG,
-        'keyword_wolf_lower_type3': KEYWORD_wolf_LOWER_TYPE3_IMG,
-        'keyword_wolf_upper_type3': KEYWORD_Wolf_UPPER_TYPE3_IMG,
-        'keyword_wolf_lower_type4': KEYWORD_wolf_LOWER_TYPE4_IMG, # Added type4
-        'keyword_wolf_upper_type4': KEYWORD_Wolf_UPPER_TYPE4_IMG, # Added type4
-        # --- Add Reply Keywords ---
+        'keyword_Wolf_upper': KEYWORD_Wolf_UPPER_IMG,
         'keyword_wolf_reply': KEYWORD_WOLF_REPLY_IMG,
-        'keyword_wolf_reply_type2': KEYWORD_WOLF_REPLY_TYPE2_IMG,
-        'keyword_wolf_reply_type3': KEYWORD_WOLF_REPLY_TYPE3_IMG,
-        'keyword_wolf_reply_type4': KEYWORD_WOLF_REPLY_TYPE4_IMG,
-        # --- End Reply Keywords ---
+        # Essential UI Elements
         'copy_menu_item': COPY_MENU_ITEM_IMG, 'profile_option': PROFILE_OPTION_IMG,
         'copy_name_button': COPY_NAME_BUTTON_IMG, 'send_button': SEND_BUTTON_IMG,
         'chat_input': CHAT_INPUT_IMG, 'profile_name_page': PROFILE_NAME_PAGE_IMG,
         'profile_page': PROFILE_PAGE_IMG, 'chat_room': CHAT_ROOM_IMG,
-        'base_screen': BASE_SCREEN_IMG, 'world_map_screen': WORLD_MAP_IMG, # Added for navigation
+        'base_screen': BASE_SCREEN_IMG, 'world_map_screen': WORLD_MAP_IMG,
         'world_chat': WORLD_CHAT_IMG, 'private_chat': PRIVATE_CHAT_IMG,
-        # Add position templates
+        # Position templates
         'development_pos': POS_DEV_IMG, 'interior_pos': POS_INT_IMG, 'science_pos': POS_SCI_IMG,
         'security_pos': POS_SEC_IMG, 'strategy_pos': POS_STR_IMG,
-        # Add capitol templates
+        # Capitol templates
         'capitol_button': CAPITOL_BUTTON_IMG, 'president_title': PRESIDENT_TITLE_IMG,
         'pos_btn_dev': POS_BTN_DEV_IMG, 'pos_btn_int': POS_BTN_INT_IMG, 'pos_btn_sci': POS_BTN_SCI_IMG,
         'pos_btn_sec': POS_BTN_SEC_IMG, 'pos_btn_str': POS_BTN_STR_IMG,
@@ -1305,16 +1635,34 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
         'page_sec': PAGE_SEC_IMG, 'page_str': PAGE_STR_IMG,
         'dismiss_button': DISMISS_BUTTON_IMG, 'confirm_button': CONFIRM_BUTTON_IMG,
         'close_button': CLOSE_BUTTON_IMG, 'back_arrow': BACK_ARROW_IMG,
-        'reply_button': REPLY_BUTTON_IMG # Added reply button template key
+        'reply_button': REPLY_BUTTON_IMG
     }
-    # Use default confidence/region settings from constants
-    # Detector now loads its own color settings internally based on hardcoded values
-    detector = DetectionModule(templates,
-                               confidence=CONFIDENCE_THRESHOLD,
+    legacy_templates = {
+        # Deprecated Keywords (for legacy method fallback)
+        'keyword_wolf_lower_type2': KEYWORD_wolf_LOWER_TYPE2_IMG,
+        'keyword_wolf_upper_type2': KEYWORD_Wolf_UPPER_TYPE2_IMG,
+        'keyword_wolf_lower_type3': KEYWORD_wolf_LOWER_TYPE3_IMG,
+        'keyword_wolf_upper_type3': KEYWORD_Wolf_UPPER_TYPE3_IMG,
+        'keyword_wolf_lower_type4': KEYWORD_wolf_LOWER_TYPE4_IMG,
+        'keyword_wolf_upper_type4': KEYWORD_Wolf_UPPER_TYPE4_IMG,
+        'keyword_wolf_reply_type2': KEYWORD_WOLF_REPLY_TYPE2_IMG,
+        'keyword_wolf_reply_type3': KEYWORD_WOLF_REPLY_TYPE3_IMG,
+        'keyword_wolf_reply_type4': KEYWORD_WOLF_REPLY_TYPE4_IMG,
+    }
+    # Combine dictionaries
+    all_templates = {**essential_templates, **legacy_templates}
+    # --- End Template Dictionary Setup ---
+
+    # --- Instantiate Modules ---
+    detector = DetectionModule(all_templates,
+                               confidence=CONFIDENCE_THRESHOLD, # Default for legacy pyautogui calls
                                state_confidence=STATE_CONFIDENCE_THRESHOLD,
-                               region=SCREENSHOT_REGION)
-    # Use default input coords/keys from constants
-    interactor = InteractionModule(detector, input_coords=(CHAT_INPUT_CENTER_X, CHAT_INPUT_CENTER_Y), input_template_key='chat_input', send_button_key='send_button')
+                               region=SCREENSHOT_REGION,
+                               use_dual_method=True) # Enable new method by default
+    interactor = InteractionModule(detector,
+                                   input_coords=(CHAT_INPUT_CENTER_X, CHAT_INPUT_CENTER_Y),
+                                   input_template_key='chat_input',
+                                   send_button_key='send_button')
 
 # --- State Management (Local to this monitoring thread) ---
     last_processed_bubble_info = None # Store the whole dict now
@@ -1322,8 +1670,13 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
     screenshot_counter = 0 # Initialize counter for debug screenshots
     main_screen_click_counter = 0 # Counter for consecutive main screen clicks
 
+    loop_counter = 0 # Add loop counter for debugging
     while True:
+        loop_counter += 1
+        # print(f"\n--- UI Loop Iteration #{loop_counter} ---") # DEBUG REMOVED
+
         # --- Process ALL Pending Commands First ---
+        # print("[DEBUG] UI Loop: Processing command queue...") # DEBUG REMOVED
         commands_processed_this_cycle = False
         try:
             while True: # Loop to drain the queue
@@ -1401,22 +1754,26 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
         except queue.Empty:
             # No more commands in the queue for this cycle
-            if commands_processed_this_cycle:
-                 print("UI Thread: Finished processing commands for this cycle.")
+            # if commands_processed_this_cycle: # DEBUG REMOVED
+            #      print("UI Thread: Finished processing commands for this cycle.") # DEBUG REMOVED
             pass
         except Exception as cmd_err:
             print(f"UI Thread: Error processing command queue: {cmd_err}")
             # Consider if pausing is needed on error, maybe not
 
         # --- Now, Check Pause State ---
+        # print("[DEBUG] UI Loop: Checking pause state...") # DEBUG REMOVED
         if monitoring_paused_flag[0]:
+            # print("[DEBUG] UI Loop: Monitoring is paused. Sleeping...") # DEBUG REMOVED
             # If paused, sleep and skip UI monitoring part
             time.sleep(0.1) # Sleep briefly while paused
             continue # Go back to check commands again
 
         # --- If not paused, proceed with UI Monitoring ---
+        # print("[DEBUG] UI Loop: Monitoring is active. Proceeding...") # DEBUG REMOVED
 
         # --- Check for Main Screen Navigation ---
+        # print("[DEBUG] UI Loop: Checking for main screen navigation...") # DEBUG REMOVED
         try:
             base_locs = detector._find_template('base_screen', confidence=0.8)
             map_locs = detector._find_template('world_map_screen', confidence=0.8)
@@ -1447,53 +1804,8 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
             # Decide if you want to continue or pause after error
             main_screen_click_counter = 0 # Reset counter on error too
 
-        # --- Process Commands Second (Non-blocking) ---
-        # This block seems redundant now as commands are processed at the start of the loop.
-        # Keeping it commented out for now, can be removed later if confirmed unnecessary.
-        # try:
-        #     command_data = command_queue.get_nowait() # Check for commands without blocking
-        #     action = command_data.get('action')
-        #     if action == 'send_reply':
-        #         text_to_send = command_data.get('text')
-        #         # reply_context_activated = command_data.get('reply_context_activated', False) # Check if reply context was set
-        #
-        #         if not text_to_send:
-        #             print("UI Thread: Received send_reply command with no text.")
-        #             continue # Skip if no text
-        #
-        #         print(f"UI Thread: Received command to send reply: '{text_to_send[:50]}...'")
-        #         # The reply context (clicking bubble + reply button) is now handled *before* putting into queue.
-        #         # So, we just need to send the message directly here.
-        #         # The input field should already be focused and potentially have @Username prefix if reply context was activated.
-        #         interactor.send_chat_message(text_to_send)
-        #
-        #     elif action == 'remove_position': # <--- Handle new command
-        #         region = command_data.get('trigger_bubble_region')
-        #         if region:
-        #             print(f"UI Thread: Received command to remove position triggered by bubble region: {region}")
-        #             # Call the new UI function
-        #             success = remove_user_position(detector, interactor, region) # Call synchronous function
-        #             print(f"UI Thread: Position removal attempt finished. Success: {success}")
-        #             # Note: No need to send result back unless main thread needs confirmation
-        #         else:
-        #             print("UI Thread: Received remove_position command without trigger_bubble_region.")
-        #     elif action == 'pause': # <--- Handle pause command
-        #         print("UI Thread: Received pause command. Pausing monitoring.")
-        #         monitoring_paused_flag[0] = True
-        #         continue # Immediately pause after receiving command
-        #     elif action == 'resume': # <--- Handle resume command (might be redundant if checked above, but safe)
-        #         print("UI Thread: Received resume command. Resuming monitoring.")
-        #         monitoring_paused_flag[0] = False
-        #     else:
-        #         print(f"UI Thread: Received unknown command: {action}")
-        # except queue.Empty:
-        #     pass # No command waiting, continue with monitoring
-        # except Exception as cmd_err:
-        #      print(f"UI Thread: Error processing command queue: {cmd_err}")
-        #      # This block is now part of the command processing loop above
-        #      pass
-
         # --- Verify Chat Room State Before Bubble Detection (Only if NOT paused) ---
+        # print("[DEBUG] UI Loop: Verifying chat room state...") # DEBUG REMOVED
         try:
             # Use a slightly lower confidence maybe, or state_confidence
             chat_room_locs = detector._find_template('chat_room', confidence=detector.state_confidence)
@@ -1505,8 +1817,8 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                 print("UI Thread: Continuing loop after attempting chat room cleanup.")
                 time.sleep(0.5) # Small pause after cleanup attempt
                 continue
-            # else: # Optional: Log if chat room is confirmed
-            #    print("UI Thread: Chat room state confirmed.")
+            # else: # Optional: Log if chat room is confirmed # DEBUG REMOVED
+               # print("[DEBUG] UI Thread: Chat room state confirmed.") # DEBUG REMOVED
 
         except Exception as state_check_err:
              print(f"UI Thread: Error checking for chat room state: {state_check_err}")
@@ -1515,24 +1827,34 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
 
         # --- Then Perform UI Monitoring (Bubble Detection) ---
+        # print("[DEBUG] UI Loop: Starting bubble detection...") # DEBUG REMOVED
         try:
             # 1. Detect Bubbles
             all_bubbles_data = detector.find_dialogue_bubbles() # Returns list of dicts
-            if not all_bubbles_data: time.sleep(2); continue
+            if not all_bubbles_data:
+                # print("[DEBUG] UI Loop: No bubbles detected.") # DEBUG REMOVED
+                time.sleep(2); continue
 
             # Filter out bot bubbles
             other_bubbles_data = [b_info for b_info in all_bubbles_data if not b_info['is_bot']]
-            if not other_bubbles_data: time.sleep(0.2); continue
+            if not other_bubbles_data:
+                # print("[DEBUG] UI Loop: No non-bot bubbles detected.") # DEBUG REMOVED
+                time.sleep(0.2); continue
 
+            # print(f"[DEBUG] UI Loop: Found {len(other_bubbles_data)} non-bot bubbles. Sorting...") # DEBUG REMOVED
             # Sort bubbles from bottom to top (based on bottom Y coordinate)
             sorted_bubbles = sorted(other_bubbles_data, key=lambda b_info: b_info['bbox'][3], reverse=True)
 
             # Iterate through sorted bubbles (bottom to top)
-            for target_bubble_info in sorted_bubbles:
+            # print("[DEBUG] UI Loop: Iterating through sorted bubbles...") # DEBUG REMOVED
+            for i, target_bubble_info in enumerate(sorted_bubbles):
+                # print(f"[DEBUG] UI Loop: Processing bubble #{i+1}") # DEBUG REMOVED
                 target_bbox = target_bubble_info['bbox']
-                bubble_region = (target_bbox[0], target_bbox[1], target_bbox[2]-target_bbox[0], target_bbox[3]-target_bbox[1])
+                # Ensure bubble_region uses standard ints
+                bubble_region = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
 
                 # 3. Detect Keyword in Bubble
+                # print(f"[DEBUG] UI Loop: Detecting keyword in region {bubble_region}...") # DEBUG REMOVED
                 keyword_coords = detector.find_keyword_in_region(bubble_region)
 
                 if keyword_coords:
@@ -1567,6 +1889,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         print("Warning: SCREENSHOT_REGION not defined, searching full screen for bubble snapshot.")
 
                     # --- Take Snapshot for Re-location ---
+                    # print("[DEBUG] UI Loop: Taking bubble snapshot...") # DEBUG REMOVED
                     try:
                         bubble_region_tuple = (int(bubble_region[0]), int(bubble_region[1]), int(bubble_region[2]), int(bubble_region[3]))
                         if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
@@ -1594,7 +1917,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                          continue # Skip to next bubble
 
                     # 4. Re-locate bubble *before* copying text
-                    print("Attempting to re-locate bubble before copying text...")
+                    # print("[DEBUG] UI Loop: Re-locating bubble before copying text...") # DEBUG REMOVED
                     new_bubble_box_for_copy = None
                     if bubble_snapshot:
                         try:
@@ -1610,11 +1933,12 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         continue # Skip to the next bubble in the outer loop
 
                     print(f"Successfully re-located bubble for copy at: {new_bubble_box_for_copy}")
-                    # Define the region based on the re-located bubble to find the keyword again
-                    copy_bubble_region = (new_bubble_box_for_copy.left, new_bubble_box_for_copy.top,
-                                          new_bubble_box_for_copy.width, new_bubble_box_for_copy.height)
+                    # Define the region based on the re-located bubble, casting to int
+                    copy_bubble_region = (int(new_bubble_box_for_copy.left), int(new_bubble_box_for_copy.top),
+                                          int(new_bubble_box_for_copy.width), int(new_bubble_box_for_copy.height))
 
                     # Find the keyword *again* within the *new* bubble region to get current coords
+                    # print("[DEBUG] UI Loop: Finding keyword again in re-located region...") # DEBUG REMOVED
                     current_keyword_coords = detector.find_keyword_in_region(copy_bubble_region)
                     if not current_keyword_coords:
                         print("Warning: Keyword not found in the re-located bubble region. Skipping this bubble.")
@@ -1634,6 +1958,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         print(f"Detected keyword is not a reply type (current location). Click target: {click_coords_current}")
 
                     # Interact: Get Bubble Text using current coordinates
+                    # print("[DEBUG] UI Loop: Copying text...") # DEBUG REMOVED
                     bubble_text = interactor.copy_text_at(click_coords_current)
                     if not bubble_text:
                         print("Error: Could not get dialogue content for this bubble (after re-location).")
@@ -1641,6 +1966,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         continue # Skip to next bubble
 
                     # Check recent text history
+                    # print("[DEBUG] UI Loop: Checking recent text history...") # DEBUG REMOVED
                     if bubble_text in recent_texts:
                         print(f"Content '{bubble_text[:30]}...' in recent history, skipping this bubble.")
                         continue # Skip to next bubble
@@ -1650,6 +1976,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                     recent_texts.append(bubble_text)
 
                     # 5. Interact: Get Sender Name (uses re-location internally via retrieve_sender_name_interaction)
+                    # print("[DEBUG] UI Loop: Retrieving sender name...") # DEBUG REMOVED
                     sender_name = None
                     try:
                         # --- Bubble Re-location Logic ---
@@ -1715,6 +2042,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         continue # Skip to next bubble
 
                     # 6. Perform Cleanup
+                    # print("[DEBUG] UI Loop: Performing cleanup after getting name...") # DEBUG REMOVED
                     cleanup_successful = perform_state_cleanup(detector, interactor)
                     if not cleanup_successful:
                         print("Error: Failed to return to chat screen after getting name. Skipping this bubble.")
@@ -1725,6 +2053,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         continue # Skip to next bubble
 
                     # --- Attempt to activate reply context ---
+                    # print("[DEBUG] UI Loop: Attempting to activate reply context...") # DEBUG REMOVED
                     reply_context_activated = False
                     try:
                         print("Attempting to activate reply context...")
@@ -1801,6 +2130,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
             # If the loop finished without breaking (i.e., no trigger processed), wait the full interval.
             # If it broke, the sleep still happens here before the next cycle.
+            # print("[DEBUG] UI Loop: Finished bubble iteration or broke early. Sleeping...") # DEBUG REMOVED
             time.sleep(1.5) # Polling interval after checking all bubbles or processing one
 
         except KeyboardInterrupt:
