@@ -175,7 +175,32 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 - **`llm_interaction.py`**：
     - 修改了 `parse_structured_response` 函數中構建結果字典的順序。
     - 現在，當成功解析來自 LLM 的有效 JSON 時，輸出的字典鍵順序將優先排列 `commands`。
-- **效果**：標準化了 JSON 回應的結構順序，有助於下游處理，並可能間接幫助 LLM 更清晰地組織其輸出，尤其是在涉及工具調用和特定指令時。
+    - **效果**：標準化了 JSON 回應的結構順序，有助於下游處理，並可能間接幫助 LLM 更清晰地組織其輸出，尤其是在涉及工具調用和特定指令時。
+
+## 最近改進（2025-05-01）
+
+### 關鍵字檢測重構 (雙重方法 + 座標校正)
+
+- **目的**：根據 "Wolf 關鍵詞檢測方法深度重構指南"，重構 `ui_interaction.py` 中的關鍵字檢測邏輯，以提高辨識穩定性並確保座標系統一致性。
+- **`ui_interaction.py` (`DetectionModule`)**：
+    - **新增雙重檢測方法 (`find_keyword_dual_method`)**：
+        - 使用 OpenCV (`cv2.matchTemplate`) 進行模板匹配。
+        - 同時在**灰度圖**和 **CLAHE 增強圖**上進行匹配，並處理**反相**情況 (`cv2.bitwise_not`)。
+        - **座標校正**：`cv2.matchTemplate` 返回的座標是相對於截圖區域 (`region`) 的。在返回結果前，已將其轉換為絕對螢幕座標 (`absolute_x = region_x + relative_x`, `absolute_y = region_y + relative_y`)，以確保與 `pyautogui` 點擊座標一致。
+        - **結果合併**：
+            1.  優先選擇灰度與 CLAHE 方法結果**重合**且距離接近 (`MATCH_DISTANCE_THRESHOLD`) 的匹配。
+            2.  若無重合，則選擇單一方法中置信度**非常高** (`DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD`) 的結果。
+            3.  若仍無結果，則回退到單一方法中置信度**較高** (`DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD`) 的結果。
+        - **核心模板**：僅使用三個核心模板 (`keyword_wolf_lower`, `keyword_Wolf_upper`, `keyword_wolf_reply`) 進行檢測。
+        - **效能統計**：添加了計數器以追蹤檢測次數、成功率、各方法使用分佈、平均時間和反相匹配率 (`print_detection_stats` 方法)。
+        - **除錯視覺化**：在高除錯級別 (`DEBUG_LEVEL >= 3`) 下，會保存預處理圖像和標記了檢測點的結果圖像。
+    - **舊方法保留 (`_find_keyword_legacy`)**：原有的基於 `pyautogui.locateAllOnScreen` 和多模板的 `find_keyword_in_region` 邏輯被移至此私有方法，用於向後兼容或調試比較。
+    - **包裝器方法 (`find_keyword_in_region`)**：現在作為一個包裝器，根據 `use_dual_method` 標誌（預設為 `True`）調用新的雙重方法或舊的 legacy 方法。
+    - **初始化更新**：`__init__` 方法更新以支持 `use_dual_method` 標誌、CLAHE 初始化、核心模板提取和效能計數器。
+- **`ui_interaction.py` (`run_ui_monitoring_loop`)**：
+    - **模板字典**：初始化時區分 `essential_templates` 和 `legacy_templates`，並合併後傳遞給 `DetectionModule`。
+    - **模塊實例化**：以 `use_dual_method=True` 實例化 `DetectionModule`。
+- **效果**：預期能提高關鍵字檢測在不同光照、對比度或 UI 主題下的魯棒性，同時確保檢測到的座標能被 `pyautogui` 正確用於點擊。簡化了需要維護的關鍵字模板數量。
 
 ## 配置與部署
 
@@ -261,6 +286,32 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 - **文件更新 (`ClaudeCode.md`)**：
     - 在「技術實現」的「發送者識別」部分強調了點擊位置是相對於觸發泡泡計算的，並註明了新的偏移量。
     - 添加了此「最近改進」條目。
+
+### 關鍵字檢測重構 (雙重方法與座標校正) (2025-05-01)
+
+- **目的**：提高關鍵字 ("wolf", "Wolf", 回覆指示符) 檢測的穩定性和對視覺變化的魯棒性，並確保檢測到的座標能準確對應 `pyautogui` 的點擊座標。
+- **`ui_interaction.py` (`DetectionModule`)**：
+    - **重構 `find_keyword_in_region`**：此方法現在作為一個包裝器 (wrapper)。
+    - **新增 `find_keyword_dual_method`**：
+        - 成為預設的關鍵字檢測方法 (由 `use_dual_method` 標誌控制，預設為 `True`)。
+        - **核心邏輯**：
+            1. 對目標區域截圖。
+            2. 同時準備灰度 (grayscale) 和 CLAHE (對比度限制自適應直方圖均衡化) 增強的圖像版本。
+            3. 對三種核心關鍵字模板 (`keyword_wolf_lower`, `keyword_Wolf_upper`, `keyword_wolf_reply`) 也進行灰度與 CLAHE 預處理。
+            4. 使用 `cv2.matchTemplate` 分別在灰度圖和 CLAHE 圖上進行模板匹配 (包括正向和反向匹配 `cv2.bitwise_not`)。
+            5. **座標校正**：將 `cv2.matchTemplate` 返回的 **相對** 於截圖區域的座標，通過加上截圖區域的左上角座標 (`region_x`, `region_y`)，轉換為 **絕對** 螢幕座標，確保與 `pyautogui` 使用的座標系統一致。
+            6. **結果合併策略**：
+                - 優先選擇灰度與 CLAHE 方法結果**重合** (中心點距離小於 `MATCH_DISTANCE_THRESHOLD`) 且置信度最高的匹配。
+                - 若無重合，則回退到單一方法中置信度最高的匹配 (需高於特定閾值 `DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD`)。
+        - **效能統計**：增加了計數器 (`performance_stats`) 來追蹤檢測總數、成功數、各方法成功數、反相匹配數和總耗時。新增 `print_detection_stats` 方法用於輸出統計。
+        - **除錯增強**：在高除錯級別 (`DEBUG_LEVEL >= 3`) 下，會保存預處理圖像和標記了檢測結果的圖像。
+    - **新增 `_find_keyword_legacy`**：包含原 `find_keyword_in_region` 的邏輯，使用 `pyautogui.locateAllOnScreen` 遍歷所有（包括已棄用的）關鍵字模板，用於向後兼容或除錯比較。
+    - **常量整理**：將核心關鍵字模板標記為活躍，其他類型標記為棄用，並添加了 CLAHE 和雙重方法相關的新常量。
+    - **初始化更新**：`__init__` 方法更新以支持新標誌、初始化 CLAHE 物件和效能計數器。
+- **`ui_interaction.py` (`run_ui_monitoring_loop`)**：
+    - 更新了 `templates` 字典的創建方式，區分核心模板和舊模板。
+    - 在實例化 `DetectionModule` 時傳遞 `use_dual_method=True`。
+- **效果**：預期能更可靠地在不同光照、對比度或顏色主題下檢測到關鍵字，同時確保點擊位置的準確性。
 
 ### 聊天泡泡重新定位以提高穩定性
 
