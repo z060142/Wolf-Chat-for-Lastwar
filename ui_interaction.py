@@ -740,6 +740,7 @@ class DetectionModule:
 
         best_match = None
         final_result_coords = None
+        final_template_key = None # 新增：用於儲存最終匹配的範本 key
         detection_type = "None" # For stats
 
         if not gray_results and not clahe_results:
@@ -755,6 +756,7 @@ class DetectionModule:
 
         if best_gray and not best_clahe and best_gray['confidence'] >= DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD:
             final_result_coords = best_gray['center']
+            final_template_key = best_gray['template'] # 新增
             self.last_detection_method = "Gray" + (" (Inv)" if best_gray['is_inverted'] else "")
             self.last_detection_confidence = best_gray['confidence']
             detection_type = "Gray Only (High Conf)"
@@ -764,6 +766,7 @@ class DetectionModule:
 
         elif best_clahe and not best_gray and best_clahe['confidence'] >= DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD:
             final_result_coords = best_clahe['center']
+            final_template_key = best_clahe['template'] # 新增
             self.last_detection_method = "CLAHE" + (" (Inv)" if best_clahe['is_inverted'] else "")
             self.last_detection_confidence = best_clahe['confidence']
             detection_type = "CLAHE Only (High Conf)"
@@ -803,6 +806,7 @@ class DetectionModule:
 
             if best_overlap_match:
                 final_result_coords = best_overlap_match['center']
+                final_template_key = best_overlap_match['template'] # 新增
                 self.last_detection_method = "Dual Overlap" + (" (Inv)" if best_overlap_match['is_inverted'] else "")
                 self.last_detection_confidence = best_overlap_match['confidence']
                 detection_type = "Dual Overlap"
@@ -818,6 +822,7 @@ class DetectionModule:
                 # Use a slightly lower threshold for fallback
                 if best_overall['confidence'] >= DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD:
                     final_result_coords = best_overall['center']
+                    final_template_key = best_overall['template'] # 新增
                     method_name = "Gray Fallback" if best_overall in gray_results else "CLAHE Fallback"
                     method_name += " (Inv)" if best_overall['is_inverted'] else ""
                     self.last_detection_method = method_name
@@ -872,38 +877,37 @@ class DetectionModule:
                     print(f"Error during visual debugging image generation: {debug_e}")
                 # --- End Visual Debugging ---
 
-            return final_result_coords # Return absolute coordinates
+            # Return absolute coordinates and the matched key
+            return (final_result_coords, final_template_key)
         else:
             if self.DEBUG_LEVEL > 0: # Log failure only if debug level > 0
                  print(f"[Dual Method] No sufficiently confident match found. Time: {elapsed_time:.3f}s")
             self.last_detection_method = None
             self.last_detection_confidence = 0.0
-            return None
+            return None # Return None for both coords and key on failure
 
-    def find_keyword_in_region(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
+    def find_keyword_in_region(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[Tuple[int, int], str]]:
         """
         Wrapper method to find keywords in a region.
         Uses either the new dual method or the legacy method based on the 'use_dual_method' flag.
-        Returns absolute center coordinates or None.
+        Returns a tuple (absolute_center_coordinates, matched_template_key) or None.
         """
         if region is None or len(region) != 4 or region[2] <= 0 or region[3] <= 0:
             print(f"Error: Invalid region provided to find_keyword_in_region: {region}")
             return None
 
         if self.use_dual_method:
-            result = self.find_keyword_dual_method(region)
-            # Debug Fallback Check
-            if result is None and self.DEBUG_LEVEL >= 3:
-                print("[DEBUG] Dual method failed. Trying legacy method for comparison...")
-                legacy_result = self._find_keyword_legacy(region)
-                if legacy_result:
-                    print(f"[DEBUG] Legacy method succeeded where dual method failed. Legacy Coords: {legacy_result}")
-                else:
-                    print("[DEBUG] Legacy method also failed.")
-            return result # Return the result from the dual method
+            # Directly return the result from the dual method (now returns tuple or None)
+            return self.find_keyword_dual_method(region)
         else:
-            # Use legacy method if dual method is disabled
-            return self._find_keyword_legacy(region)
+            # Legacy method needs adaptation if we want it to return a key.
+            # For now, it returns only coords or None. We'll return None for the key part.
+            legacy_coords = self._find_keyword_legacy(region)
+            if legacy_coords:
+                # We don't know the key from the legacy method easily. Return a placeholder or None.
+                return (legacy_coords, None) # Or maybe a specific string like 'legacy_match'
+            else:
+                return None
 
     def print_detection_stats(self):
         """Prints the collected keyword detection performance statistics."""
@@ -1855,33 +1859,45 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
                 # 3. Detect Keyword in Bubble
                 # print(f"[DEBUG] UI Loop: Detecting keyword in region {bubble_region}...") # DEBUG REMOVED
-                keyword_coords = detector.find_keyword_in_region(bubble_region)
+                result = detector.find_keyword_in_region(bubble_region) # Now returns (coords, key) or None
 
-                if keyword_coords:
-                    print(f"\n!!! Keyword detected in bubble {target_bbox} !!!")
+                if result: # 檢查是否真的找到了關鍵字
+                    keyword_coords, detected_template_key = result # 解包得到座標和 key
+                    # 在這裡可以更新或加入日誌，包含 detected_template_key
+                    print(f"\n!!! Keyword '{detected_template_key}' detected in bubble {target_bbox} at {keyword_coords} !!!")
 
-                    # --- Determine if it's a reply keyword for offset ---
-                    is_reply_keyword = False
-                    reply_keyword_keys = ['keyword_wolf_reply', 'keyword_wolf_reply_type2', 'keyword_wolf_reply_type3', 'keyword_wolf_reply_type4']
-                    for key in reply_keyword_keys:
-                        reply_locs = detector._find_template(key, region=bubble_region, grayscale=False, confidence=detector.confidence)
-                        if reply_locs:
-                            for loc in reply_locs:
-                                if abs(keyword_coords[0] - loc[0]) <= 2 and abs(keyword_coords[1] - loc[1]) <= 2:
-                                    print(f"Confirmed detected keyword at {keyword_coords} matches reply keyword template '{key}' at {loc}.")
-                                    is_reply_keyword = True
-                                    break
-                        if is_reply_keyword:
-                            break
+                    # --- 接下來是移除冗餘邏輯並使用新 key ---
+
+                    # ------------ START: 刪除或註解掉以下區塊 ------------
+                    # is_reply_keyword = False
+                    # reply_keyword_keys = ['keyword_wolf_reply', 'keyword_wolf_reply_type2', 'keyword_wolf_reply_type3', 'keyword_wolf_reply_type4']
+                    # for key in reply_keyword_keys:
+                    #     reply_locs = detector._find_template(key, region=bubble_region, grayscale=False, confidence=detector.confidence)
+                    #     if reply_locs:
+                    #         for loc in reply_locs:
+                    #             if abs(keyword_coords[0] - loc[0]) <= 2 and abs(keyword_coords[1] - loc[1]) <= 2:
+                    #                 print(f"Confirmed detected keyword at {keyword_coords} matches reply keyword template '{key}' at {loc}.")
+                    #                 is_reply_keyword = True
+                    #                 break
+                    #     if is_reply_keyword:
+                    #         break
+                    # ------------- END: 刪除或註解掉以上區塊 -------------
+
+                    # 直接根據返回的 key 判斷是否為 reply
+                    # Note: Dual method currently only returns 'keyword_wolf_reply' as a reply type key
+                    is_reply_keyword = (detected_template_key == 'keyword_wolf_reply')
 
                     # Calculate click coordinates with potential offset
                     click_coords = keyword_coords
                     if is_reply_keyword:
-                        click_coords = (keyword_coords[0], keyword_coords[1] + 25)
-                        print(f"Applying +25 Y-offset for reply keyword. Click target: {click_coords}")
+                        click_coords = (keyword_coords[0], keyword_coords[1] + 25) # 假設 reply 需要 +25 Y 偏移
+                        # 更新日誌，包含 key
+                        print(f"Applying +25 Y-offset for reply keyword '{detected_template_key}'. Click target: {click_coords}")
                     else:
-                        print(f"Detected keyword is not a reply type. Click target: {click_coords}")
+                         # 更新日誌，包含 key
+                        print(f"Detected keyword '{detected_template_key}' is not a reply type. Click target: {click_coords}")
 
+                    # --- 將剩餘的邏輯放在 if result: 區塊內 ---
                     # --- Variables needed later ---
                     bubble_snapshot = None
                     search_area = SCREENSHOT_REGION
@@ -1939,23 +1955,24 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
                     # Find the keyword *again* within the *new* bubble region to get current coords
                     # print("[DEBUG] UI Loop: Finding keyword again in re-located region...") # DEBUG REMOVED
-                    current_keyword_coords = detector.find_keyword_in_region(copy_bubble_region)
-                    if not current_keyword_coords:
+                    current_result = detector.find_keyword_in_region(copy_bubble_region) # Returns (coords, key) or None
+                    if not current_result:
                         print("Warning: Keyword not found in the re-located bubble region. Skipping this bubble.")
                         continue # Skip to the next bubble
 
-                    # Determine if it's a reply keyword based on the *new* location/region
-                    is_reply_keyword_current = False
-                    # (Re-check is_reply_keyword logic here based on current_keyword_coords and copy_bubble_region)
-                    # This check might be complex, for simplicity, we can reuse the 'is_reply_keyword'
-                    # determined earlier based on the initial detection, assuming the keyword type doesn't change.
-                    # Let's reuse the previously determined 'is_reply_keyword' for offset calculation.
+                    current_keyword_coords, current_detected_key = current_result
+                    print(f"Keyword '{current_detected_key}' re-located at {current_keyword_coords}")
+
+                    # Determine if it's a reply keyword based on the *new* location/key
+                    # Use the key found in the *re-located* region for the most accurate offset decision
+                    is_reply_keyword_current = (current_detected_key == 'keyword_wolf_reply')
+
                     click_coords_current = current_keyword_coords
-                    if is_reply_keyword: # Use the flag determined from initial detection
+                    if is_reply_keyword_current:
                         click_coords_current = (current_keyword_coords[0], current_keyword_coords[1] + 25)
-                        print(f"Applying +25 Y-offset for reply keyword (current location). Click target: {click_coords_current}")
+                        print(f"Applying +25 Y-offset for reply keyword '{current_detected_key}' (current location). Click target: {click_coords_current}")
                     else:
-                        print(f"Detected keyword is not a reply type (current location). Click target: {click_coords_current}")
+                        print(f"Detected keyword '{current_detected_key}' is not a reply type (current location). Click target: {click_coords_current}")
 
                     # Interact: Get Bubble Text using current coordinates
                     # print("[DEBUG] UI Loop: Copying text...") # DEBUG REMOVED
