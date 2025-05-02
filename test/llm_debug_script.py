@@ -15,6 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 import mcp_client
 import llm_interaction
+import chroma_client # <-- 新增導入
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
@@ -164,7 +165,15 @@ async def debug_loop():
     # 1. Load Persona
     load_persona_from_file()
 
-    # 2. Initialize MCP
+    # 2. Initialize ChromaDB
+    print("\n--- Initializing ChromaDB ---")
+    if not chroma_client.initialize_chroma_client():
+        print("Warning: ChromaDB initialization failed. Memory functions may not work.")
+    else:
+        print("ChromaDB initialized successfully.")
+    print("-----------------------------")
+
+    # 3. Initialize MCP
     await initialize_mcp_connections()
     if not active_mcp_sessions:
         print("\nNo MCP servers connected. LLM tool usage will be limited. Continue? (y/n)")
@@ -172,7 +181,7 @@ async def debug_loop():
         if confirm.strip().lower() != 'y':
             return
 
-    # 3. Get username
+    # 4. Get username
     user_name = await get_username()
     print(f"Debug session started as: {user_name}")
 
@@ -203,13 +212,24 @@ async def debug_loop():
 
             print(f"\n{config.PERSONA_NAME} is thinking...")
 
-            # Call LLM interaction function
+            # --- Pre-fetch ChromaDB data ---
+            print(f"Fetching ChromaDB data for '{user_name}'...")
+            user_profile_data = chroma_client.get_entity_profile(user_name)
+            related_memories_data = chroma_client.get_related_memories(user_name, topic=user_input, limit=5) # Use user input as topic hint
+            # bot_knowledge_data = chroma_client.get_bot_knowledge(concept=user_input, limit=3) # Optional: Fetch bot knowledge based on input
+            print("ChromaDB data fetch complete.")
+            # --- End Pre-fetch ---
+
+            # Call LLM interaction function, passing fetched data
             bot_response_data = await llm_interaction.get_llm_response(
                 current_sender_name=user_name,
-                history=list(conversation_history),
+                history=list(conversation_history), # Pass history
                 mcp_sessions=active_mcp_sessions,
                 available_mcp_tools=all_discovered_mcp_tools,
-                persona_details=wolfhart_persona_details
+                persona_details=wolfhart_persona_details,
+                user_profile=user_profile_data,         # Pass fetched profile
+                related_memories=related_memories_data, # Pass fetched memories
+                # bot_knowledge=bot_knowledge_data      # Optional: Pass fetched knowledge
             )
 
             # Print the full response structure for debugging
