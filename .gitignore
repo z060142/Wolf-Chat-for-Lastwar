@@ -8,3 +8,5 @@ debug_screenshots/
 chat_logs/
 backup/
 chroma_data/
+wolf_control.py
+remote_config.json
