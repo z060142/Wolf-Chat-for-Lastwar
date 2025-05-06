@@ -208,7 +208,28 @@ def load_current_config():
                 print(f"Error parsing MCP_SERVERS section: {e}")
                 import traceback
                 traceback.print_exc()
-                
+
+            # Extract memory settings
+            enable_preload_match = re.search(r'ENABLE_PRELOAD_PROFILES\s*=\s*(True|False)', config_content)
+            if enable_preload_match:
+                config_data["ENABLE_PRELOAD_PROFILES"] = (enable_preload_match.group(1) == "True")
+
+            related_memories_match = re.search(r'PRELOAD_RELATED_MEMORIES\s*=\s*(\d+)', config_content)
+            if related_memories_match:
+                config_data["PRELOAD_RELATED_MEMORIES"] = int(related_memories_match.group(1))
+
+            profiles_collection_match = re.search(r'PROFILES_COLLECTION\s*=\s*["\'](.+?)["\']', config_content)
+            if profiles_collection_match:
+                config_data["PROFILES_COLLECTION"] = profiles_collection_match.group(1)
+
+            conversations_collection_match = re.search(r'CONVERSATIONS_COLLECTION\s*=\s*["\'](.+?)["\']', config_content)
+            if conversations_collection_match:
+                config_data["CONVERSATIONS_COLLECTION"] = conversations_collection_match.group(1)
+
+            bot_memory_collection_match = re.search(r'BOT_MEMORY_COLLECTION\s*=\s*["\'](.+?)["\']', config_content)
+            if bot_memory_collection_match:
+                config_data["BOT_MEMORY_COLLECTION"] = bot_memory_collection_match.group(1)
+
         except Exception as e:
             print(f"Error reading config.py: {e}")
             import traceback
@@ -358,8 +379,45 @@ def generate_config_file(config_data, env_data):
         f.write(f"GAME_WINDOW_Y = {game_config['GAME_WINDOW_Y']}\n")
         f.write(f"GAME_WINDOW_WIDTH = {game_config['GAME_WINDOW_WIDTH']}\n")
         f.write(f"GAME_WINDOW_HEIGHT = {game_config['GAME_WINDOW_HEIGHT']}\n")
-        f.write(f"MONITOR_INTERVAL_SECONDS = {game_config['MONITOR_INTERVAL_SECONDS']}\n")
-        
+        f.write(f"MONITOR_INTERVAL_SECONDS = {game_config['MONITOR_INTERVAL_SECONDS']}\n\n")
+
+        # --- Add explicit print before writing Chroma section ---
+        print("DEBUG: Writing ChromaDB Memory Configuration section...")
+        # --- End explicit print ---
+
+        # Write ChromaDB Memory Configuration
+        f.write("# =============================================================================\n")
+        f.write("# ChromaDB Memory Configuration\n")
+        f.write("# =============================================================================\n")
+        # Ensure boolean is written correctly as True/False, not string 'True'/'False'
+        enable_preload = config_data.get('ENABLE_PRELOAD_PROFILES', True) # Default to True if key missing
+        f.write(f"ENABLE_PRELOAD_PROFILES = {str(enable_preload)}\n") # Writes True or False literal
+
+        preload_memories = config_data.get('PRELOAD_RELATED_MEMORIES', 2) # Default to 2
+        f.write(f"PRELOAD_RELATED_MEMORIES = {preload_memories}\n\n")
+
+        f.write("# Collection Names (used for both local access and MCP tool calls)\n")
+        profiles_col = config_data.get('PROFILES_COLLECTION', 'user_profiles')
+        f.write(f"PROFILES_COLLECTION = \"{profiles_col}\"\n")
+
+        conversations_col = config_data.get('CONVERSATIONS_COLLECTION', 'conversations')
+        f.write(f"CONVERSATIONS_COLLECTION = \"{conversations_col}\"\n")
+
+        bot_memory_col = config_data.get('BOT_MEMORY_COLLECTION', 'wolfhart_memory')
+        f.write(f"BOT_MEMORY_COLLECTION = \"{bot_memory_col}\"\n\n")
+
+        f.write("# Ensure Chroma path is consistent for both direct access and MCP\n")
+        # Get the path set in the UI (or default)
+        # Use .get() chain with defaults for safety
+        chroma_data_dir_ui = config_data.get("MCP_SERVERS", {}).get("chroma", {}).get("data_dir", DEFAULT_CHROMA_DATA_PATH)
+        # Normalize path for writing into the config file string (use forward slashes)
+        normalized_chroma_path = normalize_path(chroma_data_dir_ui)
+        f.write(f"# This path will be made absolute when config.py is loaded.\n")
+        # Write the potentially relative path from UI/default, let config.py handle abspath
+        # Use raw string r"..." to handle potential backslashes in Windows paths correctly within the string literal
+        f.write(f"CHROMA_DATA_DIR = os.path.abspath(r\"{normalized_chroma_path}\")\n")
+
+
     print("Generated config.py file successfully")
 
 
@@ -385,7 +443,8 @@ class WolfChatSetup(tk.Tk):
         self.create_api_tab()
         self.create_mcp_tab()
         self.create_game_tab()
-        
+        self.create_memory_tab() # 新增記憶設定標籤頁
+
         # Create bottom buttons
         self.create_bottom_buttons()
         
@@ -837,7 +896,99 @@ class WolfChatSetup(tk.Tk):
         
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
         info_label.pack(padx=10, pady=10, anchor=tk.W)
-    
+
+    def create_memory_tab(self):
+        """Create the Memory Settings tab"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Memory Settings")
+
+        # Main frame with padding
+        main_frame = ttk.Frame(tab, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Header
+        header = ttk.Label(main_frame, text="ChromaDB Memory Integration", font=("", 12, "bold"))
+        header.pack(anchor=tk.W, pady=(0, 10))
+
+        # Enable Pre-loading
+        preload_frame = ttk.Frame(main_frame)
+        preload_frame.pack(fill=tk.X, pady=5)
+
+        self.preload_profiles_var = tk.BooleanVar(value=True)
+        preload_cb = ttk.Checkbutton(preload_frame, text="Enable user profile pre-loading",
+                                    variable=self.preload_profiles_var)
+        preload_cb.pack(anchor=tk.W, pady=2)
+
+        # Collection Names Frame
+        collections_frame = ttk.LabelFrame(main_frame, text="Collection Names")
+        collections_frame.pack(fill=tk.X, pady=10)
+
+        # User Profiles Collection
+        profiles_col_frame = ttk.Frame(collections_frame)
+        profiles_col_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        profiles_col_label = ttk.Label(profiles_col_frame, text="Profiles Collection:", width=20)
+        profiles_col_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        # 修正：將預設值改為 "wolfhart_memory" 以匹配實際用法
+        self.profiles_collection_var = tk.StringVar(value="wolfhart_memory")
+        profiles_col_entry = ttk.Entry(profiles_col_frame, textvariable=self.profiles_collection_var)
+        profiles_col_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Conversations Collection
+        conv_col_frame = ttk.Frame(collections_frame)
+        conv_col_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        conv_col_label = ttk.Label(conv_col_frame, text="Conversations Collection:", width=20)
+        conv_col_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.conversations_collection_var = tk.StringVar(value="conversations")
+        conv_col_entry = ttk.Entry(conv_col_frame, textvariable=self.conversations_collection_var)
+        conv_col_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Bot Memory Collection
+        bot_col_frame = ttk.Frame(collections_frame)
+        bot_col_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        bot_col_label = ttk.Label(bot_col_frame, text="Bot Memory Collection:", width=20)
+        bot_col_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.bot_memory_collection_var = tk.StringVar(value="wolfhart_memory")
+        bot_col_entry = ttk.Entry(bot_col_frame, textvariable=self.bot_memory_collection_var)
+        bot_col_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Pre-loading Settings
+        preload_settings_frame = ttk.LabelFrame(main_frame, text="Pre-loading Settings")
+        preload_settings_frame.pack(fill=tk.X, pady=10)
+
+        # Related memories to preload
+        related_frame = ttk.Frame(preload_settings_frame)
+        related_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        related_label = ttk.Label(related_frame, text="Related Memories Count:", width=20)
+        related_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.related_memories_var = tk.IntVar(value=2)
+        related_spinner = ttk.Spinbox(related_frame, from_=0, to=10, width=5, textvariable=self.related_memories_var)
+        related_spinner.pack(side=tk.LEFT)
+
+        related_info = ttk.Label(related_frame, text="(0 to disable related memories pre-loading)")
+        related_info.pack(side=tk.LEFT, padx=(5, 0))
+
+        # Information box
+        info_frame = ttk.LabelFrame(main_frame, text="Information")
+        info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        info_text = (
+            "• Pre-loading user profiles will speed up responses by fetching data before LLM calls\n"
+            "• Collection names must match your ChromaDB configuration\n"
+            "• The bot will automatically use pre-loaded data if available\n"
+            "• If data isn't found locally, the bot will fall back to using tool calls"
+        )
+
+        info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
+        info_label.pack(padx=10, pady=10, anchor=tk.W)
+
     def create_bottom_buttons(self):
         """Create bottom action buttons"""
         btn_frame = ttk.Frame(self)
@@ -1004,10 +1155,17 @@ class WolfChatSetup(tk.Tk):
             self.restart_var.set(game_config.get("ENABLE_SCHEDULED_RESTART", True))
             self.interval_var.set(game_config.get("RESTART_INTERVAL_MINUTES", 60))
             self.monitor_interval_var.set(game_config.get("MONITOR_INTERVAL_SECONDS", 5))
-            
+
+            # Memory Settings
+            self.preload_profiles_var.set(self.config_data.get("ENABLE_PRELOAD_PROFILES", True))
+            self.related_memories_var.set(self.config_data.get("PRELOAD_RELATED_MEMORIES", 2))
+            self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "user_profiles"))
+            self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "conversations"))
+            self.bot_memory_collection_var.set(self.config_data.get("BOT_MEMORY_COLLECTION", "wolfhart_memory"))
+
             # Update visibility and states
             self.update_exa_settings_visibility()
-            
+
         except Exception as e:
             print(f"Error updating UI from data: {e}")
             import traceback
@@ -1253,7 +1411,14 @@ class WolfChatSetup(tk.Tk):
                 "GAME_WINDOW_HEIGHT": self.height_var.get(),
                 "MONITOR_INTERVAL_SECONDS": self.monitor_interval_var.get()
             }
-            
+
+            # 保存記憶設定
+            self.config_data["ENABLE_PRELOAD_PROFILES"] = self.preload_profiles_var.get()
+            self.config_data["PRELOAD_RELATED_MEMORIES"] = self.related_memories_var.get()
+            self.config_data["PROFILES_COLLECTION"] = self.profiles_collection_var.get()
+            self.config_data["CONVERSATIONS_COLLECTION"] = self.conversations_collection_var.get()
+            self.config_data["BOT_MEMORY_COLLECTION"] = self.bot_memory_collection_var.get()
+
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:
                 if not self.exa_key_var.get():

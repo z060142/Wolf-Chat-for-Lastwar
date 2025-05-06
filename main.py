@@ -29,11 +29,29 @@ import mcp_client
 import llm_interaction
 # Import UI module
 import ui_interaction
+import chroma_client
 # import game_monitor # No longer importing, will run as subprocess
 import subprocess # Import subprocess module
+import signal
+import platform
+# Conditionally import Windows-specific modules
+if platform.system() == "Windows":
+    try:
+        import win32api
+        import win32con
+    except ImportError:
+        print("Warning: 'pywin32' not installed. MCP server subprocess termination on exit might not work reliably on Windows.")
+        win32api = None
+        win32con = None
+else:
+    win32api = None
+    win32con = None
+
 
 # --- Global Variables ---
 active_mcp_sessions: dict[str, ClientSession] = {}
+# Store Popen objects for managed MCP servers
+mcp_server_processes: dict[str, asyncio.subprocess.Process] = {}
 all_discovered_mcp_tools: list[dict] = []
 exit_stack = AsyncExitStack()
 # Stores loaded persona data (as a string for easy injection into prompt)
@@ -134,7 +152,7 @@ def keyboard_listener():
 # --- Game Monitor Signal Reader (Threaded Blocking Version) ---
 def read_monitor_output(process: subprocess.Popen, queue: ThreadSafeQueue, loop: asyncio.AbstractEventLoop, stop_event: threading.Event):
     """Runs in a separate thread, reads stdout blocking, parses JSON, and puts commands in the queue."""
-    print("遊戲監控輸出讀取線程已啟動。(Game monitor output reader thread started.)")
+    print("Game monitor output reader thread started.")
     try:
         while not stop_event.is_set():
             if not process.stdout:
@@ -164,34 +182,34 @@ def read_monitor_output(process: subprocess.Popen, queue: ThreadSafeQueue, loop:
                     print(f"[Monitor Reader Thread] Parsed action: '{action}'") # Log parsed action
                     if action == 'pause_ui':
                         command = {'action': 'pause'}
-                        print(f"[Monitor Reader Thread] 準備將命令放入隊列: {command} (Preparing to queue command)") # Log before queueing
+                        print(f"[Monitor Reader Thread] Preparing to queue command: {command}") # Log before queueing
                         loop.call_soon_threadsafe(queue.put_nowait, command)
-                        print("[Monitor Reader Thread] 暫停命令已放入隊列。(Pause command queued.)") # Log after queueing
+                        print("[Monitor Reader Thread] Pause command queued.") # Log after queueing
                     elif action == 'resume_ui':
                         # Removed direct resume_ui handling - ui_interaction will handle pause/resume based on restart_complete
-                        print("[Monitor Reader Thread] 收到舊的 'resume_ui' 訊號，忽略。(Received old 'resume_ui' signal, ignoring.)")
+                        print("[Monitor Reader Thread] Received old 'resume_ui' signal, ignoring.")
                     elif action == 'restart_complete':
                         command = {'action': 'handle_restart_complete'}
-                        print(f"[Monitor Reader Thread] 收到 'restart_complete' 訊號，準備將命令放入隊列: {command} (Received 'restart_complete' signal, preparing to queue command)")
+                        print(f"[Monitor Reader Thread] Received 'restart_complete' signal, preparing to queue command: {command}")
                         try:
                             loop.call_soon_threadsafe(queue.put_nowait, command)
-                            print("[Monitor Reader Thread] 'handle_restart_complete' 命令已放入隊列。(handle_restart_complete command queued.)")
+                            print("[Monitor Reader Thread] 'handle_restart_complete' command queued.")
                         except Exception as q_err:
-                            print(f"[Monitor Reader Thread] 將 'handle_restart_complete' 命令放入隊列時出錯: {q_err} (Error putting 'handle_restart_complete' command in queue: {q_err})")
+                            print(f"[Monitor Reader Thread] Error putting 'handle_restart_complete' command in queue: {q_err}")
                     else:
-                        print(f"[Monitor Reader Thread] 從監控器收到未知動作: {action} (Received unknown action from monitor: {action})")
+                        print(f"[Monitor Reader Thread] Received unknown action from monitor: {action}")
                 except json.JSONDecodeError:
-                    print(f"[Monitor Reader Thread] ERROR: 無法解析來自監控器的 JSON: '{line}' (Could not decode JSON from monitor: '{line}')")
+                    print(f"[Monitor Reader Thread] ERROR: Could not decode JSON from monitor: '{line}'")
                     # Log the raw line that failed to parse
                     # print(f"[Monitor Reader Thread] Raw line that failed JSON decode: '{line}'") # Already logged raw line earlier
                 except Exception as e:
-                    print(f"[Monitor Reader Thread] 處理監控器輸出時出錯: {e} (Error processing monitor output: {e})")
+                    print(f"[Monitor Reader Thread] Error processing monitor output: {e}")
             # No sleep needed here as readline() is blocking
     except Exception as e:
         # Catch broader errors in the thread loop itself
         print(f"[Monitor Reader Thread] Thread loop error: {e}")
     finally:
-        print("遊戲監控輸出讀取線程已停止。(Game monitor output reader thread stopped.)")
+        print("Game monitor output reader thread stopped.")
 # --- End Game Monitor Signal Reader ---
 
 
@@ -228,6 +246,73 @@ def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_m
     except Exception as e:
         print(f"Error writing to chat log: {e}")
 # --- End Chat Logging Function ---
+
+
+# --- MCP Server Subprocess Termination Logic (Windows) ---
+def terminate_all_mcp_servers():
+    """Attempts to terminate all managed MCP server subprocesses."""
+    if not mcp_server_processes:
+        return
+    print(f"[INFO] Terminating {len(mcp_server_processes)} managed MCP server subprocess(es)...")
+    for key, proc in list(mcp_server_processes.items()): # Iterate over a copy of items
+        if proc.returncode is None: # Check if process is still running
+            print(f"[INFO] Terminating server '{key}' (PID: {proc.pid})...")
+            try:
+                if platform.system() == "Windows" and win32api:
+                    # Send CTRL_BREAK_EVENT on Windows if flag was set
+                    # Note: This requires the process was started with CREATE_NEW_PROCESS_GROUP
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                    print(f"[INFO] Sent CTRL_BREAK_EVENT to server '{key}'.")
+                    # Optionally wait with timeout, then kill if needed
+                    # proc.wait(timeout=5) # This is blocking, avoid in async handler?
+                else:
+                    # Use standard terminate for non-Windows or if win32api failed
+                    proc.terminate()
+                    print(f"[INFO] Sent SIGTERM to server '{key}'.")
+            except ProcessLookupError:
+                 print(f"[WARN] Process for server '{key}' (PID: {proc.pid}) not found.")
+            except Exception as e:
+                print(f"[ERROR] Error terminating server '{key}' (PID: {proc.pid}): {e}")
+                # Fallback to kill if terminate fails or isn't applicable
+                try:
+                    if proc.returncode is None:
+                        proc.kill()
+                        print(f"[WARN] Forcefully killed server '{key}' (PID: {proc.pid}).")
+                except Exception as kill_e:
+                    print(f"[ERROR] Error killing server '{key}' (PID: {proc.pid}): {kill_e}")
+        # Remove from dict after attempting termination
+        if key in mcp_server_processes:
+             del mcp_server_processes[key]
+    print("[INFO] Finished attempting MCP server termination.")
+
+def windows_ctrl_handler(ctrl_type):
+    """Handles Windows console control events."""
+    if win32con and ctrl_type in (
+        win32con.CTRL_C_EVENT,
+        win32con.CTRL_BREAK_EVENT,
+        win32con.CTRL_CLOSE_EVENT,
+        win32con.CTRL_LOGOFF_EVENT,
+        win32con.CTRL_SHUTDOWN_EVENT
+    ):
+        print(f"[INFO] Windows Control Event ({ctrl_type}) detected. Initiating MCP server termination.")
+        # Directly call the termination function.
+        # Avoid doing complex async operations here if possible.
+        # The main shutdown sequence will handle async cleanup.
+        terminate_all_mcp_servers()
+        # Returning True indicates we handled the event,
+        # but might prevent default clean exit. Let's return False
+        # to allow Python's default handler to also run (e.g., for KeyboardInterrupt).
+        return False # Allow other handlers to process the event
+    return False # Event not handled
+
+# Register the handler only on Windows and if imports succeeded
+if platform.system() == "Windows" and win32api and win32con:
+    try:
+        win32api.SetConsoleCtrlHandler(windows_ctrl_handler, True)
+        print("[INFO] Registered Windows console control handler for MCP server cleanup.")
+    except Exception as e:
+        print(f"[ERROR] Failed to register Windows console control handler: {e}")
+# --- End MCP Server Termination Logic ---
 
 
 # --- Cleanup Function ---
@@ -289,8 +374,12 @@ async def shutdown():
              game_monitor_process = None # Clear the reference
 
     # 3. Close MCP connections via AsyncExitStack
+    # This will trigger the __aexit__ method of stdio_client contexts,
+    # which we assume handles terminating the server subprocesses it started.
     print(f"Closing MCP Server connections (via AsyncExitStack)...")
     try:
+        # This will close the ClientSession contexts, which might involve
+        # closing the stdin/stdout pipes to the (now hopefully terminated) servers.
         await exit_stack.aclose()
         print("AsyncExitStack closed successfully.")
     except Exception as e:
@@ -310,7 +399,7 @@ async def connect_and_discover(key: str, server_config: dict):
     """
     Connects to a single MCP server, initializes the session, and discovers tools.
     """
-    global all_discovered_mcp_tools, active_mcp_sessions, exit_stack
+    global all_discovered_mcp_tools, active_mcp_sessions, exit_stack # Remove mcp_server_processes from global list here
     print(f"\nProcessing Server: '{key}'")
     command = server_config.get("command")
     args = server_config.get("args", [])
@@ -322,21 +411,33 @@ async def connect_and_discover(key: str, server_config: dict):
         print(f"==> Error: Missing 'command' in Server '{key}' configuration. <==")
         return
 
+    # Use StdioServerParameters again
     server_params = StdioServerParameters(
         command=command, args=args, env=process_env,
+        # Note: We assume stdio_client handles necessary flags internally or
+        # that its cleanup mechanism is sufficient. Explicit flag passing here
+        # might require checking the mcp library's StdioServerParameters definition.
     )
 
     try:
+        # --- Use stdio_client again ---
         print(f"Using stdio_client to start and connect to Server '{key}'...")
+        # Pass server_params to stdio_client
+        # stdio_client manages the subprocess lifecycle within its context
         read, write = await exit_stack.enter_async_context(
             stdio_client(server_params)
         )
-        print(f"stdio_client for '{key}' active.")
+        print(f"stdio_client for '{key}' active, provides read/write streams.")
+        # --- End stdio_client usage ---
 
+        # stdio_client provides the correct stream types for ClientSession
         session = await exit_stack.enter_async_context(
             ClientSession(read, write)
         )
         print(f"ClientSession for '{key}' context entered.")
+
+        # We no longer manually manage the process object here.
+        # We rely on stdio_client's context manager (__aexit__) to terminate the process.
 
         print(f"Initializing Session '{key}'...")
         await session.initialize()
@@ -424,6 +525,32 @@ def load_persona_from_file(filename="persona.json"):
         print(f"Unknown error loading Persona configuration file '{filename}': {e}")
         wolfhart_persona_details = None
 
+# --- Memory System Initialization ---
+def initialize_memory_system():
+    """Initialize memory system"""
+    if hasattr(config, 'ENABLE_PRELOAD_PROFILES') and config.ENABLE_PRELOAD_PROFILES:
+        print("\nInitializing ChromaDB memory system...")
+        if chroma_client.initialize_chroma_client():
+            # Check if collections are available
+            collections_to_check = [
+                config.PROFILES_COLLECTION,
+                config.CONVERSATIONS_COLLECTION,
+                config.BOT_MEMORY_COLLECTION
+            ]
+            success_count = 0
+            for coll_name in collections_to_check:
+                if chroma_client.get_collection(coll_name):
+                    success_count += 1
+
+            print(f"Memory system initialization complete, successfully connected to {success_count}/{len(collections_to_check)} collections")
+            return True
+        else:
+            print("Memory system initialization failed, falling back to tool calls")
+            return False
+    else:
+        print("Memory system preloading is disabled, will use tool calls to get memory")
+        return False
+# --- End Memory System Initialization ---
 
 # --- Main Async Function ---
 async def run_main_with_exit_stack():
@@ -433,7 +560,10 @@ async def run_main_with_exit_stack():
         # 1. Load Persona Synchronously (before async loop starts)
         load_persona_from_file() # Corrected function
 
-        # 2. Initialize MCP Connections Asynchronously
+        # 2. Initialize Memory System (after loading config, before main loop)
+        memory_system_active = initialize_memory_system()
+
+        # 3. Initialize MCP Connections Asynchronously
         await initialize_mcp_connections()
 
         # Warn if no servers connected successfully, but continue
@@ -586,27 +716,78 @@ async def run_main_with_exit_stack():
             print(f"Added user message from {sender_name} to history at {timestamp}.")
             # --- End Add user message ---
 
+            # --- Memory Preloading ---
+            user_profile = None
+            related_memories = []
+            bot_knowledge = []
+            memory_retrieval_time = 0
+
+            # If memory system is active and preloading is enabled
+            if memory_system_active and hasattr(config, 'ENABLE_PRELOAD_PROFILES') and config.ENABLE_PRELOAD_PROFILES:
+                try:
+                    memory_start_time = time.time()
+
+                    # 1. Get user profile
+                    user_profile = chroma_client.get_entity_profile(sender_name)
+
+                    # 2. Preload related memories if configured
+                    if hasattr(config, 'PRELOAD_RELATED_MEMORIES') and config.PRELOAD_RELATED_MEMORIES > 0:
+                        related_memories = chroma_client.get_related_memories(
+                            sender_name,
+                            limit=config.PRELOAD_RELATED_MEMORIES
+                        )
+
+                    # 3. Optionally preload bot knowledge based on message content
+                    key_game_terms = ["capital_position", "capital_administrator_role", "server_hierarchy",
+                                     "last_war", "winter_war", "excavations", "blueprints",
+                                     "honor_points", "golden_eggs", "diamonds"]
+
+                    # Check if message contains these keywords
+                    found_terms = [term for term in key_game_terms if term.lower() in bubble_text.lower()]
+
+                    if found_terms:
+                        # Retrieve knowledge for found terms (limit to 2 terms, 2 results each)
+                        for term in found_terms[:2]:
+                            term_knowledge = chroma_client.get_bot_knowledge(term, limit=2)
+                            bot_knowledge.extend(term_knowledge)
+
+                    memory_retrieval_time = time.time() - memory_start_time
+                    print(f"Memory retrieval complete: User profile {'successful' if user_profile else 'failed'}, "
+                          f"{len(related_memories)} related memories, "
+                          f"{len(bot_knowledge)} bot knowledge, "
+                          f"total time {memory_retrieval_time:.3f}s")
+
+                except Exception as mem_err:
+                    print(f"Error during memory retrieval: {mem_err}")
+                    # Clear all memory data on error to avoid using partial data
+                    user_profile = None
+                    related_memories = []
+                    bot_knowledge = []
+            # --- End Memory Preloading ---
+
             print(f"\n{config.PERSONA_NAME} is thinking...")
             try:
-                # Get LLM response (現在返回的是一個字典)
-                # --- Pass history and current sender name ---
+                # Get LLM response, passing preloaded memory data
                 bot_response_data = await llm_interaction.get_llm_response(
-                    current_sender_name=sender_name, # Pass current sender
-                    history=list(conversation_history), # Pass a copy of the history
+                    current_sender_name=sender_name,
+                    history=list(conversation_history),
                     mcp_sessions=active_mcp_sessions,
                     available_mcp_tools=all_discovered_mcp_tools,
-                    persona_details=wolfhart_persona_details
+                    persona_details=wolfhart_persona_details,
+                    user_profile=user_profile,                # Added: Pass user profile
+                    related_memories=related_memories,        # Added: Pass related memories
+                    bot_knowledge=bot_knowledge               # Added: Pass bot knowledge
                 )
 
-                # 提取對話內容
+                # Extract dialogue content
                 bot_dialogue = bot_response_data.get("dialogue", "")
-                valid_response = bot_response_data.get("valid_response", False) # <-- 獲取 valid_response 標誌
+                valid_response = bot_response_data.get("valid_response", False) # <-- Get valid_response flag
                 print(f"{config.PERSONA_NAME}'s dialogue response: {bot_dialogue}")
                 # --- DEBUG PRINT ---
                 print(f"DEBUG main.py: Before check - bot_dialogue='{bot_dialogue}', valid_response={valid_response}, dialogue_is_truthy={bool(bot_dialogue)}")
                 # --- END DEBUG PRINT ---
 
-                # 處理命令 (如果有的話)
+                # Process commands (if any)
                 commands = bot_response_data.get("commands", [])
                 if commands:
                     print(f"Processing {len(commands)} command(s)...")
@@ -676,12 +857,12 @@ async def run_main_with_exit_stack():
                         #     print(f"Ignoring command type from LLM JSON (already handled internally): {cmd_type}, parameters: {cmd_params}")
                         # --- End Command Processing ---
 
-                # 記錄思考過程 (如果有的話)
+                # Log thoughts (if any)
                 thoughts = bot_response_data.get("thoughts", "")
                 if thoughts:
                     print(f"AI Thoughts: {thoughts[:150]}..." if len(thoughts) > 150 else f"AI Thoughts: {thoughts}")
 
-                # 只有當有效回應時才發送到遊戲 (via command queue)
+                # Only send to game when valid response (via command queue)
                 if bot_dialogue and valid_response:
                     # --- Add bot response to history ---
                     timestamp = datetime.datetime.now() # Get current timestamp

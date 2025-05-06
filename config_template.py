@@ -60,3 +60,17 @@ GAME_WINDOW_Y = ${GAME_WINDOW_Y}
 GAME_WINDOW_WIDTH = ${GAME_WINDOW_WIDTH}
 GAME_WINDOW_HEIGHT = ${GAME_WINDOW_HEIGHT}
 MONITOR_INTERVAL_SECONDS = ${MONITOR_INTERVAL_SECONDS}
+
+# =============================================================================
+# ChromaDB Memory Configuration
+# =============================================================================
+ENABLE_PRELOAD_PROFILES = ${ENABLE_PRELOAD_PROFILES}
+PRELOAD_RELATED_MEMORIES = ${PRELOAD_RELATED_MEMORIES}
+
+# Collection Names (used for both local access and MCP tool calls)
+PROFILES_COLLECTION = "${PROFILES_COLLECTION}"
+CONVERSATIONS_COLLECTION = "${CONVERSATIONS_COLLECTION}"
+BOT_MEMORY_COLLECTION = "${BOT_MEMORY_COLLECTION}"
+
+# Ensure Chroma path is consistent for both direct access and MCP
+CHROMA_DATA_DIR = os.path.abspath("chroma_data")
