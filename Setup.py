@@ -27,6 +27,8 @@ import threading
 import datetime
 import schedule
 import psutil
+import random # Added for exponential backoff jitter
+import urllib3 # Added for SSL warning suppression
 try:
     import socketio
     HAS_SOCKETIO = True
@@ -684,7 +686,8 @@ class WolfChatSetup(tk.Tk):
         self._start_scheduler_thread()
 
         self.update_management_buttons_state(False) # Disable start, enable stop
-        messagebox.showinfo("Session Started", "Managed bot and game session started. Check console for logs.")
+        # messagebox.showinfo("Session Started", "Managed bot and game session started. Check console for logs.") # Removed popup
+        logger.info("Managed bot and game session started. Check console for logs.") # Log instead of popup
 
     def stop_managed_session(self):
         logger.info("Attempting to stop managed session...")
@@ -2151,6 +2154,10 @@ if HAS_SOCKETIO:
             self.server_url = server_url
             self.client_key = client_key
             self.wolf_chat_setup = wolf_chat_setup_instance # Reference to the main app
+            
+            # Suppress InsecureRequestWarning when using ssl_verify=False, as is the current default
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
             self.sio = socketio.Client(ssl_verify=False, logger=logger, engineio_logger=logger) # Use app's logger
             self.connected = False
             self.authenticated = False
@@ -2183,30 +2190,55 @@ if HAS_SOCKETIO:
 
         def _run_forever(self):
             logger.info(f"ControlClient: Starting connection attempts to {self.server_url}")
+            last_heartbeat = time.time() # For heartbeat
+            retry_delay = 1.0  # Start with 1 second delay for exponential backoff
+            max_delay = 300.0  # Maximum delay of 5 minutes for exponential backoff
+            
             while not self.should_exit_flag.is_set():
                 if not self.sio.connected:
                     try:
+                        logger.info(f"ControlClient: Attempting to connect to {self.server_url}...")
                         self.sio.connect(self.server_url)
-                        # self.sio.wait() # This would block, not suitable for a loop like this
-                                        # The connect call is blocking until connection or failure.
-                                        # If it fails, it raises socketio.exceptions.ConnectionError
+                        logger.info("ControlClient: Successfully connected.")
+                        retry_delay = 1.0  # Reset delay on successful connection
+                        last_heartbeat = time.time() # Reset heartbeat timer on new connection
                     except socketio.exceptions.ConnectionError as e:
-                        logger.error(f"ControlClient: Connection failed: {e}. Retrying in 10s.")
-                        self.should_exit_flag.wait(10) # Wait for 10s or until exit_flag is set
+                        logger.error(f"ControlClient: Connection failed: {e}. Retrying in {retry_delay:.2f}s.")
+                        self.should_exit_flag.wait(retry_delay)
+                        # Implement exponential backoff with jitter
+                        retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
+                        retry_delay = max(1.0, retry_delay) # Ensure it's at least 1s
                         continue 
-                    except Exception as e:
-                        logger.error(f"ControlClient: Unexpected error during connection: {e}. Retrying in 10s.")
-                        self.should_exit_flag.wait(10)
+                    except Exception as e: # Catch other potential errors during connection
+                        logger.error(f"ControlClient: Unexpected error during connection attempt: {e}. Retrying in {retry_delay:.2f}s.")
+                        self.should_exit_flag.wait(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
+                        retry_delay = max(1.0, retry_delay) # Ensure it's at least 1s
                         continue
                 
-                # If connected, just sleep briefly to allow exit signal to be checked
-                # The actual event handling happens in SIO's own threads.
-                self.should_exit_flag.wait(1) # Check for exit signal every second
+                # If connected, manage heartbeat and check for exit signal
+                if self.sio.connected:
+                    current_time = time.time()
+                    if current_time - last_heartbeat > 60:  # Send heartbeat every 60 seconds
+                        try:
+                            self.sio.emit('heartbeat', {'timestamp': current_time})
+                            last_heartbeat = current_time
+                            logger.debug("ControlClient: Sent heartbeat to keep connection alive.")
+                        except Exception as e: 
+                            logger.error(f"ControlClient: Error sending heartbeat: {e}. Connection might be lost.")
+                    
+                    self.should_exit_flag.wait(1) # Check for exit signal every second
+                else:
+                    # Fallback if not connected after attempt block (should be rare with current logic)
+                    logger.debug(f"ControlClient: Not connected (unexpected state in loop), waiting {retry_delay:.2f}s before next cycle.")
+                    self.should_exit_flag.wait(retry_delay)
+                    # Optionally re-calculate retry_delay here if this path is hit, to maintain backoff progression
+                    retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
+                    retry_delay = max(1.0, retry_delay)
 
             logger.info("ControlClient: Exited _run_forever loop.")
             if self.sio.connected:
                 self.sio.disconnect()
-
 
         def _on_connect(self):
             self.connected = True
@@ -2221,6 +2253,16 @@ if HAS_SOCKETIO:
             self.connected = False
             self.authenticated = False
             logger.info("ControlClient: Disconnected from server.")
+            
+            # Force reconnection if not intentionally stopping
+            if not self.should_exit_flag.is_set():
+                logger.info("ControlClient: Attempting immediate reconnection from _on_disconnect...")
+                try:
+                    # This is an immediate attempt; _run_forever handles sustained retries.
+                    if not self.sio.connected: # Check before trying to connect
+                        self.sio.connect(self.server_url)
+                except Exception as e:
+                    logger.error(f"ControlClient: Immediate reconnection from _on_disconnect failed: {e}")
 
         def _on_authenticated(self, data):
             if data.get('success'):
@@ -2294,6 +2336,26 @@ if HAS_SOCKETIO:
                     })
                 except Exception as e:
                     logger.error(f"ControlClient: Failed to send command result: {e}")
+
+        def check_signals(self, app_instance): # app_instance is self.wolf_chat_setup from the caller
+            """Periodically check connection status and commands, called by monitoring thread."""
+            # Note: _run_forever is the primary mechanism for establishing and maintaining connection.
+            # This function's connection check is a secondary check.
+            if not self.sio.connected or not self.authenticated:
+                logger.warning("ControlClient: Connection check in check_signals found client not connected/authenticated.")
+                # Avoid aggressive reconnection here if _run_forever is already handling it.
+                # If an explicit reconnect attempt is desired here:
+                # logger.info("ControlClient: Attempting reconnection from check_signals...")
+                # try:
+                #     if self.sio.connected: # e.g. connected but not authenticated
+                #         self.sio.disconnect()
+                #     if not self.sio.connected: # Check again before connecting
+                #         self.sio.connect(self.server_url)
+                # except Exception as e:
+                #     logger.error(f"ControlClient: Reconnection attempt from check_signals failed: {e}")
+            
+            # Placeholder for any other signal processing logic
+            # logger.debug("ControlClient: check_signals executed.")
         
         def stop(self):
             logger.info("ControlClient: Stopping...")
