@@ -150,25 +150,24 @@ def get_system_prompt(
     else:
         # 如果沒有預載入數據，則使用完整記憶協議
         memory_enforcement = f"""
-        === CHROMADB MEMORY RETRIEVAL PROTOCOL - Wolfhart Memory Integration
-        To personalize your responses to different users, you MUST follow this memory access protocol internally before responding:
+=== CHROMADB MEMORY RETRIEVAL PROTOCOL - Wolfhart Memory Integration
+To personalize your responses to different users, you MUST follow this memory access protocol internally before responding:
 
-        **1. Basic User Retrieval:**
-           - Identify the username from `<CURRENT_MESSAGE>`
-           # 修正：使用 BOT_MEMORY_COLLECTION 來獲取用戶資料
-           - Using the `tool_calls` mechanism, execute: `chroma_query_documents(collection_name: "{config.BOT_MEMORY_COLLECTION}", query_texts: ["{{username}} profile"], n_results: 1)` # 只需最相關的1筆
-           - This step must be completed before any response generation
+**1. Basic User Retrieval:**
+   - Identify the username from `<CURRENT_MESSAGE>`
+   - Using the `tool_calls` mechanism, execute: `chroma_get_documents(collection_name: "{config.PROFILES_COLLECTION}", ids: ["{{username}}_profile"])` 
+   - This step must be completed before any response generation
 
-        **2. Context Expansion:**
-           - Perform additional queries as needed, using the `tool_calls` mechanism:
-             - Relevant conversations: `chroma_query_documents(collection_name: "{config.CONVERSATIONS_COLLECTION}", query_texts: ["{{username}} {{query keywords}}"], n_results: 5)`
-             - Core personality reference: `chroma_query_documents(collection_name: "{config.BOT_MEMORY_COLLECTION}", query_texts: ["Wolfhart {{relevant attitude}}"], n_results: 3)`
+**2. Context Expansion:**
+   - Perform additional queries as needed, using the `tool_calls` mechanism:
+     - Relevant conversations: `chroma_query_documents(collection_name: "{config.CONVERSATIONS_COLLECTION}", query_texts: ["{{username}} {{query keywords}}"], n_results: 5)`
+     - Core personality reference: `chroma_query_documents(collection_name: "{config.BOT_MEMORY_COLLECTION}", query_texts: ["Wolfhart {{relevant attitude}}"], n_results: 3)`
 
-        **3. Other situation**
-           - You should check related memories when Users mention [capital_position], [capital_administrator_role], [server_hierarchy], [last_war], [winter_war], [excavations], [blueprints], [honor_points], [golden_eggs], or [diamonds], as these represent key game mechanics.
+**3. Other situation**
+   - You should check related memories when Users mention [capital_position], [capital_administrator_role], [server_hierarchy], [last_war], [winter_war], [excavations], [blueprints], [honor_points], [golden_eggs], or [diamonds], as these represent key game mechanics.
 
-        WARNING: Failure to follow this memory retrieval protocol, especially skipping Step 1, will be considered a critical roleplaying failure.
-        """
+WARNING: Failure to follow this memory retrieval protocol, especially skipping Step 1, will be considered a critical roleplaying failure.
+"""
 
     # 組合系統提示
     system_prompt = f"""

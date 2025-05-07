@@ -307,6 +307,34 @@ def load_current_config():
             if bot_memory_collection_match:
                 config_data["BOT_MEMORY_COLLECTION"] = bot_memory_collection_match.group(1)
 
+            # Extract memory management settings
+            backup_hour_match = re.search(r'MEMORY_BACKUP_HOUR\s*=\s*(\d+)', config_content)
+            if backup_hour_match:
+                config_data["MEMORY_BACKUP_HOUR"] = int(backup_hour_match.group(1))
+
+            backup_minute_match = re.search(r'MEMORY_BACKUP_MINUTE\s*=\s*(\d+)', config_content)
+            if backup_minute_match:
+                config_data["MEMORY_BACKUP_MINUTE"] = int(backup_minute_match.group(1))
+
+            profile_model_match = re.search(r'MEMORY_PROFILE_MODEL\s*=\s*["\']?(.+?)["\']?\s*(?:#|$)', config_content)
+            # Handle potential LLM_MODEL reference
+            if profile_model_match:
+                 profile_model_val = profile_model_match.group(1).strip()
+                 if profile_model_val == "LLM_MODEL":
+                     # If it refers to LLM_MODEL, use the already parsed LLM_MODEL value
+                     config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324") # Fallback if LLM_MODEL wasn't parsed
+                 else:
+                     config_data["MEMORY_PROFILE_MODEL"] = profile_model_val
+            else:
+                 # Default to LLM_MODEL if not found
+                 config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+
+
+            summary_model_match = re.search(r'MEMORY_SUMMARY_MODEL\s*=\s*["\'](.+?)["\']', config_content)
+            if summary_model_match:
+                config_data["MEMORY_SUMMARY_MODEL"] = summary_model_match.group(1)
+
+
         except Exception as e:
             print(f"Error reading config.py: {e}")
             import traceback
@@ -416,7 +444,9 @@ def generate_config_file(config_data, env_data):
                 f.write("            \"--client-type\",\n")
                 f.write("            \"persistent\",\n")
                 f.write("            \"--data-dir\",\n")
-                f.write(f"            \"{absolute_data_dir}\"\n")
+                # Escape backslashes in the path for the string literal in config.py
+                escaped_data_dir = absolute_data_dir.replace('\\', '\\\\')
+                f.write(f"            \"{escaped_data_dir}\"\n")
                 f.write("        ]\n")
             
             # Handle custom server - just write as raw JSON
@@ -492,7 +522,25 @@ def generate_config_file(config_data, env_data):
         f.write(f"# This path will be made absolute when config.py is loaded.\n")
         # Write the potentially relative path from UI/default, let config.py handle abspath
         # Use raw string r"..." to handle potential backslashes in Windows paths correctly within the string literal
-        f.write(f"CHROMA_DATA_DIR = os.path.abspath(r\"{normalized_chroma_path}\")\n")
+        f.write(f"CHROMA_DATA_DIR = os.path.abspath(r\"{normalized_chroma_path}\")\n\n")
+
+        # Write Memory Management Configuration
+        f.write("# =============================================================================\n")
+        f.write("# Memory Management Configuration\n")
+        f.write("# =============================================================================\n")
+        backup_hour = config_data.get('MEMORY_BACKUP_HOUR', 0)
+        backup_minute = config_data.get('MEMORY_BACKUP_MINUTE', 0)
+        profile_model = config_data.get('MEMORY_PROFILE_MODEL', 'LLM_MODEL') # Default to referencing LLM_MODEL
+        summary_model = config_data.get('MEMORY_SUMMARY_MODEL', 'mistral-7b-instruct')
+
+        f.write(f"MEMORY_BACKUP_HOUR = {backup_hour}\n")
+        f.write(f"MEMORY_BACKUP_MINUTE = {backup_minute}\n")
+        # Write profile model, potentially referencing LLM_MODEL
+        if profile_model == config_data.get('LLM_MODEL'):
+             f.write(f"MEMORY_PROFILE_MODEL = LLM_MODEL # Default to main LLM model\n")
+        else:
+             f.write(f"MEMORY_PROFILE_MODEL = \"{profile_model}\"\n")
+        f.write(f"MEMORY_SUMMARY_MODEL = \"{summary_model}\"\n")
 
 
     print("Generated config.py file successfully")
@@ -522,6 +570,7 @@ class WolfChatSetup(tk.Tk):
         self.create_mcp_tab()
         self.create_game_tab()
         self.create_memory_tab() 
+        self.create_memory_management_tab() # 新增記憶管理標籤頁
         self.create_management_tab() # New tab for combined management
 
         # Create bottom buttons
@@ -539,9 +588,13 @@ class WolfChatSetup(tk.Tk):
         self.keep_monitoring_flag = threading.Event()
         self.keep_monitoring_flag.set()
 
+        # Initialize scheduler process tracker
+        self.scheduler_process = None
+
 
         # Set initial states based on loaded data
         self.update_ui_from_data()
+        self.update_scheduler_button_states(True) # Set initial scheduler button state
     
     def create_management_tab(self):
         """Create the Bot and Game Management tab"""
@@ -1135,8 +1188,11 @@ class WolfChatSetup(tk.Tk):
 
     def on_closing(self):
         """Handle window close event."""
-        if messagebox.askokcancel("Quit", "Do you want to quit Wolf Chat Setup? This will stop any managed sessions."):
-            self.stop_managed_session() # Ensure everything is stopped
+        if messagebox.askokcancel("Quit", "Do you want to quit Wolf Chat Setup? This will stop any managed sessions and running scripts."):
+            print("Closing Setup...")
+            self.stop_managed_session() # Stop bot/game managed session if running
+            self.stop_process() # Stop bot/test script if running independently
+            self.stop_memory_scheduler() # Stop scheduler if running
             self.destroy()
 
     def create_api_tab(self):
@@ -1670,6 +1726,65 @@ class WolfChatSetup(tk.Tk):
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
         info_label.pack(padx=10, pady=10, anchor=tk.W)
 
+    # 記憶管理標籤頁
+    def create_memory_management_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="記憶管理")
+
+        main_frame = ttk.Frame(tab, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 備份時間設置
+        backup_frame = ttk.LabelFrame(main_frame, text="備份設定")
+        backup_frame.pack(fill=tk.X, pady=10)
+
+        time_frame = ttk.Frame(backup_frame)
+        time_frame.pack(fill=tk.X, pady=5, padx=10)
+        time_label = ttk.Label(time_frame, text="執行時間:", width=20)
+        time_label.pack(side=tk.LEFT, padx=(0, 5))
+        self.backup_hour_var = tk.IntVar(value=0)
+        hour_spinner = ttk.Spinbox(time_frame, from_=0, to=23, width=3, textvariable=self.backup_hour_var)
+        hour_spinner.pack(side=tk.LEFT)
+        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
+        self.backup_minute_var = tk.IntVar(value=0)
+        minute_spinner = ttk.Spinbox(time_frame, from_=0, to=59, width=3, textvariable=self.backup_minute_var)
+        minute_spinner.pack(side=tk.LEFT)
+
+        # 模型選擇
+        models_frame = ttk.LabelFrame(main_frame, text="模型選擇")
+        models_frame.pack(fill=tk.X, pady=10)
+
+        profile_model_frame = ttk.Frame(models_frame)
+        profile_model_frame.pack(fill=tk.X, pady=5, padx=10)
+        profile_model_label = ttk.Label(profile_model_frame, text="用戶檔案生成模型:", width=20)
+        profile_model_label.pack(side=tk.LEFT, padx=(0, 5))
+        # Initialize with a sensible default, will be overwritten by update_ui_from_data
+        # Use config_data which is loaded in __init__
+        profile_model_default = self.config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+        self.profile_model_var = tk.StringVar(value=profile_model_default) 
+        profile_model_entry = ttk.Entry(profile_model_frame, textvariable=self.profile_model_var)
+        profile_model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        summary_model_frame = ttk.Frame(models_frame)
+        summary_model_frame.pack(fill=tk.X, pady=5, padx=10)
+        summary_model_label = ttk.Label(summary_model_frame, text="聊天總結生成模型:", width=20)
+        summary_model_label.pack(side=tk.LEFT, padx=(0, 5))
+        self.summary_model_var = tk.StringVar(value="mistral-7b-instruct")
+        summary_model_entry = ttk.Entry(summary_model_frame, textvariable=self.summary_model_var)
+        summary_model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Information box
+        info_frame_mm = ttk.LabelFrame(main_frame, text="Information") # Renamed to avoid conflict
+        info_frame_mm.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        info_text_mm = (
+            "• 設定每日自動執行記憶備份的時間。\n"
+            "• 選擇用於生成用戶檔案和聊天總結的語言模型。\n"
+            "• 用戶檔案生成模型預設使用主LLM模型。"
+        )
+        info_label_mm = ttk.Label(info_frame_mm, text=info_text_mm, justify=tk.LEFT, wraplength=700)
+        info_label_mm.pack(padx=10, pady=10, anchor=tk.W)
+
     def create_bottom_buttons(self):
         """Create bottom action buttons"""
         btn_frame = ttk.Frame(self)
@@ -1696,9 +1811,16 @@ class WolfChatSetup(tk.Tk):
         self.run_bot_btn = ttk.Button(btn_frame, text="Run Chat Bot", command=self.run_chat_bot)
         self.run_bot_btn.pack(side=tk.RIGHT, padx=5)
 
-        # Stop button
-        self.stop_btn = ttk.Button(btn_frame, text="Stop Process", command=self.stop_process, state=tk.DISABLED)
+        # Stop button (for bot/test)
+        self.stop_btn = ttk.Button(btn_frame, text="Stop Bot/Test", command=self.stop_process, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Scheduler buttons
+        self.stop_scheduler_btn = ttk.Button(btn_frame, text="Stop Scheduler", command=self.stop_memory_scheduler, state=tk.DISABLED)
+        self.stop_scheduler_btn.pack(side=tk.RIGHT, padx=5)
+
+        self.start_scheduler_btn = ttk.Button(btn_frame, text="Start Scheduler", command=self.run_memory_scheduler)
+        self.start_scheduler_btn.pack(side=tk.RIGHT, padx=5)
         
     def install_dependencies(self):
         """Run the installation script for dependencies"""
@@ -1772,7 +1894,78 @@ class WolfChatSetup(tk.Tk):
                 # Re-enable run buttons and disable stop button
                 self.update_run_button_states(True)
         else:
-            messagebox.showinfo("No Process", "No process is currently running.")
+            messagebox.showinfo("No Process", "No Bot/Test process is currently running.")
+
+    def run_memory_scheduler(self):
+        """Run the memory backup scheduler script"""
+        try:
+            scheduler_script = "memory_backup.py"
+            if not os.path.exists(scheduler_script):
+                messagebox.showerror("Error", f"Could not find {scheduler_script}")
+                return
+
+            if self.scheduler_process is not None and self.scheduler_process.poll() is None:
+                 messagebox.showwarning("Already Running", "The memory scheduler process is already running.")
+                 return
+
+            # Run with --schedule argument
+            # Use CREATE_NO_WINDOW flag on Windows to hide the console window
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW
+                
+            self.scheduler_process = subprocess.Popen(
+                [sys.executable, scheduler_script, "--schedule"],
+                creationflags=creationflags
+            )
+            print(f"Attempting to start {scheduler_script} --schedule... PID: {self.scheduler_process.pid}")
+            self.update_scheduler_button_states(False) # Disable start, enable stop
+        except Exception as e:
+            logger.exception(f"Failed to launch {scheduler_script}") # Log exception
+            messagebox.showerror("Error", f"Failed to launch {scheduler_script}: {str(e)}")
+            self.update_scheduler_button_states(True) # Re-enable start on failure
+
+    def stop_memory_scheduler(self):
+        """Stop the currently running memory scheduler process"""
+        if self.scheduler_process is not None and self.scheduler_process.poll() is None:
+            try:
+                print(f"Attempting to terminate memory scheduler process (PID: {self.scheduler_process.pid})...")
+                # Terminate the process group on non-Windows to ensure child processes are handled if any
+                if sys.platform != "win32":
+                    os.killpg(os.getpgid(self.scheduler_process.pid), signal.SIGTERM)
+                else:
+                    # On Windows, terminate the parent process directly
+                    self.scheduler_process.terminate()
+                
+                # Wait briefly to allow termination
+                try:
+                    self.scheduler_process.wait(timeout=3) 
+                    print("Scheduler process terminated gracefully.")
+                except subprocess.TimeoutExpired:
+                    print("Scheduler process did not terminate gracefully, killing...")
+                    if sys.platform != "win32":
+                         os.killpg(os.getpgid(self.scheduler_process.pid), signal.SIGKILL)
+                    else:
+                         self.scheduler_process.kill()
+                    self.scheduler_process.wait(timeout=2) # Wait after kill
+                    print("Scheduler process killed.")
+
+                self.scheduler_process = None
+                messagebox.showinfo("Scheduler Stopped", "The memory scheduler process has been terminated.")
+            except Exception as e:
+                logger.exception("Failed to terminate scheduler process") # Log exception
+                messagebox.showerror("Error", f"Failed to terminate scheduler process: {str(e)}")
+            finally:
+                self.scheduler_process = None # Ensure it's cleared
+                self.update_scheduler_button_states(True) # Update buttons
+        else:
+            # If process exists but poll() is not None (already terminated) or process is None
+            if self.scheduler_process is not None:
+                 self.scheduler_process = None # Clear stale process object
+            # messagebox.showinfo("No Scheduler Process", "The memory scheduler process is not running.") # Reduce popups
+            print("Scheduler process is not running or already stopped.")
+            self.update_scheduler_button_states(True) # Ensure buttons are in correct state
+
 
     def update_run_button_states(self, enable):
         """Enable or disable the run buttons and update stop button state"""
@@ -1783,6 +1976,18 @@ class WolfChatSetup(tk.Tk):
              self.run_test_btn.config(state=tk.NORMAL if enable else tk.DISABLED)
         if hasattr(self, 'stop_btn'):
              self.stop_btn.config(state=tk.DISABLED if enable else tk.NORMAL)
+
+    def update_scheduler_button_states(self, enable_start):
+        """Enable or disable the scheduler buttons"""
+        # Check if process is running
+        is_running = False
+        if self.scheduler_process is not None and self.scheduler_process.poll() is None:
+            is_running = True
+            
+        if hasattr(self, 'start_scheduler_btn'):
+             self.start_scheduler_btn.config(state=tk.NORMAL if not is_running else tk.DISABLED)
+        if hasattr(self, 'stop_scheduler_btn'):
+             self.stop_scheduler_btn.config(state=tk.DISABLED if not is_running else tk.NORMAL)
     
     def update_ui_from_data(self):
         """Update UI controls from loaded data"""
@@ -1843,6 +2048,15 @@ class WolfChatSetup(tk.Tk):
             self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "user_profiles")) # Default was user_profiles
             self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "conversations"))
             self.bot_memory_collection_var.set(self.config_data.get("BOT_MEMORY_COLLECTION", "wolfhart_memory"))
+
+            # Memory Management Tab Settings
+            if hasattr(self, 'backup_hour_var'): # Check if UI elements for memory management tab exist
+                self.backup_hour_var.set(self.config_data.get("MEMORY_BACKUP_HOUR", 0))
+                self.backup_minute_var.set(self.config_data.get("MEMORY_BACKUP_MINUTE", 0))
+                # Default profile model to LLM_MODEL if MEMORY_PROFILE_MODEL isn't set or matches LLM_MODEL
+                profile_model_config = self.config_data.get("MEMORY_PROFILE_MODEL", self.config_data.get("LLM_MODEL"))
+                self.profile_model_var.set(profile_model_config) 
+                self.summary_model_var.set(self.config_data.get("MEMORY_SUMMARY_MODEL", "mistral-7b-instruct"))
 
             # Management Tab Settings
             if hasattr(self, 'remote_url_var'): # Check if UI elements for management tab exist
@@ -2110,6 +2324,13 @@ class WolfChatSetup(tk.Tk):
             self.config_data["PROFILES_COLLECTION"] = self.profiles_collection_var.get()
             self.config_data["CONVERSATIONS_COLLECTION"] = self.conversations_collection_var.get()
             self.config_data["BOT_MEMORY_COLLECTION"] = self.bot_memory_collection_var.get()
+
+            # Get Memory Management settings from UI
+            if hasattr(self, 'backup_hour_var'): # Check if UI elements exist
+                self.config_data["MEMORY_BACKUP_HOUR"] = self.backup_hour_var.get()
+                self.config_data["MEMORY_BACKUP_MINUTE"] = self.backup_minute_var.get()
+                self.config_data["MEMORY_PROFILE_MODEL"] = self.profile_model_var.get()
+                self.config_data["MEMORY_SUMMARY_MODEL"] = self.summary_model_var.get()
             
             # Update remote_data from UI (for remote_config.json)
             if hasattr(self, 'remote_url_var'): # Check if management tab UI elements exist
