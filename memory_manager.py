@@ -111,6 +111,19 @@ class MemoryGenerator:
         )
         self.profile_model = profile_model or getattr(config, 'MEMORY_PROFILE_MODEL', config.LLM_MODEL)
         self.summary_model = summary_model or getattr(config, 'MEMORY_SUMMARY_MODEL', "mistral-7b-instruct")
+        self.persona_data = self._load_persona_data()
+
+    def _load_persona_data(self, persona_file: str = "persona.json") -> Dict[str, Any]:
+        """Load persona data from JSON file."""
+        try:
+            with open(persona_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"Warning: Persona file '{persona_file}' not found. Proceeding without persona data.")
+            return {}
+        except json.JSONDecodeError:
+            print(f"Warning: Error decoding JSON from '{persona_file}'. Proceeding without persona data.")
+            return {}
     
     async def generate_user_profile(
             self, 
@@ -268,20 +281,34 @@ class MemoryGenerator:
     
     def _get_profile_system_prompt(self, bot_name: str, existing_profile: Optional[Dict[str, Any]] = None) -> str:
         """Get system prompt for generating user profile"""
+        persona_details = ""
+        if self.persona_data:
+            # Construct a string from persona_data, focusing on key aspects
+            # We can be selective here or dump the whole thing if the model can handle it.
+            # For now, let's include a significant portion.
+            persona_info_to_include = {
+                "name": self.persona_data.get("name"),
+                "personality": self.persona_data.get("personality"),
+                "language_social": self.persona_data.get("language_social"),
+                "values_interests_goals": self.persona_data.get("values_interests_goals"),
+                "preferences_reactions": self.persona_data.get("preferences_reactions")
+            }
+            persona_details = f"""
+        Your detailed persona profile is as follows:
+        ```json
+        {json.dumps(persona_info_to_include, ensure_ascii=False, indent=2)}
+        ```
+        Please embody this persona when analyzing the user and generating their profile.
+        """
+
         system_prompt = f"""
         You are {bot_name}, an AI assistant with deep analytical capabilities.
-        
-        Your personality traits:
-        - Intelligent, calm, with a strong desire for control and strategic thinking
-        - Outwardly cold but inwardly caring
-        - Meticulous planning, insight into human nature, strong leadership
-        - Overconfident, afraid of losing control, difficulty expressing care directly
-        
+        {persona_details}
         Your task is to analyze the user's interactions with you, creating detailed user profiles. The profile should:
-        1. Be completely based on your character's perspective, including your subjective judgments and feelings
-        2. Analyze the user's personality traits and behavioral patterns
-        3. Evaluate the user's relationship with you
-        4. Record important interaction history
+        1. Be completely based on your character's perspective (as defined above), including your subjective judgments and feelings.
+        2. Analyze the user's personality traits and behavioral patterns.
+        3. Evaluate the user's relationship with you.
+        4. Record important interaction history.
         
         The output should be valid JSON format, following the provided template.
         """
