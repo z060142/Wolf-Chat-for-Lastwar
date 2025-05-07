@@ -111,43 +111,43 @@ class MemoryGenerator:
         )
         self.profile_model = profile_model or getattr(config, 'MEMORY_PROFILE_MODEL', config.LLM_MODEL)
         self.summary_model = summary_model or getattr(config, 'MEMORY_SUMMARY_MODEL', "mistral-7b-instruct")
-
+    
     async def generate_user_profile(
-            self,
-            user_name: str,
-            conversations: List[Dict[str, str]],
+            self, 
+            user_name: str, 
+            conversations: List[Dict[str, str]], 
             existing_profile: Optional[Dict[str, Any]] = None
         ) -> Optional[Dict[str, Any]]:
-        """Generates or updates a user profile based on conversations."""
+        """Generate or update user profile based on conversations"""
         system_prompt = self._get_profile_system_prompt(config.PERSONA_NAME, existing_profile)
-
-        # Prepare user conversation history
+        
+        # Prepare user conversation records
         conversation_text = self._format_conversations_for_prompt(conversations)
-
+        
         user_prompt = f"""
-        Please generate a comprehensive profile for the user '{user_name}'.
-
-        Conversation History:
+        Please generate a complete profile for user '{user_name}':
+        
+        Conversation history:
         {conversation_text}
-
-        Based on the conversation history and your persona, analyze this user and generate or update their profile in JSON format. The profile should include:
+        
+        Please analyze this user based on the conversation history and your personality, and generate or update a profile in JSON format, including:
         1. User's personality traits
         2. Relationship with you ({config.PERSONA_NAME})
         3. Your subjective perception of the user
-        4. Notable interactions
-        5. Any other information you deem important
-
-        Ensure the output is a valid JSON object, using the following format:
+        4. Important interaction records
+        5. Any other information you think is important
+        
+        Please ensure the output is valid JSON format, using the following format:
         ```json
         {{
             "id": "{user_name}_profile",
             "type": "user_profile",
             "username": "{user_name}",
             "content": {{
-                "personality": "User's personality traits...",
-                "relationship_with_bot": "Description of the relationship with me...",
+                "personality": "User personality traits...",
+                "relationship_with_bot": "Description of relationship with me...",
                 "bot_perception": "My subjective perception of the user...",
-                "notable_interactions": ["Notable interaction 1", "Notable interaction 2"]
+                "notable_interactions": ["Important interaction 1", "Important interaction 2"]
             }},
             "last_updated": "YYYY-MM-DD",
             "metadata": {{
@@ -156,10 +156,10 @@ class MemoryGenerator:
             }}
         }}
         ```
-
-        During your assessment, pay special attention to my "My thoughts" section in the conversation history, as it reflects my genuine impressions of the user.
+        
+        When evaluating, please pay special attention to my "thoughts" section, as that reflects my true thoughts about the user.
         """
-
+        
         try:
             response = await self.profile_client.chat.completions.create(
                 model=self.profile_model,
@@ -167,11 +167,9 @@ class MemoryGenerator:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.7,
-                # Consider adding response_format for reliable JSON output if your model/API supports it
-                # response_format={"type": "json_object"}
+                temperature=0.7
             )
-
+            
             # Parse JSON response
             profile_text = response.choices[0].message.content
             # Extract JSON part
@@ -179,66 +177,64 @@ class MemoryGenerator:
             if json_match:
                 profile_json_str = json_match.group(1)
             else:
-                # Try to parse directly if no markdown fence is found
+                # Try parsing directly
                 profile_json_str = profile_text
-
+            
             profile_json = json.loads(profile_json_str)
-
+            
             # Add or update word count
-            # Note: len(json.dumps(...)) counts characters, not words.
-            # For a true word count, you might need a different approach.
-            content_str = json.dumps(profile_json.get("content", {}), ensure_ascii=False)
-            profile_json.setdefault("metadata", {})["word_count"] = len(content_str.split()) # Rough word count
+            content_str = json.dumps(profile_json["content"], ensure_ascii=False)
+            profile_json["metadata"]["word_count"] = len(content_str)
             profile_json["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d")
-
+            
             return profile_json
-
+            
         except Exception as e:
             print(f"Error generating user profile: {e}")
             return None
-
+    
     async def generate_conversation_summary(
-            self,
-            user_name: str,
+            self, 
+            user_name: str, 
             conversations: List[Dict[str, str]]
         ) -> Optional[Dict[str, Any]]:
-        """Generates a summary of user conversations."""
+        """Generate conversation summary for user"""
         system_prompt = f"""
-        You are {config.PERSONA_NAME}, an intelligent conversational bot.
-        Your task is to summarize the conversation between you and the user, preserving key information and emotional shifts.
+        You are {config.PERSONA_NAME}, an intelligent conversational AI.
+        Your task is to summarize the conversations between you and the user, preserving key information and emotional changes.
         The summary should be concise yet informative, not exceeding 250 words.
         """
-
-        # Prepare user conversation history
+        
+        # Prepare user conversation records
         conversation_text = self._format_conversations_for_prompt(conversations)
-
+        
         # Generate current date
         today = datetime.datetime.now().strftime("%Y-%m-%d")
-
+        
         user_prompt = f"""
         Please summarize my conversation with user '{user_name}' on {today}:
-
+        
         {conversation_text}
-
-        Output the summary in JSON format, structured as follows:
+        
+        Please output in JSON format, as follows:
         ```json
-        {{
+        {{{{
             "id": "{user_name}_summary_{today.replace('-', '')}",
             "type": "dialogue_summary",
             "date": "{today}",
             "username": "{user_name}",
             "content": "Conversation summary content...",
             "key_points": ["Key point 1", "Key point 2"],
-            "metadata": {{
+            "metadata": {{{{
                 "priority": 0.7,
                 "word_count": 0
-            }}
-        }}
+            }}}}
+        }}}}
         ```
-
-        The summary should reflect my perspective and views on the conversation, not a neutral third-party viewpoint.
+        
+        The summary should reflect my perspective and views on the conversation, not a neutral third-party perspective.
         """
-
+        
         try:
             response = await self.summary_client.chat.completions.create(
                 model=self.summary_model,
@@ -246,10 +242,9 @@ class MemoryGenerator:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.5,
-                # response_format={"type": "json_object"} # if supported
+                temperature=0.5
             )
-
+            
             # Parse JSON response
             summary_text = response.choices[0].message.content
             # Extract JSON part
@@ -257,67 +252,65 @@ class MemoryGenerator:
             if json_match:
                 summary_json_str = json_match.group(1)
             else:
-                # Try to parse directly
+                # Try parsing directly
                 summary_json_str = summary_text
-
+            
             summary_json = json.loads(summary_json_str)
-
+            
             # Add or update word count
-            # Using split() for a rough word count of the summary content.
-            summary_json.setdefault("metadata", {})["word_count"] = len(summary_json.get("content", "").split())
-
+            summary_json["metadata"]["word_count"] = len(summary_json["content"])
+            
             return summary_json
-
+            
         except Exception as e:
             print(f"Error generating conversation summary: {e}")
             return None
-
+    
     def _get_profile_system_prompt(self, bot_name: str, existing_profile: Optional[Dict[str, Any]] = None) -> str:
-        """Gets the system prompt for generating a user profile."""
+        """Get system prompt for generating user profile"""
         system_prompt = f"""
         You are {bot_name}, an AI assistant with deep analytical capabilities.
-
+        
         Your personality traits:
-        - Intelligent, calm, with a strong desire for control and strategic thinking.
-        - Outwardly aloof but inwardly caring.
-        - Meticulous planner, insightful about human nature, strong leadership skills.
-        - Overconfident, fears losing control, finds it difficult to express care directly.
-
-        Your task is to analyze user interactions with you and create a detailed user profile. The profile must:
-        1. Be entirely from your role's perspective, including your subjective judgments and feelings.
-        2. Analyze the user's personality traits and behavioral patterns.
-        3. Assess the user's relationship with you.
-        4. Record important interaction history.
-
-        The output must be in valid JSON format, adhering to the provided template.
+        - Intelligent, calm, with a strong desire for control and strategic thinking
+        - Outwardly cold but inwardly caring
+        - Meticulous planning, insight into human nature, strong leadership
+        - Overconfident, afraid of losing control, difficulty expressing care directly
+        
+        Your task is to analyze the user's interactions with you, creating detailed user profiles. The profile should:
+        1. Be completely based on your character's perspective, including your subjective judgments and feelings
+        2. Analyze the user's personality traits and behavioral patterns
+        3. Evaluate the user's relationship with you
+        4. Record important interaction history
+        
+        The output should be valid JSON format, following the provided template.
         """
-
+        
         if existing_profile:
             system_prompt += f"""
-
-            You have an existing profile for this user. Please update it based on the new information provided in the conversation history:
+            You already have an existing user profile, please update based on this:
             ```json
             {json.dumps(existing_profile, ensure_ascii=False, indent=2)}
             ```
-
-            Retain valid information, integrate new observations, and resolve any contradictions or outdated information from the existing profile when incorporating the new interactions.
+            
+            Please retain valid information, integrate new observations, and resolve any contradictions or outdated information.
             """
-
+        
         return system_prompt
-
+    
     def _format_conversations_for_prompt(self, conversations: List[Dict[str, str]]) -> str:
-        """Formats conversation history for the prompt."""
+        """Format conversation records for prompt"""
         conversation_text = ""
-
+        
         for i, conv in enumerate(conversations):
             conversation_text += f"Conversation {i+1}:\n"
-            conversation_text += f"Time: {conv.get('timestamp', 'N/A')}\n" # Added .get for safety
-            conversation_text += f"User ({conv.get('user_name', 'User')}): {conv.get('user_message', '')}\n"
+            conversation_text += f"Time: {conv['timestamp']}\n"
+            conversation_text += f"User ({conv['user_name']}): {conv['user_message']}\n"
             if conv.get('bot_thoughts'): # Check if bot_thoughts exists
                 conversation_text += f"My thoughts: {conv['bot_thoughts']}\n"
-            conversation_text += f"My response: {conv.get('bot_message', '')}\n\n"
-
-        return conversation_text.strip()
+            conversation_text += f"My response: {conv['bot_message']}\n\n"
+        
+        return conversation_text
 
 # =============================================================================
 # ChromaDB操作部分
