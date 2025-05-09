@@ -47,6 +47,14 @@
       "hsv_upper": [107, 255, 255],
       "min_area": 2500,
       "max_area": 300000
+    },
+    {
+      "name": "easter",
+      "is_bot": false,
+      "hsv_lower": [5, 154, 183],
+      "hsv_upper": [29, 255, 255],
+      "min_area": 2500,
+      "max_area": 300000
     }
   ]
 }
