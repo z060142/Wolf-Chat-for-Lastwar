@@ -14,7 +14,8 @@ import asyncio
 import datetime
 import schedule
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Callable
+from functools import wraps
 
 # import chromadb # No longer directly needed by ChromaDBManager
 # from chromadb.utils import embedding_functions # No longer directly needed by ChromaDBManager
@@ -22,6 +23,40 @@ from openai import AsyncOpenAI
 
 import config
 import chroma_client # Import the centralized chroma client
+
+# =============================================================================
+# 重試裝飾器
+# =============================================================================
+
+def retry_operation(max_attempts: int = 3, delay: float = 1.0):
+    """重試裝飾器，用於數據庫操作"""
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> Any:
+            attempts = 0
+            last_error = None
+            
+            while attempts < max_attempts:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    attempts += 1
+                    last_error = e
+                    print(f"操作失敗，嘗試次數 {attempts}/{max_attempts}: {e}")
+                    
+                    if attempts < max_attempts:
+                        # 指數退避策略
+                        sleep_time = delay * (2 ** (attempts - 1))
+                        print(f"等待 {sleep_time:.2f} 秒後重試...")
+                        time.sleep(sleep_time)
+            
+            print(f"操作失敗達到最大嘗試次數 ({max_attempts})，最後錯誤: {last_error}")
+            # 在生產環境中，您可能希望引發最後一個錯誤或返回一個特定的錯誤指示符
+            # 根據您的需求，返回 False 可能適合某些情況
+            return False # 或者 raise last_error
+        
+        return wrapper
+    return decorator
 
 # =============================================================================
 # 日誌解析部分
@@ -359,6 +394,7 @@ class ChromaDBManager:
                 raise RuntimeError(f"Failed to get or create collection '{self.collection_name}' via chroma_client. Check chroma_client logs.")
         return self._db_collection
 
+    @retry_operation(max_attempts=3, delay=1.0)
     def upsert_user_profile(self, profile_data: Dict[str, Any]) -> bool:
         """寫入或更新用戶檔案"""
         collection = self._get_db_collection()
@@ -390,7 +426,12 @@ class ChromaDBManager:
             if "metadata" in profile_data and isinstance(profile_data["metadata"], dict):
                 for k, v in profile_data["metadata"].items():
                     if k not in ["id", "type", "username", "priority"]: # Avoid overwriting key fields
-                        metadata[k] = v
+                        # 處理非基本類型的值
+                        if isinstance(v, (list, dict, tuple)):
+                            # 轉換為字符串
+                            metadata[k] = json.dumps(v, ensure_ascii=False)
+                        else:
+                            metadata[k] = v
             
             # 序列化內容
             content_doc = json.dumps(profile_data.get("content", {}), ensure_ascii=False)
@@ -409,6 +450,7 @@ class ChromaDBManager:
             print(f"寫入用戶檔案時出錯: {e}")
             return False
     
+    @retry_operation(max_attempts=3, delay=1.0)
     def upsert_conversation_summary(self, summary_data: Dict[str, Any]) -> bool:
         """寫入對話總結"""
         collection = self._get_db_collection()
@@ -435,7 +477,12 @@ class ChromaDBManager:
             if "metadata" in summary_data and isinstance(summary_data["metadata"], dict):
                 for k, v in summary_data["metadata"].items():
                     if k not in ["id", "type", "username", "date", "priority"]:
-                        metadata[k] = v
+                        # 處理非基本類型的值
+                        if isinstance(v, (list, dict, tuple)):
+                            # 轉換為字符串
+                            metadata[k] = json.dumps(v, ensure_ascii=False)
+                        else:
+                            metadata[k] = v
             
             # 獲取內容
             content_doc = summary_data.get("content", "")
@@ -545,27 +592,41 @@ class MemoryManager:
         print(f"共有 {len(user_conversations)} 個用戶有對話")
         
         # 為每個用戶生成/更新檔案和對話總結
+        failed_users = []
         for username, convs in user_conversations.items():
             print(f"處理用戶 '{username}' 的 {len(convs)} 條對話")
             
-            # 獲取現有檔案
-            existing_profile = self.db_manager.get_existing_profile(username)
-            
-            # 生成或更新用戶檔案
-            profile_data = await self.memory_generator.generate_user_profile(
-                username, convs, existing_profile
-            )
-            
-            if profile_data:
-                self.db_manager.upsert_user_profile(profile_data)
-            
-            # 生成對話總結
-            summary_data = await self.memory_generator.generate_conversation_summary(
-                username, convs
-            )
-            
-            if summary_data:
-                self.db_manager.upsert_conversation_summary(summary_data)
+            try:
+                # 獲取現有檔案
+                existing_profile = self.db_manager.get_existing_profile(username)
+                
+                # 生成或更新用戶檔案
+                profile_data = await self.memory_generator.generate_user_profile(
+                    username, convs, existing_profile
+                )
+                
+                if profile_data:
+                    profile_success = self.db_manager.upsert_user_profile(profile_data)
+                    if not profile_success:
+                        print(f"警告: 無法保存用戶 '{username}' 的檔案")
+                
+                # 生成對話總結
+                summary_data = await self.memory_generator.generate_conversation_summary(
+                    username, convs
+                )
+                
+                if summary_data:
+                    summary_success = self.db_manager.upsert_conversation_summary(summary_data)
+                    if not summary_success:
+                        print(f"警告: 無法保存用戶 '{username}' 的對話總結")
+                        
+            except Exception as e:
+                print(f"處理用戶 '{username}' 時出錯: {e}")
+                failed_users.append(username)
+                continue  # 繼續處理下一個用戶
+        
+        if failed_users:
+            print(f"以下用戶處理失敗: {', '.join(failed_users)}")
         print(f"日誌處理完成: {log_path}")
 
 # =============================================================================
