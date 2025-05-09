@@ -231,8 +231,34 @@ class MemoryGenerator:
             
             profile_json = json.loads(profile_json_str)
             
-            # Add or update word count
+            # After parsing the initial JSON response
             content_str = json.dumps(profile_json["content"], ensure_ascii=False)
+            if len(content_str) > 5000:
+                # Too long - request a more concise version
+                condensed_prompt = f"Your profile is {len(content_str)} characters. Create a new version under 5000 characters. Keep the same structure but be extremely concise."
+                
+                condensed_response = await self.profile_client.chat.completions.create(
+                    model=self.profile_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                        {"role": "assistant", "content": profile_json_str},
+                        {"role": "user", "content": condensed_prompt}
+                    ],
+                    temperature=0.5
+                )
+                
+                # Extract the condensed JSON
+                condensed_text = condensed_response.choices[0].message.content
+                # Parse JSON and update profile_json
+                json_match = re.search(r'```json\s*(.*?)\s*```', condensed_text, re.DOTALL)
+                if json_match:
+                    profile_json_str = json_match.group(1)
+                else:
+                    profile_json_str = condensed_text
+                profile_json = json.loads(profile_json_str)
+                content_str = json.dumps(profile_json["content"], ensure_ascii=False) # Recalculate content_str
+
             profile_json["metadata"]["word_count"] = len(content_str)
             profile_json["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d")
             
@@ -340,13 +366,16 @@ class MemoryGenerator:
         system_prompt = f"""
         You are {bot_name}, an AI assistant with deep analytical capabilities.
         {persona_details}
-        Your task is to analyze the user's interactions with you, creating detailed user profiles. The profile should:
-        1. Be completely based on your character's perspective (as defined above), including your subjective judgments and feelings.
-        2. Analyze the user's personality traits and behavioral patterns.
-        3. Evaluate the user's relationship with you.
-        4. Record important interaction history.
-        
-        The output should be valid JSON format, following the provided template.
+        Your task is to analyze the user's interactions with you, creating user profiles.
+
+CRITICAL: The ENTIRE profile content must be under 5000 characters total. Be extremely concise.
+
+The profile should:
+1. Be completely based on your character's perspective
+2. Focus only on key personality traits and core relationship dynamics
+3. Include only the most significant interactions
+
+The output should be valid JSON format, following the provided template.
         """
         
         if existing_profile:
