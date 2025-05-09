@@ -946,13 +946,18 @@ class WolfChatSetup(tk.Tk):
             logger.info(f"Starting bot: {sys.executable} {bot_script_name}")
             # Ensure CWD is script's directory if main.py relies on relative paths
             script_dir = os.path.dirname(os.path.abspath(__file__)) 
+            current_env = os.environ.copy()
+            current_env["PYTHONIOENCODING"] = "utf-8"
             self.bot_process_instance = subprocess.Popen(
                 [sys.executable, bot_script_name],
                 cwd=script_dir, # Run main.py from its directory
                 stdout=subprocess.PIPE, # Capture output
                 stderr=subprocess.STDOUT, # Redirect stderr to stdout
                 text=True,
-                bufsize=1 # Line buffered
+                encoding='utf-8', # Specify UTF-8 encoding
+                errors='replace', # Handle potential encoding errors
+                bufsize=1, # Line buffered
+                env=current_env # Set PYTHONIOENCODING
             )
             bot_process_instance = self.bot_process_instance # Update global
 
@@ -1852,7 +1857,21 @@ class WolfChatSetup(tk.Tk):
                  messagebox.showwarning("Already Running", "Another process is already running. Please stop it first.")
                  return
 
-            self.running_process = subprocess.Popen([sys.executable, "main.py"])
+            # Run main.py, capturing output with UTF-8 encoding and setting PYTHONIOENCODING
+            current_env = os.environ.copy()
+            current_env["PYTHONIOENCODING"] = "utf-8"
+            self.running_process = subprocess.Popen(
+                [sys.executable, "main.py"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1,
+                env=current_env # Set PYTHONIOENCODING
+            )
+            # Start a thread to log bot's output for this independent run as well
+            threading.Thread(target=self._log_subprocess_output, args=(self.running_process, "ChatBot"), daemon=True).start()
             print("Attempting to start main.py...")
             self.update_run_button_states(False) # Disable run buttons, enable stop
         except Exception as e:
