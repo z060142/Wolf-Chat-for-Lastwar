@@ -147,6 +147,15 @@ class ChromaDBReader:
             except Exception as e:
                 self.logger.error(f"無法加載 SentenceTransformer paraphrase-multilingual-MiniLM-L12-v2: {e}。將使用集合內部模型。")
                 self.query_embedding_function = None
+        # 添加新的模型支持
+        elif model_name == "paraphrase-multilingual-mpnet-base-v2":
+            try:
+                # 注意: sentence-transformers 庫需要安裝
+                self.query_embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+                self.logger.info(f"查詢將使用外部嵌入模型: {model_name}")
+            except Exception as e:
+                self.logger.error(f"無法加載 SentenceTransformer paraphrase-multilingual-mpnet-base-v2: {e}。將使用集合內部模型。")
+                self.query_embedding_function = None
         else:
             self.logger.warning(f"未知的查詢嵌入模型: {model_name}, 將使用集合內部模型。")
             self.query_embedding_function = None
@@ -450,13 +459,11 @@ class ChromaDBReaderUI:
         self.embedding_models = {
             "預設 (ChromaDB)": "default",
             "all-MiniLM-L6-v2 (ST)": "all-MiniLM-L6-v2",
-            "paraphrase-multilingual-MiniLM-L12-v2 (ST)": "paraphrase-multilingual-MiniLM-L12-v2"
+            "paraphrase-multilingual-MiniLM-L12-v2 (ST)": "paraphrase-multilingual-MiniLM-L12-v2",
+            "paraphrase-multilingual-mpnet-base-v2 (ST)": "paraphrase-multilingual-mpnet-base-v2"  # 添加新的模型選項
         }
-        # 初始化 reader 中的嵌入模型 (確保 reader 實例已創建)
-        # self.reader.set_query_embedding_model(self.embedding_models[self.embedding_model_var.get()])
-        # ^^^ 這行需要在 setup_ui 之後，或者在 on_embedding_model_changed 中處理首次設置
-
-        self.setup_ui() # setup_ui 會創建 reader 實例
+        
+        self.setup_ui()
         
         # 默認主題
         self.current_theme = "darkly"  # ttkbootstrap的深色主題

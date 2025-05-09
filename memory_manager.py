@@ -16,11 +16,12 @@ import schedule
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 
-import chromadb
-from chromadb.utils import embedding_functions
+# import chromadb # No longer directly needed by ChromaDBManager
+# from chromadb.utils import embedding_functions # No longer directly needed by ChromaDBManager
 from openai import AsyncOpenAI
 
 import config
+import chroma_client # Import the centralized chroma client
 
 # =============================================================================
 # 日誌解析部分
@@ -345,28 +346,22 @@ class MemoryGenerator:
 
 class ChromaDBManager:
     def __init__(self, collection_name: Optional[str] = None):
-        self.client = chromadb.PersistentClient(path=config.CHROMA_DATA_DIR)
         self.collection_name = collection_name or config.BOT_MEMORY_COLLECTION
-        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
-        self._ensure_collection()
-    
-    def _ensure_collection(self) -> None:
-        """確保集合存在"""
-        try:
-            self.collection = self.client.get_collection(
-                name=self.collection_name,
-                embedding_function=self.embedding_function
-            )
-            print(f"Connected to existing collection: {self.collection_name}")
-        except Exception:
-            self.collection = self.client.create_collection(
-                name=self.collection_name,
-                embedding_function=self.embedding_function
-            )
-            print(f"Created new collection: {self.collection_name}")
-    
+        self._db_collection = None # Cache for the collection object
+
+    def _get_db_collection(self):
+        """Helper to get the collection object from chroma_client"""
+        if self._db_collection is None:
+            # Use the centralized get_collection function
+            self._db_collection = chroma_client.get_collection(self.collection_name)
+            if self._db_collection is None:
+                # This indicates a failure in chroma_client to provide the collection
+                raise RuntimeError(f"Failed to get or create collection '{self.collection_name}' via chroma_client. Check chroma_client logs.")
+        return self._db_collection
+
     def upsert_user_profile(self, profile_data: Dict[str, Any]) -> bool:
         """寫入或更新用戶檔案"""
+        collection = self._get_db_collection()
         if not profile_data or not isinstance(profile_data, dict):
             print("無效的檔案數據")
             return False
@@ -377,14 +372,13 @@ class ChromaDBManager:
                 print("檔案缺少ID字段")
                 return False
             
-            # 先檢查是否已存在
-            results = self.collection.get(
-                ids=[user_id], # Query by a list of IDs
-                # where={"id": user_id}, # 'where' is for metadata filtering
-                limit=1
-            )
-            
             # 準備元數據
+            # Note: ChromaDB's upsert handles existence check implicitly.
+            # The .get call here isn't strictly necessary for the upsert operation itself,
+            # but might be kept if there was other logic depending on prior existence.
+            # For a clean upsert, it can be removed. Let's assume it's not critical for now.
+            # results = collection.get(ids=[user_id], limit=1) # Optional: if needed for pre-check logic
+            
             metadata = {
                 "id": user_id,
                 "type": "user_profile",
@@ -402,14 +396,12 @@ class ChromaDBManager:
             content_doc = json.dumps(profile_data.get("content", {}), ensure_ascii=False)
             
             # 寫入或更新
-            # ChromaDB's add/upsert handles both cases.
-            # If an ID exists, it's an update; otherwise, it's an add.
-            self.collection.upsert(
+            collection.upsert(
                 ids=[user_id],
                 documents=[content_doc],
                 metadatas=[metadata]
             )
-            print(f"Upserted user profile: {user_id}")
+            print(f"Upserted user profile: {user_id} into collection {self.collection_name}")
             
             return True
         
@@ -419,6 +411,7 @@ class ChromaDBManager:
     
     def upsert_conversation_summary(self, summary_data: Dict[str, Any]) -> bool:
         """寫入對話總結"""
+        collection = self._get_db_collection()
         if not summary_data or not isinstance(summary_data, dict):
             print("無效的總結數據")
             return False
@@ -450,13 +443,13 @@ class ChromaDBManager:
                 key_points_str = "\n".join([f"- {point}" for point in summary_data["key_points"]])
                 content_doc += f"\n\n關鍵點:\n{key_points_str}"
             
-            # 寫入數據 (ChromaDB's add implies upsert if ID exists, but upsert is more explicit)
-            self.collection.upsert(
+            # 寫入數據
+            collection.upsert(
                 ids=[summary_id],
                 documents=[content_doc],
                 metadatas=[metadata]
             )
-            print(f"Upserted conversation summary: {summary_id}")
+            print(f"Upserted conversation summary: {summary_id} into collection {self.collection_name}")
             
             return True
         
@@ -466,10 +459,11 @@ class ChromaDBManager:
     
     def get_existing_profile(self, username: str) -> Optional[Dict[str, Any]]:
         """獲取現有的用戶檔案"""
+        collection = self._get_db_collection()
         try:
             profile_id = f"{username}_profile"
-            results = self.collection.get(
-                ids=[profile_id], # Query by a list of IDs
+            results = collection.get(
+                ids=[profile_id],
                 limit=1
             )
             

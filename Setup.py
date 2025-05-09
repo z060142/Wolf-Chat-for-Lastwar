@@ -316,6 +316,15 @@ def load_current_config():
             if backup_minute_match:
                 config_data["MEMORY_BACKUP_MINUTE"] = int(backup_minute_match.group(1))
 
+            # Extract EMBEDDING_MODEL_NAME
+            embedding_model_match = re.search(r'EMBEDDING_MODEL_NAME\s*=\s*["\'](.+?)["\']', config_content)
+            if embedding_model_match:
+                config_data["EMBEDDING_MODEL_NAME"] = embedding_model_match.group(1)
+            else:
+                # Default if not found in config.py, will be set in UI if not overridden by load
+                config_data["EMBEDDING_MODEL_NAME"] = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+
+
             profile_model_match = re.search(r'MEMORY_PROFILE_MODEL\s*=\s*["\']?(.+?)["\']?\s*(?:#|$)', config_content)
             # Handle potential LLM_MODEL reference
             if profile_model_match:
@@ -537,10 +546,15 @@ def generate_config_file(config_data, env_data):
         f.write(f"MEMORY_BACKUP_MINUTE = {backup_minute}\n")
         # Write profile model, potentially referencing LLM_MODEL
         if profile_model == config_data.get('LLM_MODEL'):
-             f.write(f"MEMORY_PROFILE_MODEL = LLM_MODEL # Default to main LLM model\n")
+            f.write(f"MEMORY_PROFILE_MODEL = LLM_MODEL # Default to main LLM model\n")
         else:
-             f.write(f"MEMORY_PROFILE_MODEL = \"{profile_model}\"\n")
-        f.write(f"MEMORY_SUMMARY_MODEL = \"{summary_model}\"\n")
+            f.write(f"MEMORY_PROFILE_MODEL = \"{profile_model}\"\n")
+        f.write(f"MEMORY_SUMMARY_MODEL = \"{summary_model}\"\n\n")
+
+        # Write Embedding Model Name
+        embedding_model_name = config_data.get('EMBEDDING_MODEL_NAME', "sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        f.write("# Embedding model for ChromaDB\n")
+        f.write(f"EMBEDDING_MODEL_NAME = \"{embedding_model_name}\"\n")
 
 
     print("Generated config.py file successfully")
@@ -1717,6 +1731,24 @@ class WolfChatSetup(tk.Tk):
         related_info = ttk.Label(related_frame, text="(0 to disable related memories pre-loading)")
         related_info.pack(side=tk.LEFT, padx=(5, 0))
 
+        # Embedding Model Settings Frame
+        embedding_model_settings_frame = ttk.LabelFrame(main_frame, text="Embedding Model Settings")
+        embedding_model_settings_frame.pack(fill=tk.X, pady=10)
+
+        embedding_model_name_frame = ttk.Frame(embedding_model_settings_frame)
+        embedding_model_name_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        embedding_model_name_label = ttk.Label(embedding_model_name_frame, text="Embedding Model Name:", width=25) # Adjusted width
+        embedding_model_name_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.embedding_model_name_var = tk.StringVar(value="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        embedding_model_name_entry = ttk.Entry(embedding_model_name_frame, textvariable=self.embedding_model_name_var)
+        embedding_model_name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        embedding_model_info = ttk.Label(embedding_model_settings_frame, text="Default: sentence-transformers/paraphrase-multilingual-mpnet-base-v2", justify=tk.LEFT)
+        embedding_model_info.pack(anchor=tk.W, padx=10, pady=(0,5))
+
+
         # Information box
         info_frame = ttk.LabelFrame(main_frame, text="Information")
         info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -2067,6 +2099,10 @@ class WolfChatSetup(tk.Tk):
             self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "user_profiles")) # Default was user_profiles
             self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "conversations"))
             self.bot_memory_collection_var.set(self.config_data.get("BOT_MEMORY_COLLECTION", "wolfhart_memory"))
+            # Embedding Model Name for Memory Settings Tab
+            if hasattr(self, 'embedding_model_name_var'):
+                self.embedding_model_name_var.set(self.config_data.get("EMBEDDING_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"))
+
 
             # Memory Management Tab Settings
             if hasattr(self, 'backup_hour_var'): # Check if UI elements for memory management tab exist
@@ -2343,6 +2379,10 @@ class WolfChatSetup(tk.Tk):
             self.config_data["PROFILES_COLLECTION"] = self.profiles_collection_var.get()
             self.config_data["CONVERSATIONS_COLLECTION"] = self.conversations_collection_var.get()
             self.config_data["BOT_MEMORY_COLLECTION"] = self.bot_memory_collection_var.get()
+            # Save Embedding Model Name from Memory Settings Tab
+            if hasattr(self, 'embedding_model_name_var'):
+                self.config_data["EMBEDDING_MODEL_NAME"] = self.embedding_model_name_var.get()
+
 
             # Get Memory Management settings from UI
             if hasattr(self, 'backup_hour_var'): # Check if UI elements exist
