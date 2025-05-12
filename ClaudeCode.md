@@ -58,7 +58,7 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 7. **遊戲視窗監控模組 (game_monitor.py)** (取代 window-setup-script.py 和舊的 window-monitor-script.py)
    - 持續監控遊戲視窗 (`config.WINDOW_TITLE`)。
    - 確保視窗維持在設定檔 (`config.py`) 中指定的位置 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`) 和大小 (`GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)。
-   - 確保視窗維持在最上層 (Always on Top)。
+   - **確保視窗保持活躍**：如果遊戲視窗不是目前的前景視窗，則嘗試將其帶到前景並啟用 (Bring to Foreground/Activate)，取代了之前的強制置頂 (Always on Top) 邏輯 (修改於 2025-05-12)。
    - **定時遊戲重啟** (如果 `config.ENABLE_SCHEDULED_RESTART` 為 True)：
      - 根據 `config.RESTART_INTERVAL_MINUTES` 設定的間隔執行。
      - **簡化流程 (2025-04-25)**：
@@ -597,6 +597,18 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     - **移除冗餘終止調用**：從 `shutdown` 函數中移除了對 `terminate_all_mcp_servers` 的直接調用，因為終止邏輯現在由 `exit_stack.aclose()` 間接觸發。
 - **依賴項**：Windows 上的控制台事件處理仍然依賴 `pywin32` 套件。如果未安裝，程式會打印警告，關閉時的可靠性可能略有降低（但 `stdio_client` 的正常清理機制應在多數情況下仍然有效）。
 - **效果**：恢復了與 `mcp` 庫的兼容性，同時通過標準的上下文管理和輔助性的 Windows 事件處理，實現了在主程式退出時關閉 MCP 伺服器子進程的目標。
+
+## 最近改進（2025-05-12）
+
+### 遊戲視窗置頂邏輯修改
+
+- **目的**：將 `game_monitor.py` 中強制遊戲視窗「永遠在最上層」(Always on Top) 的行為，修改為「臨時置頂並獲得焦點」(Bring to Foreground/Activate)，以解決原方法僅覆蓋其他視窗的問題。
+- **`game_monitor.py`**：
+    - 在 `monitor_game_window` 函數的監控循環中，移除了使用 `win32gui.SetWindowPos` 和 `win32con.HWND_TOPMOST` 來檢查和設定 `WS_EX_TOPMOST` 樣式的程式碼。
+    - 替換為檢查當前前景視窗 (`win32gui.GetForegroundWindow()`) 是否為目標遊戲視窗 (`hwnd`)。
+    - 如果不是，則調用 `win32gui.BringWindowToTop(hwnd)` 和 `win32gui.SetForegroundWindow(hwnd)` 來嘗試將遊戲視窗帶到前景並啟用。
+    - 更新了相關的日誌訊息以反映新的行為。
+- **效果**：監控腳本現在會嘗試將失去焦點的遊戲視窗重新激活並帶到前景，而不是強制其覆蓋所有其他視窗。這更符合一般視窗的行為模式。
 
 ## 開發建議
 

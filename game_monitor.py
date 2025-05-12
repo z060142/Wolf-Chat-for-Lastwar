@@ -217,24 +217,28 @@ def monitor_game_window():
                          # monitor_logger.warning(f"Failed to adjust window. Current: {new_pos} {new_size}, Target: {target_pos} {target_size}")
                          pass # Keep silent on failure for now
 
-                # 2. Check and Set Topmost
-                style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-                is_topmost = style & win32con.WS_EX_TOPMOST
+                # 2. Check and Bring to Foreground/Activate
+                current_foreground_hwnd = win32gui.GetForegroundWindow()
 
-                if not is_topmost:
-                    # Set topmost, -1 for HWND_TOPMOST, flags = SWP_NOMOVE | SWP_NOSIZE
-                    win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
-                    # Verify
-                    time.sleep(0.1)
-                    new_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-                    if new_style & win32con.WS_EX_TOPMOST:
-                        current_message += "已將遊戲視窗設為最上層。(Set game window to topmost.)"
-                        adjustment_made = True
-                    else:
-                        # Log failure if needed
-                        # monitor_logger.warning("Failed to set window to topmost.")
-                        pass # Keep silent
+                if current_foreground_hwnd != hwnd:
+                    try:
+                        # Attempt to bring to top and set foreground
+                        # Note: SetForegroundWindow might fail if the calling process doesn't have foreground rights
+                        win32gui.BringWindowToTop(hwnd)
+                        win32gui.SetForegroundWindow(hwnd)
+                        # Short delay to allow window manager to process
+                        time.sleep(0.1)
+                        # Verify if it became the foreground window
+                        if win32gui.GetForegroundWindow() == hwnd:
+                            current_message += "已將遊戲視窗帶到前景並啟用。(Brought game window to foreground and activated.) "
+                            adjustment_made = True
+                        else:
+                            # Optional: Log if setting foreground failed, might happen if another app steals focus quickly
+                            # monitor_logger.warning("嘗試將視窗設為前景後，它並未成為前景視窗。(Attempted to set window foreground, but it did not become the foreground window.)")
+                            pass
+                    except Exception as fg_err:
+                        # This can happen if the window handle is invalid or other win32 errors occur
+                        monitor_logger.warning(f"嘗試將視窗設為前景時出錯: {fg_err} (Error trying to set window foreground: {fg_err})")
 
             except gw.PyGetWindowException as e:
                 # Log PyGetWindowException specifically, might indicate window closed during check

@@ -2443,6 +2443,7 @@ if HAS_SOCKETIO:
             self.authenticated = False
             self.should_exit_flag = threading.Event() # Use an event for thread control
             self.client_thread = None
+            self.last_successful_connection_time = None # Track last successful connection/auth
 
             self.registered_commands = [
                 "restart bot", "restart game", "restart all", 
@@ -2473,46 +2474,80 @@ if HAS_SOCKETIO:
             last_heartbeat = time.time() # For heartbeat
             retry_delay = 1.0  # Start with 1 second delay for exponential backoff
             max_delay = 300.0  # Maximum delay of 5 minutes for exponential backoff
-            
+            hourly_refresh_interval = 3600 # 1 hour in seconds
+
             while not self.should_exit_flag.is_set():
+                current_time = time.time() # Get current time at the start of the loop iteration
+
                 if not self.sio.connected:
+                    # Reset connection time tracker when attempting to connect
+                    self.last_successful_connection_time = None
                     try:
                         logger.info(f"ControlClient: Attempting to connect to {self.server_url}...")
                         self.sio.connect(self.server_url)
-                        logger.info("ControlClient: Successfully connected.")
-                        retry_delay = 1.0  # Reset delay on successful connection
-                        last_heartbeat = time.time() # Reset heartbeat timer on new connection
+                        # Connection successful, wait for authentication to set last_successful_connection_time
+                        logger.info("ControlClient: Successfully established socket connection. Waiting for authentication.")
+                        retry_delay = 1.0  # Reset delay on successful connection attempt
+                        # last_heartbeat = time.time() # Reset heartbeat timer only after authentication? Or here? Let's keep it after auth.
                     except socketio.exceptions.ConnectionError as e:
                         logger.error(f"ControlClient: Connection failed: {e}. Retrying in {retry_delay:.2f}s.")
                         self.should_exit_flag.wait(retry_delay)
                         # Implement exponential backoff with jitter
                         retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
                         retry_delay = max(1.0, retry_delay) # Ensure it's at least 1s
-                        continue 
+                        continue
                     except Exception as e: # Catch other potential errors during connection
                         logger.error(f"ControlClient: Unexpected error during connection attempt: {e}. Retrying in {retry_delay:.2f}s.")
                         self.should_exit_flag.wait(retry_delay)
                         retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
                         retry_delay = max(1.0, retry_delay) # Ensure it's at least 1s
                         continue
-                
-                # If connected, manage heartbeat and check for exit signal
+
+                # If connected (socket established, maybe not authenticated yet)
                 if self.sio.connected:
-                    current_time = time.time()
-                    if current_time - last_heartbeat > 60:  # Send heartbeat every 60 seconds
+                    # Check for hourly refresh ONLY if authenticated and timer is set
+                    if self.authenticated and self.last_successful_connection_time and (current_time - self.last_successful_connection_time > hourly_refresh_interval):
+                        logger.info(f"ControlClient: Hourly session refresh triggered (Connected for > {hourly_refresh_interval}s). Disconnecting for refresh...")
+                        try:
+                            self.sio.disconnect()
+                            # Reset flags immediately after intentional disconnect
+                            self.connected = False
+                            self.authenticated = False
+                            self.last_successful_connection_time = None
+                            logger.info("ControlClient: Disconnected for hourly refresh. Will attempt reconnect in next cycle.")
+                            # Continue to the start of the loop to handle reconnection logic
+                            continue
+                        except Exception as e:
+                            logger.error(f"ControlClient: Error during planned hourly disconnect: {e}")
+                            # Reset flags anyway and let the loop retry
+                            self.connected = False
+                            self.authenticated = False
+                            self.last_successful_connection_time = None
+
+
+                    # Manage heartbeat if authenticated
+                    if self.authenticated and current_time - last_heartbeat > 60:  # Send heartbeat every 60 seconds
                         try:
                             self.sio.emit('heartbeat', {'timestamp': current_time})
                             last_heartbeat = current_time
-                            logger.debug("ControlClient: Sent heartbeat to keep connection alive.")
-                        except Exception as e: 
+                            logger.debug("ControlClient: Sent heartbeat.")
+                        except Exception as e:
                             logger.error(f"ControlClient: Error sending heartbeat: {e}. Connection might be lost.")
-                    
+                            # Consider triggering disconnect/reconnect logic here if heartbeat fails repeatedly
+
+                    # Wait before next loop iteration, checking for exit signal
                     self.should_exit_flag.wait(1) # Check for exit signal every second
-                else:
-                    # Fallback if not connected after attempt block (should be rare with current logic)
-                    logger.debug(f"ControlClient: Not connected (unexpected state in loop), waiting {retry_delay:.2f}s before next cycle.")
+
+                else: # Not connected (e.g., after a disconnect, or failed connection attempt)
+                    # This path is hit after disconnects (intentional or unintentional)
+                    # Reset connection time tracker if not already None
+                    if self.last_successful_connection_time is not None:
+                         logger.debug("ControlClient: Resetting connection timer as client is not connected.")
+                         self.last_successful_connection_time = None
+
+                    logger.debug(f"ControlClient: Not connected, waiting {retry_delay:.2f}s before next connection attempt.")
                     self.should_exit_flag.wait(retry_delay)
-                    # Optionally re-calculate retry_delay here if this path is hit, to maintain backoff progression
+                    # Exponential backoff for reconnection attempts
                     retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
                     retry_delay = max(1.0, retry_delay)
 
@@ -2522,6 +2557,7 @@ if HAS_SOCKETIO:
 
         def _on_connect(self):
             self.connected = True
+            # Don't reset timer here, wait for authentication
             logger.info("ControlClient: Connected to server. Authenticating...")
             self.sio.emit('authenticate', {
                 'type': 'client',
@@ -2530,26 +2566,30 @@ if HAS_SOCKETIO:
             })
 
         def _on_disconnect(self):
+            was_connected = self.connected # Store previous state
             self.connected = False
             self.authenticated = False
-            logger.info("ControlClient: Disconnected from server.")
-            
-            # Force reconnection if not intentionally stopping
-            if not self.should_exit_flag.is_set():
-                logger.info("ControlClient: Attempting immediate reconnection from _on_disconnect...")
-                try:
-                    # This is an immediate attempt; _run_forever handles sustained retries.
-                    if not self.sio.connected: # Check before trying to connect
-                        self.sio.connect(self.server_url)
-                except Exception as e:
-                    logger.error(f"ControlClient: Immediate reconnection from _on_disconnect failed: {e}")
+            self.last_successful_connection_time = None # Reset timer on any disconnect
+            if was_connected: # Only log if it was previously connected
+                logger.info("ControlClient: Disconnected from server.")
+            else:
+                logger.debug("ControlClient: Received disconnect event, but was already marked as disconnected.")
+
+            # Remove the immediate reconnection attempt here, let _run_forever handle it with backoff
+            # if not self.should_exit_flag.is_set():
+            #     logger.info("ControlClient: Disconnected. Reconnection will be handled by the main loop.")
 
         def _on_authenticated(self, data):
             if data.get('success'):
                 self.authenticated = True
-                logger.info("ControlClient: Authentication successful.")
+                self.last_successful_connection_time = time.time() # Start timer on successful auth
+                # Reset heartbeat timer upon successful authentication
+                # Find where last_heartbeat is accessible or make it accessible (e.g., self.last_heartbeat)
+                # For now, assume last_heartbeat is managed within _run_forever and will naturally reset timing
+                logger.info("ControlClient: Authentication successful. Hourly refresh timer started.")
             else:
                 self.authenticated = False
+                self.last_successful_connection_time = None # Ensure timer is reset if auth fails
                 logger.error(f"ControlClient: Authentication failed: {data.get('error', 'Unknown error')}")
                 self.sio.disconnect() # Disconnect if auth fails
 
