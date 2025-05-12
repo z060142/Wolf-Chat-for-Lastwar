@@ -217,28 +217,43 @@ def monitor_game_window():
                          # monitor_logger.warning(f"Failed to adjust window. Current: {new_pos} {new_size}, Target: {target_pos} {target_size}")
                          pass # Keep silent on failure for now
 
-                # 2. Check and Bring to Foreground/Activate
+                # 2. Check and Bring to Foreground/Activate (Improved Logic)
                 current_foreground_hwnd = win32gui.GetForegroundWindow()
 
                 if current_foreground_hwnd != hwnd:
                     try:
-                        # Attempt to bring to top and set foreground
-                        # Note: SetForegroundWindow might fail if the calling process doesn't have foreground rights
-                        win32gui.BringWindowToTop(hwnd)
+                        # Use HWND_TOP instead of HWND_TOPMOST to bring it above others without forcing always-on-top
+                        win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, 0, 0, 0, 0,
+                                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+
+                        # Make window the foreground window (with focus)
+                        # Note: This might still fail due to Windows foreground restrictions
                         win32gui.SetForegroundWindow(hwnd)
-                        # Short delay to allow window manager to process
-                        time.sleep(0.1)
-                        # Verify if it became the foreground window
-                        if win32gui.GetForegroundWindow() == hwnd:
-                            current_message += "已將遊戲視窗帶到前景並啟用。(Brought game window to foreground and activated.) "
+
+                        # Verify window is active by checking foreground window
+                        time.sleep(0.1)  # Brief pause to let operation complete
+                        foreground_hwnd = win32gui.GetForegroundWindow()
+
+                        if foreground_hwnd == hwnd:
+                            current_message += "已將遊戲視窗提升到前景並設為焦點。(Brought game window to foreground with focus.) "
                             adjustment_made = True
                         else:
-                            # Optional: Log if setting foreground failed, might happen if another app steals focus quickly
-                            # monitor_logger.warning("嘗試將視窗設為前景後，它並未成為前景視窗。(Attempted to set window foreground, but it did not become the foreground window.)")
-                            pass
-                    except Exception as fg_err:
-                        # This can happen if the window handle is invalid or other win32 errors occur
-                        monitor_logger.warning(f"嘗試將視窗設為前景時出錯: {fg_err} (Error trying to set window foreground: {fg_err})")
+                            # Optional: Add a fallback for versions of Windows with stricter foreground rules
+                            monitor_logger.warning("SetForegroundWindow 未能成功，嘗試備用方法 window.activate()。(SetForegroundWindow failed, trying fallback window.activate())")
+                            try:
+                                window.activate() # Try pygetwindow's activate method as backup
+                                time.sleep(0.1) # Pause after activate
+                                if win32gui.GetForegroundWindow() == hwnd:
+                                     current_message += "已透過備用方法將遊戲視窗設為焦點。(Set game window focus via fallback method.) "
+                                     adjustment_made = True
+                                else:
+                                     monitor_logger.warning("備用方法 window.activate() 也未能成功。(Fallback window.activate() also failed.)")
+                            except Exception as activate_err:
+                                 monitor_logger.warning(f"備用方法 window.activate() 出錯: {activate_err}")
+
+                    except Exception as focus_err:
+                        # Log errors during the focus attempt
+                        monitor_logger.warning(f"設置視窗焦點時出錯: {focus_err}")
 
             except gw.PyGetWindowException as e:
                 # Log PyGetWindowException specifically, might indicate window closed during check

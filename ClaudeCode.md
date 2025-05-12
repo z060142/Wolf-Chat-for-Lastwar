@@ -606,9 +606,13 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 - **`game_monitor.py`**：
     - 在 `monitor_game_window` 函數的監控循環中，移除了使用 `win32gui.SetWindowPos` 和 `win32con.HWND_TOPMOST` 來檢查和設定 `WS_EX_TOPMOST` 樣式的程式碼。
     - 替換為檢查當前前景視窗 (`win32gui.GetForegroundWindow()`) 是否為目標遊戲視窗 (`hwnd`)。
-    - 如果不是，則調用 `win32gui.BringWindowToTop(hwnd)` 和 `win32gui.SetForegroundWindow(hwnd)` 來嘗試將遊戲視窗帶到前景並啟用。
-    - 更新了相關的日誌訊息以反映新的行為。
-- **效果**：監控腳本現在會嘗試將失去焦點的遊戲視窗重新激活並帶到前景，而不是強制其覆蓋所有其他視窗。這更符合一般視窗的行為模式。
+    - 如果不是，則嘗試以下步驟將視窗帶到前景並獲得焦點：
+        1.  使用 `win32gui.SetWindowPos` 搭配 `win32con.HWND_TOP` 旗標，將視窗提升到所有非最上層視窗之上。
+        2.  呼叫 `win32gui.SetForegroundWindow(hwnd)` 嘗試將視窗設為前景並獲得焦點。
+        3.  短暫延遲後，檢查視窗是否成功成為前景視窗。
+        4.  如果 `SetForegroundWindow` 未成功，則嘗試使用 `pygetwindow` 庫提供的 `window.activate()` 方法作為備用方案。
+    - 更新了相關的日誌訊息以反映新的行為和備用邏輯。
+- **效果**：監控腳本現在會使用更全面的方法嘗試將失去焦點的遊戲視窗重新激活並帶到前景，包括備用方案，以提高在不同 Windows 環境下獲取焦點的成功率。這取代了之前僅強制視覺覆蓋的行為。
 
 ## 開發建議
 
