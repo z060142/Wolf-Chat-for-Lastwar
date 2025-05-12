@@ -29,6 +29,7 @@ import schedule
 import psutil
 import random # Added for exponential backoff jitter
 import urllib3 # Added for SSL warning suppression
+import game_manager # Added for new game monitoring module
 try:
     import socketio
     HAS_SOCKETIO = True
@@ -604,6 +605,9 @@ class WolfChatSetup(tk.Tk):
 
         # Initialize scheduler process tracker
         self.scheduler_process = None
+        
+        # Initialize game monitor instance (will be created in start_managed_session)
+        self.game_monitor = None
 
 
         # Set initial states based on loaded data
@@ -747,7 +751,39 @@ class WolfChatSetup(tk.Tk):
 
 
         # Start Monitoring Thread
-        self._start_monitoring_thread()
+        self._start_monitoring_thread() # This is the old general monitoring thread
+
+        # Initialize and start GameMonitor (new specific game monitor)
+        try:
+            # Create callback function for game_monitor
+            def game_monitor_callback(action):
+                logger.info(f"Received action from game_manager: {action}")
+                if action == "restart_complete":
+                    # Schedule _handle_game_restart_complete to run in the main thread
+                    self.after(0, self._handle_game_restart_complete)
+                # Add other actions if needed, e.g., "restart_begin", "restart_error"
+
+            # Create GameMonitor instance if it doesn't exist
+            if not self.game_monitor:
+                self.game_monitor = game_manager.create_game_monitor(
+                    config_data=self.config_data,
+                    remote_data=self.remote_data,
+                    logger=logger, # Use the main Setup logger
+                    callback=game_monitor_callback
+                )
+            
+            # Start the game monitor
+            if self.game_monitor.start(): # Ensure start() returns a boolean
+                logger.info("Game monitor (game_manager) started successfully.")
+            else:
+                logger.error("Failed to start game_manager's GameMonitor.")
+                messagebox.showwarning("Warning", "Game window monitoring (game_manager) could not be started.")
+                # Continue execution, not a fatal error for the whole session
+
+        except Exception as gm_err:
+            logger.exception(f"Error setting up game_manager's GameMonitor: {gm_err}")
+            messagebox.showwarning("Warning", "Failed to initialize game_manager's GameMonitor.")
+            # Continue execution
         
         # Start Scheduler Thread
         self._start_scheduler_thread()
@@ -755,6 +791,23 @@ class WolfChatSetup(tk.Tk):
         self.update_management_buttons_state(False) # Disable start, enable stop
         # messagebox.showinfo("Session Started", "Managed bot and game session started. Check console for logs.") # Removed popup
         logger.info("Managed bot and game session started. Check console for logs.") # Log instead of popup
+
+    def _handle_game_restart_complete(self):
+        """Handles the callback from GameMonitor when a game restart is complete."""
+        logger.info("Game restart completed (callback from game_manager). Handling bot restart...")
+        try:
+            # Ensure we are in the main thread (already handled by self.after)
+            # Wait a bit for the game to stabilize
+            time.sleep(10) 
+
+            logger.info("Restarting bot after game restart (triggered by game_manager)...")
+            if self._restart_bot_managed():
+                logger.info("Bot restarted successfully after game_manager's game restart.")
+            else:
+                logger.error("Failed to restart bot after game_manager's game restart!")
+                messagebox.showwarning("Warning", "Failed to restart bot after game_manager's game restart.")
+        except Exception as e:
+            logger.exception(f"Error in _handle_game_restart_complete: {e}")
 
     def stop_managed_session(self):
         logger.info("Attempting to stop managed session...")
@@ -778,7 +831,19 @@ class WolfChatSetup(tk.Tk):
             if self.monitor_thread_instance.is_alive():
                 logger.warning("Monitor thread did not stop in time.")
         self.monitor_thread_instance = None
-        
+
+        # Stop GameMonitor (from game_manager)
+        if self.game_monitor:
+            try:
+                if self.game_monitor.stop(): # Ensure stop() returns a boolean
+                    logger.info("Game monitor (game_manager) stopped successfully.")
+                else:
+                    logger.warning("Game monitor (game_manager) stop may have failed.")
+            except Exception as gm_err:
+                logger.exception(f"Error stopping game_manager's GameMonitor: {gm_err}")
+            finally:
+                self.game_monitor = None # Release the instance
+
         self._stop_bot_managed()
         self._stop_game_managed()
         
@@ -1063,9 +1128,16 @@ class WolfChatSetup(tk.Tk):
 
     def _restart_game_managed(self):
         logger.info("Restarting game (managed)...")
-        self._stop_game_managed()
-        time.sleep(2) # Give it time to fully stop
-        return self._start_game_managed()
+        # If GameMonitor (from game_manager) exists and is running, use it to restart
+        if self.game_monitor and self.game_monitor.running:
+            logger.info("Using game_manager's GameMonitor to restart game.")
+            return self.game_monitor.restart_now()
+        else:
+            # Fallback to the original method if game_monitor is not active
+            logger.info("game_manager's GameMonitor not active, using default method to restart game.")
+            self._stop_game_managed()
+            time.sleep(2) # Give it time to fully stop
+            return self._start_game_managed()
 
     def _restart_bot_managed(self):
         logger.info("Restarting bot (managed)...")
@@ -2414,6 +2486,14 @@ class WolfChatSetup(tk.Tk):
             save_env_file(self.env_data)
             generate_config_file(self.config_data, self.env_data)
             save_remote_config(self.remote_data) # Save remote config
+
+            # If GameMonitor (from game_manager) exists, update its configuration
+            if self.game_monitor:
+                try:
+                    self.game_monitor.update_config(self.config_data, self.remote_data)
+                    logger.info("Game monitor (game_manager) configuration updated.")
+                except Exception as gm_update_err:
+                    logger.error(f"Failed to update game_manager's GameMonitor configuration: {gm_update_err}")
             
             if show_success_message:
                 messagebox.showinfo("Success", "Settings saved successfully.\nRestart managed session for changes to take effect.")
