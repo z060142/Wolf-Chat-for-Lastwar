@@ -15,72 +15,66 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 
 ### 核心元件
 
-1. **主控模塊 (main.py)**
-   - 協調各模塊的工作
-   - 初始化 MCP 連接
-     - **容錯處理**：即使 `config.py` 中未配置 MCP 伺服器，或所有伺服器連接失敗，程式現在也會繼續執行，僅打印警告訊息，MCP 功能將不可用。 (Added 2025-04-21)
-     - **伺服器子進程管理 (修正 2025-05-02)**：使用 `mcp.client.stdio.stdio_client` 啟動和連接 `config.py` 中定義的每個 MCP 伺服器。`stdio_client` 作為一個異步上下文管理器，負責管理其啟動的子進程的生命週期。
-     - **Windows 特定處理 (修正 2025-05-02)**：在 Windows 上，如果 `pywin32` 可用，會註冊一個控制台事件處理程序 (`win32api.SetConsoleCtrlHandler`)。此處理程序主要用於輔助觸發正常的關閉流程（最終會調用 `AsyncExitStack.aclose()`），而不是直接終止進程。伺服器子進程的實際終止依賴於 `stdio_client` 上下文管理器在 `AsyncExitStack.aclose()` 期間的清理操作。
-   - **記憶體系統初始化 (新增 2025-05-02)**：在啟動時調用 `chroma_client.initialize_memory_system()`，根據 `config.py` 中的 `ENABLE_PRELOAD_PROFILES` 設定決定是否啟用記憶體預載入。
-   - 設置並管理主要事件循環
-   - **記憶體預載入 (新增 2025-05-02)**：在主事件循環中，如果預載入已啟用，則在每次收到 UI 觸發後、調用 LLM 之前，嘗試從 ChromaDB 預先獲取用戶資料 (`get_entity_profile`)、相關記憶 (`get_related_memories`) 和潛在相關的機器人知識 (`get_bot_knowledge`)。
-   - 處理程式生命週期管理和資源清理（通過 `AsyncExitStack` 間接管理 MCP 伺服器子進程的終止）
+1.  **主控模塊 (main.py)**
+    - 協調各模塊的工作
+    - 初始化 MCP 連接
+        - **容錯處理**：即使 `config.py` 中未配置 MCP 伺服器，或所有伺服器連接失敗，程式現在也會繼續執行，僅打印警告訊息，MCP 功能將不可用。 (Added 2025-04-21)
+        - **伺服器子進程管理 (修正 2025-05-02)**：使用 `mcp.client.stdio.stdio_client` 啟動和連接 `config.py` 中定義的每個 MCP 伺服器。`stdio_client` 作為一個異步上下文管理器，負責管理其啟動的子進程的生命週期。
+        - **Windows 特定處理 (修正 2025-05-02)**：在 Windows 上，如果 `pywin32` 可用，會註冊一個控制台事件處理程序 (`win32api.SetConsoleCtrlHandler`)。此處理程序主要用於輔助觸發正常的關閉流程（最終會調用 `AsyncExitStack.aclose()`），而不是直接終止進程。伺服器子進程的實際終止依賴於 `stdio_client` 上下文管理器在 `AsyncExitStack.aclose()` 期間的清理操作。
+    - **記憶體系統初始化 (新增 2025-05-02)**：在啟動時調用 `chroma_client.initialize_memory_system()`，根據 `config.py` 中的 `ENABLE_PRELOAD_PROFILES` 設定決定是否啟用記憶體預載入。
+    - 設置並管理主要事件循環
+    - **記憶體預載入 (新增 2025-05-02)**：在主事件循環中，如果預載入已啟用，則在每次收到 UI 觸發後、調用 LLM 之前，嘗試從 ChromaDB 預先獲取用戶資料 (`get_entity_profile`)、相關記憶 (`get_related_memories`) 和潛在相關的機器人知識 (`get_bot_knowledge`)。
+    - 處理程式生命週期管理和資源清理（通過 `AsyncExitStack` 間接管理 MCP 伺服器子進程的終止）
 
-2. **LLM 交互模塊 (llm_interaction.py)**
-   - 與語言模型 API 通信
-   - 管理系統提示與角色設定
-     - **條件式提示 (新增 2025-05-02)**：`get_system_prompt` 函數現在接受預載入的用戶資料、相關記憶和機器人知識。根據是否有預載入數據，動態調整系統提示中的記憶體檢索協議說明。
-   - 處理語言模型的工具調用功能
-   - 格式化 LLM 回應
-   - 提供工具結果合成機制
+2.  **LLM 交互模塊 (llm_interaction.py)**
+    - 與語言模型 API 通信
+    - 管理系統提示與角色設定
+        - **條件式提示 (新增 2025-05-02)**：`get_system_prompt` 函數現在接受預載入的用戶資料、相關記憶和機器人知識。根據是否有預載入數據，動態調整系統提示中的記憶體檢索協議說明。
+    - 處理語言模型的工具調用功能
+    - 格式化 LLM 回應
+    - 提供工具結果合成機制
 
-3. **UI 互動模塊 (ui_interaction.py)**
-   - 使用圖像辨識技術監控遊戲聊天視窗
-   - 檢測聊天泡泡與關鍵字
-   - 複製聊天內容和獲取發送者姓名
-   - 將生成的回應輸入到遊戲中
+3.  **UI 互動模塊 (ui_interaction.py)**
+    - 使用圖像辨識技術監控遊戲聊天視窗
+    - 檢測聊天泡泡與關鍵字
+    - 複製聊天內容和獲取發送者姓名
+    - 將生成的回應輸入到遊戲中
 
-4. **MCP 客戶端模塊 (mcp_client.py)**
-   - 管理與 MCP 服務器的通信
-   - 列出和調用可用工具
-   - 處理工具調用的結果和錯誤
+4.  **MCP 客戶端模塊 (mcp_client.py)**
+    - 管理與 MCP 服務器的通信
+    - 列出和調用可用工具
+    - 處理工具調用的結果和錯誤
 
-5. **配置模塊 (config.py)**
-   - 集中管理系統參數和設定
-   - 整合環境變數
-   - 配置 API 密鑰和服務器設定
+5.  **配置模塊 (config.py)**
+    - 集中管理系統參數和設定
+    - 整合環境變數
+    - 配置 API 密鑰和服務器設定
 
-6. **角色定義 (persona.json)**
-   - 詳細定義機器人的人格特徵
-   - 包含外觀、說話風格、個性特點等資訊
-   - 提供給 LLM 以確保角色扮演一致性
+6.  **角色定義 (persona.json)**
+    - 詳細定義機器人的人格特徵
+    - 包含外觀、說話風格、個性特點等資訊
+    - 提供給 LLM 以確保角色扮演一致性
 
-7. **遊戲視窗監控模組 (game_monitor.py)** (取代 window-setup-script.py 和舊的 window-monitor-script.py)
-   - 持續監控遊戲視窗 (`config.WINDOW_TITLE`)。
-   - 確保視窗維持在設定檔 (`config.py`) 中指定的位置 (`GAME_WINDOW_X`, `GAME_WINDOW_Y`) 和大小 (`GAME_WINDOW_WIDTH`, `GAME_WINDOW_HEIGHT`)。
-   - 確保視窗維持在最上層 (Always on Top)。
-   - **定時遊戲重啟** (如果 `config.ENABLE_SCHEDULED_RESTART` 為 True)：
-     - 根據 `config.RESTART_INTERVAL_MINUTES` 設定的間隔執行。
-     - **簡化流程 (2025-04-25)**：
-       1. 通過 `stdout` 向 `main.py` 發送 JSON 訊號 (`{'action': 'pause_ui'}`)，請求暫停 UI 監控。
-       2. 等待固定時間（30 秒）。
-       3. 調用 `restart_game_process` 函數，**嘗試**終止 (`terminate`/`kill`) `LastWar.exe` 進程（**無驗證**）。
-       4. 等待固定時間（2 秒）。
-       5. **嘗試**使用 `os.startfile` 啟動 `config.GAME_EXECUTABLE_PATH`（**無驗證**）。
-       6. 等待固定時間（30 秒）。
-       7. 使用 `try...finally` 結構確保**總是**執行下一步。
-       8. 通過 `stdout` 向 `main.py` 發送 JSON 訊號 (`{'action': 'resume_ui'}`)，請求恢復 UI 監控。
-     - **視窗調整**：遊戲視窗的位置/大小/置頂狀態的調整完全由 `monitor_game_window` 的主循環持續負責，重啟流程不再進行立即調整。
-   - **作為獨立進程運行**：由 `main.py` 使用 `subprocess.Popen` 啟動，捕獲其 `stdout` (用於 JSON 訊號) 和 `stderr` (用於日誌)。
-   - **進程間通信**：
-     - `game_monitor.py` -> `main.py`：通過 `stdout` 發送 JSON 格式的 `pause_ui` 和 `resume_ui` 訊號。
-     - **日誌處理**：`game_monitor.py` 的日誌被配置為輸出到 `stderr`，以保持 `stdout` 清潔，確保訊號傳遞可靠性。`main.py` 會讀取 `stderr` 並可能顯示這些日誌。
-   - **生命週期管理**：由 `main.py` 在啟動時創建，並在 `shutdown` 過程中嘗試終止 (`terminate`)。
+7.  **遊戲管理器模組 (game_manager.py)** (取代舊的 `game_monitor.py`)
+    - **核心類 `GameMonitor`**：封裝所有遊戲視窗監控、自動重啟和進程管理功能。
+    - **由 `Setup.py` 管理**：
+        - 在 `Setup.py` 的 "Start Managed Bot & Game" 流程中被實例化和啟動。
+        - 在停止會話時由 `Setup.py` 停止。
+        - 設定（如視窗標題、路徑、重啟間隔等）通過 `Setup.py` 傳遞，並可在運行時通過 `update_config` 方法更新。
+    - **功能**：
+        - 持續監控遊戲視窗 (`config.WINDOW_TITLE`)。
+        - 確保視窗維持在設定檔中指定的位置和大小。
+        - 確保視窗保持活躍（帶到前景並獲得焦點）。
+        - **定時遊戲重啟**：根據設定檔中的間隔執行。
+            - **回調機制**：重啟完成後，通過回調函數通知 `Setup.py`（例如，`restart_complete`），`Setup.py` 隨後處理機器人重啟。
+        - **進程管理**：使用 `psutil`（如果可用）查找和終止遊戲進程。
+        - **跨平台啟動**：使用 `os.startfile` (Windows) 或 `subprocess.Popen` (其他平台) 啟動遊戲。
+    - **獨立運行模式**：`game_manager.py` 仍然可以作為獨立腳本運行 (類似舊的 `game_monitor.py`)，此時它會從 `config.py` 加載設定，並通過 `stdout` 發送 JSON 訊號。
 
-8. **ChromaDB 客戶端模塊 (chroma_client.py)** (新增 2025-05-02)
-   - 處理與本地 ChromaDB 向量數據庫的連接和互動。
-   - 提供函數以初始化客戶端、獲取/創建集合，以及查詢用戶資料、相關記憶和機器人知識。
-   - 使用 `chromadb.PersistentClient` 連接持久化數據庫。
+8.  **ChromaDB 客戶端模塊 (chroma_client.py)** (新增 2025-05-02)
+    - 處理與本地 ChromaDB 向量數據庫的連接和互動。
+    - 提供函數以初始化客戶端、獲取/創建集合，以及查詢用戶資料、相關記憶和機器人知識。
+    - 使用 `chromadb.PersistentClient` 連接持久化數據庫。
 
 ### 資料流程
 
@@ -598,6 +592,22 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
 - **依賴項**：Windows 上的控制台事件處理仍然依賴 `pywin32` 套件。如果未安裝，程式會打印警告，關閉時的可靠性可能略有降低（但 `stdio_client` 的正常清理機制應在多數情況下仍然有效）。
 - **效果**：恢復了與 `mcp` 庫的兼容性，同時通過標準的上下文管理和輔助性的 Windows 事件處理，實現了在主程式退出時關閉 MCP 伺服器子進程的目標。
 
+## 最近改進（2025-05-12）
+
+### 遊戲視窗置頂邏輯修改
+
+- **目的**：將 `game_monitor.py` 中強制遊戲視窗「永遠在最上層」(Always on Top) 的行為，修改為「臨時置頂並獲得焦點」(Bring to Foreground/Activate)，以解決原方法僅覆蓋其他視窗的問題。
+- **`game_monitor.py`**：
+    - 在 `monitor_game_window` 函數的監控循環中，移除了使用 `win32gui.SetWindowPos` 和 `win32con.HWND_TOPMOST` 來檢查和設定 `WS_EX_TOPMOST` 樣式的程式碼。
+    - 替換為檢查當前前景視窗 (`win32gui.GetForegroundWindow()`) 是否為目標遊戲視窗 (`hwnd`)。
+    - 如果不是，則嘗試以下步驟將視窗帶到前景並獲得焦點：
+        1.  使用 `win32gui.SetWindowPos` 搭配 `win32con.HWND_TOP` 旗標，將視窗提升到所有非最上層視窗之上。
+        2.  呼叫 `win32gui.SetForegroundWindow(hwnd)` 嘗試將視窗設為前景並獲得焦點。
+        3.  短暫延遲後，檢查視窗是否成功成為前景視窗。
+        4.  如果 `SetForegroundWindow` 未成功，則嘗試使用 `pygetwindow` 庫提供的 `window.activate()` 方法作為備用方案。
+    - 更新了相關的日誌訊息以反映新的行為和備用邏輯。
+- **效果**：監控腳本現在會使用更全面的方法嘗試將失去焦點的遊戲視窗重新激活並帶到前景，包括備用方案，以提高在不同 Windows 環境下獲取焦點的成功率。這取代了之前僅強制視覺覆蓋的行為。
+
 ## 開發建議
 
 ### 優化方向
@@ -621,6 +631,39 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
    - 實現對話歷史記錄
    - 添加主題識別與記憶功能
    - 探索多輪對話中的上下文理解能力
+
+## 最近改進（2025-05-13）
+
+### 遊戲監控模組重構
+
+- **目的**：將遊戲監控功能從獨立的 `game_monitor.py` 腳本重構為一個更健壯、更易於管理的 `game_manager.py` 模組，並由 `Setup.py` 統一控制其生命週期和配置。
+- **`game_manager.py` (新模組)**：
+    - 創建了 `GameMonitor` 類，封裝了所有遊戲視窗監控、自動重啟和進程管理邏輯。
+    - 提供了 `create_game_monitor` 工廠函數。
+    - 支持通過構造函數和 `update_config` 方法進行配置。
+    - 使用回調函數 (`callback`) 與調用者（即 `Setup.py`）通信，例如在遊戲重啟完成時。
+    - 保留了獨立運行模式，以便在直接執行時仍能工作（主要用於測試或舊版兼容）。
+    - 程式碼註解和日誌訊息已更新為英文。
+- **`Setup.py` (修改)**：
+    - 導入 `game_manager`。
+    - 在 `WolfChatSetup` 類的 `__init__` 方法中初始化 `self.game_monitor = None`。
+    - 在 `start_managed_session` 方法中：
+        - 創建 `game_monitor_callback` 函數以處理來自 `GameMonitor` 的動作（特別是 `restart_complete`）。
+        - 使用 `game_manager.create_game_monitor` 創建 `GameMonitor` 實例。
+        - 啟動 `GameMonitor`。
+    - 新增 `_handle_game_restart_complete` 方法，用於在收到 `GameMonitor` 的重啟完成回調後，處理機器人的重啟。
+    - 在 `stop_managed_session` 方法中，調用 `self.game_monitor.stop()` 並釋放實例。
+    - 修改 `_restart_game_managed` 方法，使其在 `self.game_monitor` 存在且運行時，調用 `self.game_monitor.restart_now()` 來執行遊戲重啟。
+    - 在 `save_settings` 方法中，如果 `self.game_monitor` 實例存在，則調用其 `update_config` 方法以更新運行時配置。
+- **`main.py` (修改)**：
+    - 移除了所有對舊 `game_monitor.py` 的導入、子進程啟動、訊號讀取和生命週期管理相關的程式碼。遊戲監控現在完全由 `Setup.py` 在受管會話模式下處理。
+- **舊檔案刪除**：
+    - 刪除了原來的 `game_monitor.py` 文件。
+- **效果**：
+    - 遊戲監控邏輯更加內聚和模塊化。
+    - `Setup.py` 現在完全控制遊戲監控的啟動、停止和配置，簡化了 `main.py` 的職責。
+    - 通過回調機制實現了更清晰的模塊間通信。
+    - 提高了程式碼的可維護性和可擴展性。
 
 ### 注意事項
 
@@ -721,6 +764,45 @@ ClaudeCode.md
 
 # Context Window Usage
 796,173 / 1,000K tokens used (80%)
+
+# Current Mode
+ACT MODE
+</environment_details>
+
+</file_content>
+
+Now that you have the latest state of the file, try the operation again with fewer, more precise SEARCH blocks. For large files especially, it may be prudent to try to limit yourself to <5 SEARCH/REPLACE blocks at a time, then wait for the user to respond with the result of the operation before following up with another replace_in_file call to make additional edits.
+(If you run into this error 3 times in a row, you may use the write_to_file tool as a fallback.)
+</error><environment_details>
+# VSCode Visible Files
+ClaudeCode.md
+
+# VSCode Open Tabs
+config_template.py
+test/llm_debug_script.py
+llm_interaction.py
+wolf_control.py
+.gitignore
+chroma_client.py
+batch_memory_record.py
+memory_manager.py
+game_monitor.py
+game_manager.py
+Setup.py
+main.py
+ClaudeCode.md
+reembedding tool.py
+config.py
+memory_backup.py
+tools/chroma_view.py
+ui_interaction.py
+remote_config.json
+
+# Current Time
+5/13/2025, 3:31:34 AM (Asia/Taipei, UTC+8:00)
+
+# Context Window Usage
+429,724 / 1,048.576K tokens used (41%)
 
 # Current Mode
 ACT MODE

@@ -1,6 +1,7 @@
 # chroma_client.py
 import chromadb
 from chromadb.config import Settings
+from chromadb.utils import embedding_functions # New import
 import os
 import json
 import config
@@ -9,6 +10,33 @@ import time
 # Global client variables
 _client = None
 _collections = {}
+
+# Global embedding function variable
+_embedding_function = None
+
+def get_embedding_function():
+    """Gets or creates the embedding function based on config"""
+    global _embedding_function
+    if _embedding_function is None:
+        # Default to paraphrase-multilingual-mpnet-base-v2 if not specified or on error
+        model_name = getattr(config, 'EMBEDDING_MODEL_NAME', "sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        try:
+            _embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
+            print(f"Successfully initialized embedding function with model: {model_name}")
+        except Exception as e:
+            print(f"Failed to initialize embedding function with model '{model_name}': {e}")
+            # Fallback to default if specified model fails and it's not already the default
+            if model_name != "sentence-transformers/paraphrase-multilingual-mpnet-base-v2":
+                print("Falling back to default embedding model: sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+                try:
+                    _embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+                    print(f"Successfully initialized embedding function with default model.")
+                except Exception as e_default:
+                    print(f"Failed to initialize default embedding function: {e_default}")
+                    _embedding_function = None # Ensure it's None if all attempts fail
+            else:
+                _embedding_function = None # Ensure it's None if default model also fails
+    return _embedding_function
 
 def initialize_chroma_client():
     """Initializes and connects to ChromaDB"""
@@ -34,13 +62,31 @@ def get_collection(collection_name):
 
     if collection_name not in _collections:
         try:
+            emb_func = get_embedding_function()
+            if emb_func is None:
+                print(f"Failed to get or create collection '{collection_name}' due to embedding function initialization failure.")
+                return None
+
             _collections[collection_name] = _client.get_or_create_collection(
-                name=collection_name
+                name=collection_name,
+                embedding_function=emb_func
             )
-            print(f"Successfully got or created collection '{collection_name}'")
+            print(f"Successfully got or created collection '{collection_name}' using configured embedding function.")
         except Exception as e:
-            print(f"Failed to get collection '{collection_name}': {e}")
-            return None
+            print(f"Failed to get collection '{collection_name}' with configured embedding function: {e}")
+            # Attempt to create collection with default embedding function as a fallback
+            print(f"Attempting to create collection '{collection_name}' with default embedding function...")
+            try:
+                # Ensure we try the absolute default if the configured one (even if it was the default) failed
+                default_emb_func = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+                _collections[collection_name] = _client.get_or_create_collection(
+                    name=collection_name,
+                    embedding_function=default_emb_func
+                )
+                print(f"Successfully got or created collection '{collection_name}' with default embedding function after initial failure.")
+            except Exception as e_default:
+                print(f"Failed to get collection '{collection_name}' even with default embedding function: {e_default}")
+                return None
 
     return _collections[collection_name]
 

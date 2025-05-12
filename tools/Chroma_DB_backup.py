@@ -412,30 +412,46 @@ class ChromaDBBackup:
                 shutil.rmtree(temp_dir)
             return False
     
-    def schedule_backup(self, interval: str, description: str = "", keep_count: int = 0) -> bool:
+    def schedule_backup(self, interval: str, description: str = "", keep_count: int = 0, at_time: Optional[str] = None) -> bool:
         """排程定期備份
         
-        interval: 備份間隔 - daily, weekly, hourly, 或 自定義 cron 表達式
+        interval: 備份間隔 - daily, weekly, hourly
         description: 備份描述
         keep_count: 保留的備份數量，0表示不限制
+        at_time: 執行的時間，格式 "HH:MM" (例如 "14:30")，僅對 daily, weekly, monthly 有效
         """
         job_id = f"scheduled_{interval}_{int(time.time())}"
         
+        # 驗證 at_time 格式
+        if at_time:
+            try:
+                time.strptime(at_time, "%H:%M")
+            except ValueError:
+                self.logger.error(f"無效的時間格式: {at_time}. 請使用 HH:MM 格式.")
+                return False
+        
+        # 如果是每小時備份，則忽略 at_time
+        if interval == "hourly":
+            at_time = None 
+            
         try:
             # 根據間隔設置排程
             if interval == "hourly":
-                schedule.every().hour.do(self._run_scheduled_backup, job_id=job_id, description=description, interval=interval)
+                schedule.every().hour.do(self._run_scheduled_backup, job_id=job_id, description=description, interval=interval, at_time=at_time)
             elif interval == "daily":
-                schedule.every().day.at("00:00").do(self._run_scheduled_backup, job_id=job_id, description=description, interval=interval)
+                schedule_time = at_time if at_time else "00:00"
+                schedule.every().day.at(schedule_time).do(self._run_scheduled_backup, job_id=job_id, description=description, interval=interval, at_time=at_time)
             elif interval == "weekly":
-                schedule.every().monday.at("00:00").do(self._run_scheduled_backup, job_id=job_id, description=description, interval=interval)
+                schedule_time = at_time if at_time else "00:00"
+                schedule.every().monday.at(schedule_time).do(self._run_scheduled_backup, job_id=job_id, description=description, interval=interval, at_time=at_time)
             elif interval == "monthly":
+                schedule_time = at_time if at_time else "00:00"
                 # 每月1日執行
-                schedule.every().day.at("00:00").do(self._check_monthly_schedule, job_id=job_id, description=description, interval=interval)
+                schedule.every().day.at(schedule_time).do(self._check_monthly_schedule, job_id=job_id, description=description, interval=interval, at_time=at_time)
             else:
-                # 自定義間隔 - 直接使用字符串作為cron表達式
                 self.logger.warning(f"不支援的排程間隔: {interval}，改用每日排程")
-                schedule.every().day.at("00:00").do(self._run_scheduled_backup, job_id=job_id, description=description, interval="daily")
+                schedule_time = at_time if at_time else "00:00"
+                schedule.every().day.at(schedule_time).do(self._run_scheduled_backup, job_id=job_id, description=description, interval="daily", at_time=at_time)
             
             # 存儲排程任務信息
             self.scheduled_jobs[job_id] = {
@@ -443,10 +459,11 @@ class ChromaDBBackup:
                 "description": description,
                 "created": datetime.datetime.now(),
                 "keep_count": keep_count,
-                "next_run": self._get_next_run_time(interval)
+                "at_time": at_time, # 新增
+                "next_run": self._get_next_run_time(interval, at_time)
             }
             
-            self.logger.info(f"已排程 {interval} 備份，任務ID: {job_id}")
+            self.logger.info(f"已排程 {interval} 備份 (時間: {at_time if at_time else '預設'})，任務ID: {job_id}")
             return True
             
         except Exception as e:
@@ -459,32 +476,66 @@ class ChromaDBBackup:
             return self._run_scheduled_backup(job_id, description, interval)
         return None
     
-    def _get_next_run_time(self, interval):
+    def _get_next_run_time(self, interval: str, at_time: Optional[str] = None) -> datetime.datetime:
         """獲取下次執行時間"""
         now = datetime.datetime.now()
         
+        target_hour, target_minute = 0, 0
+        if at_time:
+            try:
+                t = time.strptime(at_time, "%H:%M")
+                target_hour, target_minute = t.tm_hour, t.tm_min
+            except ValueError:
+                # 如果格式錯誤，使用預設時間
+                pass
+
         if interval == "hourly":
-            return now.replace(minute=0, second=0) + datetime.timedelta(hours=1)
+            # 每小時任務，忽略 at_time，在下一個整點執行
+            next_run_time = now.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1)
+            # 如果計算出的時間已過，則再加一小時
+            if next_run_time <= now:
+                 next_run_time += datetime.timedelta(hours=1)
+            return next_run_time
+        
         elif interval == "daily":
-            return now.replace(hour=0, minute=0, second=0) + datetime.timedelta(days=1)
+            next_run_time = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+            if next_run_time <= now: # 如果今天的時間已過，則設為明天
+                next_run_time += datetime.timedelta(days=1)
+            return next_run_time
+            
         elif interval == "weekly":
             # 計算下個星期一
-            days_ahead = 0 - now.weekday()
-            if days_ahead <= 0:
+            next_run_time = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+            days_ahead = 0 - next_run_time.weekday() # 0 is Monday
+            if days_ahead <= 0: # Target day already happened this week
                 days_ahead += 7
-            return now.replace(hour=0, minute=0, second=0) + datetime.timedelta(days=days_ahead)
+            next_run_time += datetime.timedelta(days=days_ahead)
+            # 如果計算出的時間已過 (例如今天是星期一，但設定的時間已過)，則設為下下星期一
+            if next_run_time <= now:
+                 next_run_time += datetime.timedelta(weeks=1)
+            return next_run_time
+            
         elif interval == "monthly":
             # 計算下個月1日
+            next_run_time = now.replace(day=1, hour=target_hour, minute=target_minute, second=0, microsecond=0)
             if now.month == 12:
-                next_month = now.replace(year=now.year+1, month=1, day=1, hour=0, minute=0, second=0)
+                next_run_time = next_run_time.replace(year=now.year + 1, month=1)
             else:
-                next_month = now.replace(month=now.month+1, day=1, hour=0, minute=0, second=0)
-            return next_month
+                next_run_time = next_run_time.replace(month=now.month + 1)
+            
+            # 如果計算出的時間已過 (例如今天是1號，但設定的時間已過)，則設為下下個月1號
+            if next_run_time <= now:
+                if next_run_time.month == 12:
+                    next_run_time = next_run_time.replace(year=next_run_time.year + 1, month=1)
+                else:
+                    next_run_time = next_run_time.replace(month=next_run_time.month + 1)
+            return next_run_time
         
         # 默認返回明天
-        return now.replace(hour=0, minute=0, second=0) + datetime.timedelta(days=1)
-    
-    def _run_scheduled_backup(self, job_id, description, interval):
+        default_next_run = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0) + datetime.timedelta(days=1)
+        return default_next_run
+
+    def _run_scheduled_backup(self, job_id: str, description: str, interval: str, at_time: Optional[str] = None):
         """執行排程備份任務"""
         job_info = self.scheduled_jobs.get(job_id)
         if not job_info:
@@ -493,7 +544,7 @@ class ChromaDBBackup:
         
         try:
             # 更新下次執行時間
-            self.scheduled_jobs[job_id]["next_run"] = self._get_next_run_time(interval)
+            self.scheduled_jobs[job_id]["next_run"] = self._get_next_run_time(interval, at_time)
             
             # 執行備份
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -693,7 +744,8 @@ class ChromaDBBackup:
                 "description": job_data["description"],
                 "created": job_data["created"].strftime("%Y-%m-%d %H:%M:%S"),
                 "next_run": job_data["next_run"].strftime("%Y-%m-%d %H:%M:%S") if job_data["next_run"] else "未知",
-                "keep_count": job_data["keep_count"]
+                "keep_count": job_data["keep_count"],
+                "at_time": job_data.get("at_time", "N/A") # 新增
             }
             jobs_info.append(job_info)
         
@@ -967,12 +1019,14 @@ class ChromaDBBackupUI:
         jobs_frame = ttk.Frame(schedule_frame)
         jobs_frame.pack(fill=BOTH, expand=YES)
         
-        columns = ("interval", "next_run")
+        columns = ("interval", "next_run", "at_time") # 新增 at_time
         self.jobs_tree = ttk.Treeview(jobs_frame, columns=columns, show="headings", height=5)
         self.jobs_tree.heading("interval", text="間隔")
         self.jobs_tree.heading("next_run", text="下次執行")
+        self.jobs_tree.heading("at_time", text="執行時間") # 新增
         self.jobs_tree.column("interval", width=100)
         self.jobs_tree.column("next_run", width=150)
+        self.jobs_tree.column("at_time", width=80) # 新增
         
         scrollbar = ttk.Scrollbar(jobs_frame, orient=VERTICAL, command=self.jobs_tree.yview)
         self.jobs_tree.configure(yscrollcommand=scrollbar.set)
@@ -1164,7 +1218,8 @@ class ChromaDBBackupUI:
                 iid=job["id"],  # 使用任務ID作為樹項目ID
                 values=(
                     f"{job['interval']} ({job['description']})",
-                    job["next_run"]
+                    job["next_run"],
+                    job.get("at_time", "N/A") # 新增
                 )
             )
     
@@ -1730,7 +1785,7 @@ class ChromaDBBackupUI:
         # 創建對話框
         dialog = tk.Toplevel(self.root)
         dialog.title("排程備份")
-        dialog.geometry("450x450")  # 增加高度確保所有元素可見
+        dialog.geometry("450x550")  # 增加高度以容納時間選擇器
         dialog.resizable(False, False)
         dialog.grab_set()
         
@@ -1747,17 +1802,17 @@ class ChromaDBBackupUI:
         
         # 間隔選擇
         interval_frame = ttk.Frame(main_frame)
-        interval_frame.pack(fill=X, pady=(0, 15))
+        interval_frame.pack(fill=X, pady=(0, 10)) # 減少 pady
         
         ttk.Label(interval_frame, text="備份間隔:").pack(anchor=W)
         
         interval_var = tk.StringVar(value="daily")
         
         intervals = [
-            ("每小時", "hourly"),
+            ("每小時 (忽略時間設定)", "hourly"), # 提示每小時忽略時間
             ("每天", "daily"),
-            ("每週", "weekly"),
-            ("每月", "monthly")
+            ("每週 (週一)", "weekly"), # 提示每週預設為週一
+            ("每月 (1號)", "monthly")  # 提示每月預設為1號
         ]
         
         for text, value in intervals:
@@ -1766,17 +1821,50 @@ class ChromaDBBackupUI:
                 text=text,
                 variable=interval_var,
                 value=value
-            ).pack(anchor=W, padx=(20, 0), pady=2)
+            ).pack(anchor=W, padx=(20, 0), pady=1) # 減少 pady
         
+        # 時間選擇 (小時和分鐘)
+        time_frame = ttk.Frame(main_frame)
+        time_frame.pack(fill=X, pady=(5, 10)) # 減少 pady
+        
+        ttk.Label(time_frame, text="執行時間 (HH:MM):").pack(side=LEFT, anchor=W)
+        
+        hour_var = tk.StringVar(value="00")
+        minute_var = tk.StringVar(value="00")
+        
+        # 小時 Spinbox
+        ttk.Spinbox(
+            time_frame,
+            from_=0,
+            to=23,
+            textvariable=hour_var,
+            width=3,
+            format="%02.0f" # 格式化為兩位數
+        ).pack(side=LEFT, padx=(5, 0))
+        
+        ttk.Label(time_frame, text=":").pack(side=LEFT, padx=2)
+        
+        # 分鐘 Spinbox
+        ttk.Spinbox(
+            time_frame,
+            from_=0,
+            to=59,
+            textvariable=minute_var,
+            width=3,
+            format="%02.0f" # 格式化為兩位數
+        ).pack(side=LEFT, padx=(0, 5))
+
+        ttk.Label(time_frame, text="(每小時排程將忽略此設定)").pack(side=LEFT, padx=(5,0), anchor=W)
+
         # 描述
         ttk.Label(main_frame, text="備份描述:").pack(anchor=W, pady=(0, 5))
         
         description_var = tk.StringVar(value="排程備份")
-        ttk.Entry(main_frame, textvariable=description_var, width=40).pack(fill=X, pady=(0, 15))
+        ttk.Entry(main_frame, textvariable=description_var, width=40).pack(fill=X, pady=(0, 10)) # 減少 pady
         
         # 保留數量
         keep_frame = ttk.Frame(main_frame)
-        keep_frame.pack(fill=X, pady=(0, 15))
+        keep_frame.pack(fill=X, pady=(0, 10)) # 減少 pady
         
         ttk.Label(keep_frame, text="最多保留備份數量:").pack(side=LEFT)
         
@@ -1795,13 +1883,12 @@ class ChromaDBBackupUI:
         ).pack(side=LEFT, padx=(5, 0))
         
         # 分隔線
-        ttk.Separator(main_frame, orient=HORIZONTAL).pack(fill=X, pady=15)
+        ttk.Separator(main_frame, orient=HORIZONTAL).pack(fill=X, pady=10) # 減少 pady
         
-        # 底部按鈕區 - 使用標準按鈕並確保可見性
+        # 底部按鈕區
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=X, pady=(10, 5))
+        btn_frame.pack(fill=X, pady=(5, 0)) # 減少 pady
         
-        # 取消按鈕 - 使用標準樣式
         cancel_btn = ttk.Button(
             btn_frame,
             text="取消",
@@ -1810,7 +1897,6 @@ class ChromaDBBackupUI:
         )
         cancel_btn.pack(side=LEFT, padx=(0, 10))
         
-        # 確認按鈕 - 使用標準樣式，避免自定義樣式可能的問題
         create_btn = ttk.Button(
             btn_frame,
             text="加入排程",
@@ -1819,22 +1905,22 @@ class ChromaDBBackupUI:
                 interval_var.get(),
                 description_var.get(),
                 keep_count_var.get(),
+                f"{hour_var.get()}:{minute_var.get()}", # 組合時間字串
                 dialog
             )
         )
         create_btn.pack(side=LEFT)
         
-        # 額外提示以確保用戶知道如何完成操作
         note_frame = ttk.Frame(main_frame)
-        note_frame.pack(fill=X, pady=(15, 0))
+        note_frame.pack(fill=X, pady=(10, 0)) # 減少 pady
         
         ttk.Label(
             note_frame,
             text="請確保點擊「加入排程」按鈕完成設置",
             foreground="blue"
         ).pack()
-    
-    def create_schedule(self, interval, description, keep_count_str, dialog):
+
+    def create_schedule(self, interval, description, keep_count_str, at_time_str, dialog):
         """創建備份排程"""
         dialog.destroy()
         
@@ -1843,15 +1929,26 @@ class ChromaDBBackupUI:
         except ValueError:
             keep_count = 0
         
-        success = self.backup.schedule_backup(interval, description, keep_count)
+        # 驗證時間格式
+        try:
+            time.strptime(at_time_str, "%H:%M")
+        except ValueError:
+            messagebox.showerror("錯誤", f"無效的時間格式: {at_time_str}. 請使用 HH:MM 格式.")
+            self.status_var.set("創建排程失敗: 無效的時間格式")
+            return
+
+        # 如果是每小時排程，則 at_time 設為 None
+        effective_at_time = at_time_str if interval != "hourly" else None
+
+        success = self.backup.schedule_backup(interval, description, keep_count, effective_at_time)
         
         if success:
-            self.status_var.set(f"已創建 {interval} 備份排程")
+            self.status_var.set(f"已創建 {interval} 備份排程 (時間: {effective_at_time if effective_at_time else '每小時'})")
             self.refresh_scheduled_jobs()
-            messagebox.showinfo("成功", f"已成功創建 {interval} 備份排程")
+            messagebox.showinfo("成功", f"已成功創建 {interval} 備份排程 (時間: {effective_at_time if effective_at_time else '每小時'})")
         else:
             self.status_var.set("創建排程失敗")
-            messagebox.showerror("錯誤", "無法創建備份排程")
+            messagebox.showerror("錯誤", "無法創建備份排程，請檢查日誌。")
     
     def quick_schedule(self, interval):
         """快速創建排程備份"""
@@ -1931,7 +2028,8 @@ class ChromaDBBackupUI:
                 success = self.backup._run_scheduled_backup(
                     job_id,
                     job_info["description"],
-                    job_info["interval"]
+                    job_info["interval"],
+                    job_info.get("at_time") # 傳遞 at_time
                 )
                 self.root.after(0, lambda: self.finalize_job_execution(success))
             
@@ -1971,7 +2069,7 @@ class ChromaDBBackupUI:
         ).pack(anchor=W, pady=(0, 15))
         
         # 創建表格
-        columns = ("id", "interval", "description", "next_run", "keep_count")
+        columns = ("id", "interval", "description", "next_run", "keep_count", "at_time") # 新增 at_time
         tree = ttk.Treeview(frame, columns=columns, show="headings", height=10)
         
         tree.heading("id", text="任務ID")
@@ -1979,12 +2077,14 @@ class ChromaDBBackupUI:
         tree.heading("description", text="描述")
         tree.heading("next_run", text="下次執行")
         tree.heading("keep_count", text="保留數量")
+        tree.heading("at_time", text="執行時間") # 新增
         
-        tree.column("id", width=150)
-        tree.column("interval", width=80)
-        tree.column("description", width=150)
-        tree.column("next_run", width=150)
-        tree.column("keep_count", width=80)
+        tree.column("id", width=120)
+        tree.column("interval", width=70)
+        tree.column("description", width=120)
+        tree.column("next_run", width=130)
+        tree.column("keep_count", width=70)
+        tree.column("at_time", width=70) # 新增
         
         # 添加數據
         for job in jobs:
@@ -1995,7 +2095,8 @@ class ChromaDBBackupUI:
                     job["interval"],
                     job["description"],
                     job["next_run"],
-                    job["keep_count"]
+                    job["keep_count"],
+                    job.get("at_time", "N/A") # 新增
                 )
             )
         

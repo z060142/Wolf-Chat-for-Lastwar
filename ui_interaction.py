@@ -4,6 +4,8 @@
 import pyautogui
 import cv2 # opencv-python
 import numpy as np
+import sys # Added for special character handling
+import io  # Added for special character handling
 import pyperclip
 import time
 import os
@@ -21,6 +23,26 @@ import math # Added for distance calculation in dual method
 # Using a simple mutable object (list) for thread-safe-like access without explicit lock
 # Or could use threading.Event()
 monitoring_paused_flag = [False] # List containing a boolean
+
+# --- Global Error Handling Setup for Text Encoding ---
+def handle_text_encoding(text, default_text="[無法處理的文字]"):
+    """安全處理任何文字，確保不會因編碼問題而崩潰程序"""
+    if text is None:
+        return default_text
+    
+    try:
+        # 嘗試使用 utf-8 編碼
+        return text
+    except UnicodeEncodeError:
+        try:
+            # 嘗試將特殊字符替換為可顯示字符
+            return text.encode('utf-8', errors='replace').decode('utf-8')
+        except:
+            # 最後手段：忽略任何無法處理的字符
+            try:
+                return text.encode('utf-8', errors='ignore').decode('utf-8')
+            except:
+                return default_text
 
 # --- Color Config Loading ---
 def load_bubble_colors(config_path='bubble_colors.json'):
@@ -1068,7 +1090,13 @@ class InteractionModule:
 
         if copied and copied_text and copied_text != "___MCP_CLEAR___":
             print(f"Successfully copied text, length: {len(copied_text)}")
-            return copied_text.strip()
+            # 添加編碼安全處理
+            try:
+                safe_text = handle_text_encoding(copied_text.strip())
+                return safe_text
+            except Exception as e:
+                print(f"Error handling copied text encoding: {str(e)}")
+                return copied_text.strip()  # 即使有問題也嘗試返回原始文字
         else:
             print("Error: Copy operation unsuccessful or clipboard content invalid.")
             return None
@@ -2115,17 +2143,31 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
                     # 7. Send Trigger Info to Main Thread
                     print("\n>>> Putting trigger info in Queue <<<")
-                    print(f"   Sender: {sender_name}")
-                    print(f"   Content: {bubble_text[:100]}...")
+                    try:
+                        # 安全地處理和顯示發送者名稱
+                        safe_sender_display = handle_text_encoding(sender_name, "[未知發送者]")
+                        print(f"   Sender: {safe_sender_display}")
+                        
+                        # 安全地處理和顯示消息內容
+                        if bubble_text:
+                            display_text = bubble_text[:100] + "..." if len(bubble_text) > 100 else bubble_text
+                            safe_content_display = handle_text_encoding(display_text, "[無法處理的文字內容]")
+                            print(f"   Content: {safe_content_display}")
+                        else:
+                            print("   Content: [空]")
+                    except Exception as e_display:
+                        print(f"Error displaying message info: {str(e_display)}")
+                    
                     print(f"   Bubble Region: {bubble_region}") # Original region for context
                     print(f"   Reply Context Activated: {reply_context_activated}")
                     try:
+                        # 確保所有文字數據都經過安全處理
                         data_to_send = {
-                            'sender': sender_name,
-                            'text': bubble_text,
-                            'bubble_region': bubble_region, # Send original region for context if needed
+                            'sender': handle_text_encoding(sender_name, "[未知發送者]"),
+                            'text': handle_text_encoding(bubble_text, "[無法處理的文字內容]"),
+                            'bubble_region': bubble_region,
                             'reply_context_activated': reply_context_activated,
-                            'bubble_snapshot': bubble_snapshot, # Send the snapshot used
+                            'bubble_snapshot': bubble_snapshot,
                             'search_area': search_area
                         }
                         trigger_queue.put(data_to_send)
@@ -2136,13 +2178,26 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         break # Exit the 'for target_bubble_info in sorted_bubbles' loop
 
                     except Exception as q_err:
-                        print(f"Error putting data in Queue: {q_err}")
-                        # Don't break if queue put fails, maybe try next bubble? Or log and break?
+                        print(f"Error preparing or enqueueing data: {q_err}")
+                        # 嘗試使用最小數據集合保證功能性
+                        try:
+                            minimal_data = {
+                                'sender': "[數據處理錯誤]",
+                                'text': handle_text_encoding(bubble_text[:100] if bubble_text else "[內容獲取失敗]"), # Apply encoding here too
+                                'bubble_region': bubble_region,
+                                'reply_context_activated': False, # Sensible default
+                                'bubble_snapshot': bubble_snapshot, # Keep snapshot if available
+                                'search_area': search_area
+                            }
+                            trigger_queue.put(minimal_data)
+                            print("Minimal fallback data placed in Queue after error.")
+                        except Exception as min_q_err:
+                            print(f"Critical failure: Could not place any data in queue: {min_q_err}")
                         # Let's break here too, as something is wrong.
                         print("Breaking scan cycle due to queue error.")
                         break
 
-                # End of keyword found block (if keyword_coords:)
+                # End of keyword found block (if result:)
             # End of loop through sorted bubbles (for target_bubble_info...)
 
             # If the loop finished without breaking (i.e., no trigger processed), wait the full interval.

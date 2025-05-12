@@ -19,6 +19,23 @@ import configparser
 from pathlib import Path
 import re
 import shutil
+import time
+import signal
+import logging
+import subprocess
+import threading
+import datetime
+import schedule
+import psutil
+import random # Added for exponential backoff jitter
+import urllib3 # Added for SSL warning suppression
+import game_manager # Added for new game monitoring module
+try:
+    import socketio
+    HAS_SOCKETIO = True
+except ImportError:
+    HAS_SOCKETIO = False
+# import ssl # ssl import might not be needed if socketio handles it or if not using wss directly in client setup
 
 # ===============================================================
 # Constants
@@ -26,6 +43,7 @@ import shutil
 VERSION = "1.0.0"
 CONFIG_TEMPLATE_PATH = "config_template.py"
 ENV_FILE_PATH = ".env"
+REMOTE_CONFIG_PATH = "remote_config.json" # New config file for remote settings
 # Use absolute path for chroma_data
 DEFAULT_CHROMA_DATA_PATH = os.path.abspath("chroma_data")
 DEFAULT_CONFIG_SECTION = """# ====================================================================
@@ -37,9 +55,69 @@ DEFAULT_CONFIG_SECTION = """# ==================================================
 # Get current Windows username for default paths
 CURRENT_USERNAME = os.getenv("USERNAME", "user")
 
+# Global variables for game/bot management
+game_process_instance = None
+bot_process_instance = None # This will replace/co-exist with self.running_process
+control_client_instance = None
+monitor_thread_instance = None # Renamed to avoid conflict if 'monitor_thread' is used elsewhere
+scheduler_thread_instance = None # Renamed
+keep_monitoring_flag = threading.Event() # Renamed for clarity
+keep_monitoring_flag.set()
+
+# Basic logging setup
+# logger = logging.getLogger("WolfChatSetup") # Defined later in class or globally if needed
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Setup logger instance. This can be configured further if needed.
+logger = logging.getLogger(__name__)
+if not logger.handlers: # Avoid adding multiple handlers if script is reloaded
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
 # ===============================================================
 # Helper Functions
 # ===============================================================
+def load_remote_config():
+    """Load remote control and restart settings from remote_config.json"""
+    defaults = {
+        "REMOTE_SERVER_URL": "YOUR_URL_HERE",
+        "REMOTE_CLIENT_KEY": "YOUR_KEY_HERE", # Placeholder
+        "DEFAULT_GAME_RESTART_INTERVAL_MINUTES": 120,
+        "DEFAULT_BOT_RESTART_INTERVAL_MINUTES": 120,
+        "LINK_RESTART_TIMES": True,
+        "GAME_PROCESS_NAME": "LastWar.exe", # Default game process name
+        "BOT_SCRIPT_NAME": "main.py" # Default bot script name
+    }
+    if os.path.exists(REMOTE_CONFIG_PATH):
+        try:
+            with open(REMOTE_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Ensure all keys from defaults are present, adding them if missing
+                for key, value in defaults.items():
+                    data.setdefault(key, value)
+                return data
+        except json.JSONDecodeError:
+            logger.error(f"Error decoding {REMOTE_CONFIG_PATH}. Using default remote settings.")
+            return defaults.copy() # Return a copy to avoid modifying defaults
+        except Exception as e:
+            logger.error(f"Error loading {REMOTE_CONFIG_PATH}: {e}. Using default remote settings.")
+            return defaults.copy()
+    logger.info(f"{REMOTE_CONFIG_PATH} not found. Creating with default values.")
+    save_remote_config(defaults.copy()) # Create the file if it doesn't exist
+    return defaults.copy()
+
+def save_remote_config(remote_data):
+    """Save remote control and restart settings to remote_config.json"""
+    try:
+        with open(REMOTE_CONFIG_PATH, 'w', encoding='utf-8') as f:
+            json.dump(remote_data, f, indent=4) # Use indent for readability
+        logger.info(f"Saved remote settings to {REMOTE_CONFIG_PATH}")
+    except Exception as e:
+        logger.error(f"Error saving {REMOTE_CONFIG_PATH}: {e}")
+
 def load_env_file():
     """Load existing .env file if it exists"""
     env_data = {}
@@ -230,6 +308,43 @@ def load_current_config():
             if bot_memory_collection_match:
                 config_data["BOT_MEMORY_COLLECTION"] = bot_memory_collection_match.group(1)
 
+            # Extract memory management settings
+            backup_hour_match = re.search(r'MEMORY_BACKUP_HOUR\s*=\s*(\d+)', config_content)
+            if backup_hour_match:
+                config_data["MEMORY_BACKUP_HOUR"] = int(backup_hour_match.group(1))
+
+            backup_minute_match = re.search(r'MEMORY_BACKUP_MINUTE\s*=\s*(\d+)', config_content)
+            if backup_minute_match:
+                config_data["MEMORY_BACKUP_MINUTE"] = int(backup_minute_match.group(1))
+
+            # Extract EMBEDDING_MODEL_NAME
+            embedding_model_match = re.search(r'EMBEDDING_MODEL_NAME\s*=\s*["\'](.+?)["\']', config_content)
+            if embedding_model_match:
+                config_data["EMBEDDING_MODEL_NAME"] = embedding_model_match.group(1)
+            else:
+                # Default if not found in config.py, will be set in UI if not overridden by load
+                config_data["EMBEDDING_MODEL_NAME"] = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+
+
+            profile_model_match = re.search(r'MEMORY_PROFILE_MODEL\s*=\s*["\']?(.+?)["\']?\s*(?:#|$)', config_content)
+            # Handle potential LLM_MODEL reference
+            if profile_model_match:
+                 profile_model_val = profile_model_match.group(1).strip()
+                 if profile_model_val == "LLM_MODEL":
+                     # If it refers to LLM_MODEL, use the already parsed LLM_MODEL value
+                     config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324") # Fallback if LLM_MODEL wasn't parsed
+                 else:
+                     config_data["MEMORY_PROFILE_MODEL"] = profile_model_val
+            else:
+                 # Default to LLM_MODEL if not found
+                 config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+
+
+            summary_model_match = re.search(r'MEMORY_SUMMARY_MODEL\s*=\s*["\'](.+?)["\']', config_content)
+            if summary_model_match:
+                config_data["MEMORY_SUMMARY_MODEL"] = summary_model_match.group(1)
+
+
         except Exception as e:
             print(f"Error reading config.py: {e}")
             import traceback
@@ -339,7 +454,9 @@ def generate_config_file(config_data, env_data):
                 f.write("            \"--client-type\",\n")
                 f.write("            \"persistent\",\n")
                 f.write("            \"--data-dir\",\n")
-                f.write(f"            \"{absolute_data_dir}\"\n")
+                # Escape backslashes in the path for the string literal in config.py
+                escaped_data_dir = absolute_data_dir.replace('\\', '\\\\')
+                f.write(f"            \"{escaped_data_dir}\"\n")
                 f.write("        ]\n")
             
             # Handle custom server - just write as raw JSON
@@ -415,7 +532,30 @@ def generate_config_file(config_data, env_data):
         f.write(f"# This path will be made absolute when config.py is loaded.\n")
         # Write the potentially relative path from UI/default, let config.py handle abspath
         # Use raw string r"..." to handle potential backslashes in Windows paths correctly within the string literal
-        f.write(f"CHROMA_DATA_DIR = os.path.abspath(r\"{normalized_chroma_path}\")\n")
+        f.write(f"CHROMA_DATA_DIR = os.path.abspath(r\"{normalized_chroma_path}\")\n\n")
+
+        # Write Memory Management Configuration
+        f.write("# =============================================================================\n")
+        f.write("# Memory Management Configuration\n")
+        f.write("# =============================================================================\n")
+        backup_hour = config_data.get('MEMORY_BACKUP_HOUR', 0)
+        backup_minute = config_data.get('MEMORY_BACKUP_MINUTE', 0)
+        profile_model = config_data.get('MEMORY_PROFILE_MODEL', 'LLM_MODEL') # Default to referencing LLM_MODEL
+        summary_model = config_data.get('MEMORY_SUMMARY_MODEL', 'mistral-7b-instruct')
+
+        f.write(f"MEMORY_BACKUP_HOUR = {backup_hour}\n")
+        f.write(f"MEMORY_BACKUP_MINUTE = {backup_minute}\n")
+        # Write profile model, potentially referencing LLM_MODEL
+        if profile_model == config_data.get('LLM_MODEL'):
+            f.write(f"MEMORY_PROFILE_MODEL = LLM_MODEL # Default to main LLM model\n")
+        else:
+            f.write(f"MEMORY_PROFILE_MODEL = \"{profile_model}\"\n")
+        f.write(f"MEMORY_SUMMARY_MODEL = \"{summary_model}\"\n\n")
+
+        # Write Embedding Model Name
+        embedding_model_name = config_data.get('EMBEDDING_MODEL_NAME', "sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        f.write("# Embedding model for ChromaDB\n")
+        f.write(f"EMBEDDING_MODEL_NAME = \"{embedding_model_name}\"\n")
 
 
     print("Generated config.py file successfully")
@@ -434,6 +574,7 @@ class WolfChatSetup(tk.Tk):
         # Load existing data
         self.env_data = load_env_file()
         self.config_data = load_current_config()
+        self.remote_data = load_remote_config() # Load new remote config
         
         # Create the notebook for tabs
         self.notebook = ttk.Notebook(self)
@@ -443,17 +584,708 @@ class WolfChatSetup(tk.Tk):
         self.create_api_tab()
         self.create_mcp_tab()
         self.create_game_tab()
-        self.create_memory_tab() # 新增記憶設定標籤頁
+        self.create_memory_tab() 
+        self.create_memory_management_tab() # 新增記憶管理標籤頁
+        self.create_management_tab() # New tab for combined management
 
         # Create bottom buttons
         self.create_bottom_buttons()
         
-        # Initialize running process tracker
-        self.running_process = None
+        # Initialize running process tracker (will be managed by new system)
+        self.running_process = None # This might be replaced by bot_process_instance
         
+        # Initialize new process management variables
+        self.bot_process_instance = None
+        self.game_process_instance = None
+        self.control_client_instance = None
+        self.monitor_thread_instance = None
+        self.scheduler_thread_instance = None
+        self.keep_monitoring_flag = threading.Event()
+        self.keep_monitoring_flag.set()
+
+        # Initialize scheduler process tracker
+        self.scheduler_process = None
+        
+        # Initialize game monitor instance (will be created in start_managed_session)
+        self.game_monitor = None
+
+
         # Set initial states based on loaded data
         self.update_ui_from_data()
+        self.update_scheduler_button_states(True) # Set initial scheduler button state
     
+    def create_management_tab(self):
+        """Create the Bot and Game Management tab"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Management")
+        
+        main_frame = ttk.Frame(tab, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        header = ttk.Label(main_frame, text="Bot & Game Management", font=("", 12, "bold"))
+        header.pack(anchor=tk.W, pady=(0, 10))
+
+        # --- Remote Control Settings ---
+        remote_frame = ttk.LabelFrame(main_frame, text="Remote Control Settings")
+        remote_frame.pack(fill=tk.X, pady=10)
+
+        # Remote Server URL
+        remote_url_frame = ttk.Frame(remote_frame)
+        remote_url_frame.pack(fill=tk.X, pady=5, padx=10)
+        remote_url_label = ttk.Label(remote_url_frame, text="Server URL:", width=15)
+        remote_url_label.pack(side=tk.LEFT)
+        self.remote_url_var = tk.StringVar(value=self.remote_data.get("REMOTE_SERVER_URL", ""))
+        remote_url_entry = ttk.Entry(remote_url_frame, textvariable=self.remote_url_var)
+        remote_url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Remote Client Key
+        remote_key_frame = ttk.Frame(remote_frame)
+        remote_key_frame.pack(fill=tk.X, pady=5, padx=10)
+        remote_key_label = ttk.Label(remote_key_frame, text="Client Key:", width=15)
+        remote_key_label.pack(side=tk.LEFT)
+        self.remote_key_var = tk.StringVar(value=self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+        remote_key_entry = ttk.Entry(remote_key_frame, textvariable=self.remote_key_var, show="*")
+        remote_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        self.show_remote_key_var = tk.BooleanVar(value=False)
+        show_remote_key_cb = ttk.Checkbutton(remote_key_frame, text="Show", variable=self.show_remote_key_var,
+                                     command=lambda: self.toggle_field_visibility(remote_key_entry, self.show_remote_key_var))
+        show_remote_key_cb.pack(side=tk.LEFT, padx=(5,0))
+
+
+        # --- Restart Settings ---
+        restart_settings_frame = ttk.LabelFrame(main_frame, text="Restart Settings")
+        restart_settings_frame.pack(fill=tk.X, pady=10)
+
+        # Game Restart Interval
+        game_interval_frame = ttk.Frame(restart_settings_frame)
+        game_interval_frame.pack(fill=tk.X, pady=5, padx=10)
+        game_interval_label = ttk.Label(game_interval_frame, text="Game Restart Interval (min):", width=25)
+        game_interval_label.pack(side=tk.LEFT)
+        self.game_restart_interval_var = tk.IntVar(value=self.remote_data.get("DEFAULT_GAME_RESTART_INTERVAL_MINUTES", 120))
+        game_interval_spinbox = ttk.Spinbox(game_interval_frame, from_=0, to=1440, width=7, textvariable=self.game_restart_interval_var)
+        game_interval_spinbox.pack(side=tk.LEFT)
+        game_interval_info = ttk.Label(game_interval_frame, text="(0 to disable)")
+        game_interval_info.pack(side=tk.LEFT, padx=(5,0))
+
+
+        # Bot Restart Interval
+        bot_interval_frame = ttk.Frame(restart_settings_frame)
+        bot_interval_frame.pack(fill=tk.X, pady=5, padx=10)
+        bot_interval_label = ttk.Label(bot_interval_frame, text="Bot Restart Interval (min):", width=25)
+        bot_interval_label.pack(side=tk.LEFT)
+        self.bot_restart_interval_var = tk.IntVar(value=self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 120))
+        bot_interval_spinbox = ttk.Spinbox(bot_interval_frame, from_=0, to=1440, width=7, textvariable=self.bot_restart_interval_var)
+        bot_interval_spinbox.pack(side=tk.LEFT)
+        bot_interval_info = ttk.Label(bot_interval_frame, text="(0 to disable)")
+        bot_interval_info.pack(side=tk.LEFT, padx=(5,0))
+
+        # Link Restart Times
+        link_restarts_frame = ttk.Frame(restart_settings_frame)
+        link_restarts_frame.pack(fill=tk.X, pady=5, padx=10)
+        self.link_restarts_var = tk.BooleanVar(value=self.remote_data.get("LINK_RESTART_TIMES", True))
+        link_restarts_cb = ttk.Checkbutton(link_restarts_frame, text="Link Game and Bot restart times (use Game interval if linked)", variable=self.link_restarts_var)
+        link_restarts_cb.pack(anchor=tk.W)
+
+        # Game Process Name
+        game_proc_name_frame = ttk.Frame(restart_settings_frame)
+        game_proc_name_frame.pack(fill=tk.X, pady=5, padx=10)
+        game_proc_name_label = ttk.Label(game_proc_name_frame, text="Game Process Name:", width=25)
+        game_proc_name_label.pack(side=tk.LEFT)
+        self.game_process_name_var = tk.StringVar(value=self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe"))
+        game_proc_name_entry = ttk.Entry(game_proc_name_frame, textvariable=self.game_process_name_var)
+        game_proc_name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+
+        # --- Control Buttons ---
+        control_buttons_frame = ttk.Frame(main_frame)
+        control_buttons_frame.pack(fill=tk.X, pady=20)
+
+        self.start_managed_button = ttk.Button(control_buttons_frame, text="Start Managed Bot & Game", command=self.start_managed_session)
+        self.start_managed_button.pack(side=tk.LEFT, padx=5)
+
+        self.stop_managed_button = ttk.Button(control_buttons_frame, text="Stop Managed Session", command=self.stop_managed_session, state=tk.DISABLED)
+        self.stop_managed_button.pack(side=tk.LEFT, padx=5)
+        
+        # Status Area (Optional, for displaying logs or status messages)
+        status_label = ttk.Label(main_frame, text="Status messages will appear in the console.")
+        status_label.pack(pady=10)
+
+    def start_managed_session(self):
+        logger.info("Attempting to start managed session...")
+        # This will be the new main function to start bot, game, and monitoring
+        
+        # Ensure previous session is stopped if any
+        if self.bot_process_instance or self.game_process_instance or self.monitor_thread_instance:
+            messagebox.showwarning("Session Active", "A managed session might already be active. Please stop it first or check console.")
+            # self.stop_managed_session() # Optionally force stop
+            # time.sleep(1) # Give time to stop
+            # return
+
+        # Save current settings before starting
+        self.save_settings(show_success_message=False) # Save without showing popup, or make it optional
+
+        self.keep_monitoring_flag.set() # Ensure monitoring is enabled
+
+        # Start Game
+        if not self._start_game_managed():
+            messagebox.showerror("Error", "Failed to start the game.")
+            self.update_management_buttons_state(True) # Enable start, disable stop
+            return
+        
+        time.sleep(5) # Give game some time to initialize
+
+        # Start Bot (main.py)
+        if not self._start_bot_managed():
+            messagebox.showerror("Error", "Failed to start the bot (main.py).")
+            self._stop_game_managed() # Stop game if bot fails to start
+            self.update_management_buttons_state(True)
+            return
+
+        # Start Control Client
+        if HAS_SOCKETIO:
+            self._start_control_client()
+        else:
+            logger.warning("socketio library not found. Remote control will be disabled.")
+            messagebox.showwarning("Socket.IO Missing", "The 'python-socketio[client]' library is not installed. Remote control features will be disabled. Please install it via 'pip install \"python-socketio[client]\"' or use the 'Install Dependencies' button.")
+
+
+        # Start Monitoring Thread
+        self._start_monitoring_thread() # This is the old general monitoring thread
+
+        # Initialize and start GameMonitor (new specific game monitor)
+        try:
+            # Create callback function for game_monitor
+            def game_monitor_callback(action):
+                logger.info(f"Received action from game_manager: {action}")
+                if action == "restart_complete":
+                    # Schedule _handle_game_restart_complete to run in the main thread
+                    self.after(0, self._handle_game_restart_complete)
+                # Add other actions if needed, e.g., "restart_begin", "restart_error"
+
+            # Create GameMonitor instance if it doesn't exist
+            if not self.game_monitor:
+                self.game_monitor = game_manager.create_game_monitor(
+                    config_data=self.config_data,
+                    remote_data=self.remote_data,
+                    logger=logger, # Use the main Setup logger
+                    callback=game_monitor_callback
+                )
+            
+            # Start the game monitor
+            if self.game_monitor.start(): # Ensure start() returns a boolean
+                logger.info("Game monitor (game_manager) started successfully.")
+            else:
+                logger.error("Failed to start game_manager's GameMonitor.")
+                messagebox.showwarning("Warning", "Game window monitoring (game_manager) could not be started.")
+                # Continue execution, not a fatal error for the whole session
+
+        except Exception as gm_err:
+            logger.exception(f"Error setting up game_manager's GameMonitor: {gm_err}")
+            messagebox.showwarning("Warning", "Failed to initialize game_manager's GameMonitor.")
+            # Continue execution
+        
+        # Start Scheduler Thread
+        self._start_scheduler_thread()
+
+        self.update_management_buttons_state(False) # Disable start, enable stop
+        # messagebox.showinfo("Session Started", "Managed bot and game session started. Check console for logs.") # Removed popup
+        logger.info("Managed bot and game session started. Check console for logs.") # Log instead of popup
+
+    def _handle_game_restart_complete(self):
+        """Handles the callback from GameMonitor when a game restart is complete."""
+        logger.info("Game restart completed (callback from game_manager). Handling bot restart...")
+        try:
+            # Ensure we are in the main thread (already handled by self.after)
+            # Wait a bit for the game to stabilize
+            time.sleep(10) 
+
+            logger.info("Restarting bot after game restart (triggered by game_manager)...")
+            if self._restart_bot_managed():
+                logger.info("Bot restarted successfully after game_manager's game restart.")
+            else:
+                logger.error("Failed to restart bot after game_manager's game restart!")
+                messagebox.showwarning("Warning", "Failed to restart bot after game_manager's game restart.")
+        except Exception as e:
+            logger.exception(f"Error in _handle_game_restart_complete: {e}")
+
+    def stop_managed_session(self):
+        logger.info("Attempting to stop managed session...")
+        self.keep_monitoring_flag.clear() # Signal threads to stop
+
+        if self.control_client_instance:
+            self._stop_control_client()
+
+        if self.scheduler_thread_instance and self.scheduler_thread_instance.is_alive():
+            logger.info("Waiting for scheduler thread to stop...")
+            self.scheduler_thread_instance.join(timeout=5)
+            if self.scheduler_thread_instance.is_alive():
+                logger.warning("Scheduler thread did not stop in time.")
+        self.scheduler_thread_instance = None
+        schedule.clear()
+
+
+        if self.monitor_thread_instance and self.monitor_thread_instance.is_alive():
+            logger.info("Waiting for monitor thread to stop...")
+            self.monitor_thread_instance.join(timeout=5)
+            if self.monitor_thread_instance.is_alive():
+                logger.warning("Monitor thread did not stop in time.")
+        self.monitor_thread_instance = None
+
+        # Stop GameMonitor (from game_manager)
+        if self.game_monitor:
+            try:
+                if self.game_monitor.stop(): # Ensure stop() returns a boolean
+                    logger.info("Game monitor (game_manager) stopped successfully.")
+                else:
+                    logger.warning("Game monitor (game_manager) stop may have failed.")
+            except Exception as gm_err:
+                logger.exception(f"Error stopping game_manager's GameMonitor: {gm_err}")
+            finally:
+                self.game_monitor = None # Release the instance
+
+        self._stop_bot_managed()
+        self._stop_game_managed()
+        
+        # Reset process instances
+        self.bot_process_instance = None
+        self.game_process_instance = None
+        
+        self.update_management_buttons_state(True) # Enable start, disable stop
+        messagebox.showinfo("Session Stopped", "Managed bot and game session stopped.")
+
+    def update_management_buttons_state(self, enable_start):
+        if hasattr(self, 'start_managed_button'):
+            self.start_managed_button.config(state=tk.NORMAL if enable_start else tk.DISABLED)
+        if hasattr(self, 'stop_managed_button'):
+            self.stop_managed_button.config(state=tk.DISABLED if enable_start else tk.NORMAL)
+
+    # Placeholder for game/bot start/stop/check methods to be integrated
+    # These will be adapted from wolf_control.py and use self.config_data and self.remote_data
+
+    def _find_process_by_name(self, process_name):
+        """Find a process by name using psutil."""
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if proc.info['name'].lower() == process_name.lower():
+                    return proc
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        return None
+
+    def _is_game_running_managed(self):
+        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+        if self.game_process_instance and self.game_process_instance.poll() is None:
+            # Check if the process name matches, in case Popen object is stale but a process with same PID exists
+            try:
+                p = psutil.Process(self.game_process_instance.pid)
+                if p.name().lower() == game_process_name.lower():
+                    return True
+            except psutil.NoSuchProcess:
+                self.game_process_instance = None # Stale process object
+                return False # Popen object is stale and process is gone
+        
+        # Fallback to checking by name if self.game_process_instance is None or points to a dead/wrong process
+        return self._find_process_by_name(game_process_name) is not None
+
+    def _start_game_managed(self):
+        global game_process_instance
+        game_exe_path = self.config_data.get("GAME_WINDOW_CONFIG", {}).get("GAME_EXECUTABLE_PATH")
+        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+
+        if not game_exe_path:
+            logger.error("Game executable path not configured.")
+            messagebox.showerror("Config Error", "Game executable path is not set in Game Settings.")
+            return False
+
+        if self._is_game_running_managed():
+            logger.info(f"Game ({game_process_name}) is already running.")
+            # Try to get a Popen object if we don't have one
+            if not self.game_process_instance:
+                 existing_proc = self._find_process_by_name(game_process_name)
+                 if existing_proc:
+                     # We can't directly create a Popen object for an existing process this way easily.
+                     # For now, we'll just acknowledge it's running.
+                     # For full control, it's best if this script starts it.
+                     logger.info(f"Found existing game process PID: {existing_proc.pid}. Monitoring without direct Popen control.")
+            return True
+        
+        try:
+            logger.info(f"Starting game: {game_exe_path}")
+            # Use shell=False and pass arguments as a list if possible, but for .exe, shell=True is often more reliable on Windows
+            # For better process control, avoid shell=True if not strictly necessary.
+            # However, if GAME_EXE_PATH can contain spaces or needs shell interpretation, shell=True might be needed.
+            # For now, let's assume GAME_EXE_PATH is a direct path to an executable.
+            self.game_process_instance = subprocess.Popen(game_exe_path, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            game_process_instance = self.game_process_instance # Update global if used by other parts from wolf_control
+            
+            # Wait a bit for the process to appear in psutil
+            time.sleep(2) 
+            if self._is_game_running_managed():
+                logger.info(f"Game ({game_process_name}) started successfully with PID {self.game_process_instance.pid}.")
+                return True
+            else:
+                logger.warning(f"Game ({game_process_name}) did not appear to start correctly after Popen call.")
+                self.game_process_instance = None # Clear if it failed
+                game_process_instance = None
+                return False
+        except Exception as e:
+            logger.exception(f"Error starting game: {e}")
+            self.game_process_instance = None
+            game_process_instance = None
+            return False
+
+    def _stop_game_managed(self):
+        global game_process_instance
+        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+        stopped = False
+        if self.game_process_instance and self.game_process_instance.poll() is None:
+            logger.info(f"Stopping game process (PID: {self.game_process_instance.pid}) started by this manager...")
+            try:
+                self.game_process_instance.terminate()
+                self.game_process_instance.wait(timeout=5) # Wait for termination
+                logger.info("Game process terminated.")
+                stopped = True
+            except subprocess.TimeoutExpired:
+                logger.warning("Game process did not terminate in time, killing...")
+                self.game_process_instance.kill()
+                self.game_process_instance.wait(timeout=5)
+                logger.info("Game process killed.")
+                stopped = True
+            except Exception as e:
+                logger.error(f"Error terminating/killing own game process: {e}")
+            self.game_process_instance = None
+            game_process_instance = None
+
+        # If not stopped or no instance, try to find and kill by name
+        if not stopped:
+            proc_to_kill = self._find_process_by_name(game_process_name)
+            if proc_to_kill:
+                logger.info(f"Found game process '{game_process_name}' (PID: {proc_to_kill.pid}). Attempting to terminate...")
+                try:
+                    proc_to_kill.terminate()
+                    proc_to_kill.wait(timeout=5) # psutil's wait
+                    logger.info(f"Game process '{game_process_name}' terminated.")
+                    stopped = True
+                except psutil.TimeoutExpired:
+                    logger.warning(f"Game process '{game_process_name}' did not terminate, killing...")
+                    proc_to_kill.kill()
+                    proc_to_kill.wait(timeout=5)
+                    logger.info(f"Game process '{game_process_name}' killed.")
+                    stopped = True
+                except Exception as e:
+                    logger.error(f"Error terminating/killing game process by name '{game_process_name}': {e}")
+            else:
+                logger.info(f"Game process '{game_process_name}' not found running.")
+                stopped = True # Considered stopped if not found
+        
+        if self.game_process_instance: # Clear Popen object if it exists
+             self.game_process_instance = None
+             game_process_instance = None
+        return stopped
+
+    def _is_bot_running_managed(self):
+        bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        if self.bot_process_instance and self.bot_process_instance.poll() is None:
+            # Verify it's the correct script, in case of PID reuse
+            try:
+                p = psutil.Process(self.bot_process_instance.pid)
+                if sys.executable in p.cmdline() and any(bot_script_name in arg for arg in p.cmdline()):
+                    return True
+            except psutil.NoSuchProcess:
+                self.bot_process_instance = None # Stale process object
+                return False
+        
+        # Fallback: Check for any python process running the bot script
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = proc.cmdline()
+                if cmdline and sys.executable in cmdline[0] and any(bot_script_name in arg for arg in cmdline):
+                    # If we find one, and don't have an instance, we can't control it directly with Popen
+                    # but we know it's running.
+                    if not self.bot_process_instance:
+                        logger.info(f"Found external bot process (PID: {proc.pid}). Monitoring without direct Popen control.")
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
+                continue # Ignore processes that died or we can't access, or have empty cmdline
+        return False
+
+    def _start_bot_managed(self):
+        global bot_process_instance # For compatibility if other parts use global
+        bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        if not os.path.exists(bot_script_name):
+            messagebox.showerror("Error", f"Could not find bot script: {bot_script_name}")
+            return False
+
+        if self._is_bot_running_managed():
+            logger.info(f"Bot ({bot_script_name}) is already running.")
+            return True # Or handle acquiring Popen object if possible (complex)
+
+        try:
+            logger.info(f"Starting bot: {sys.executable} {bot_script_name}")
+            # Ensure CWD is script's directory if main.py relies on relative paths
+            script_dir = os.path.dirname(os.path.abspath(__file__)) 
+            current_env = os.environ.copy()
+            current_env["PYTHONIOENCODING"] = "utf-8"
+            self.bot_process_instance = subprocess.Popen(
+                [sys.executable, bot_script_name],
+                cwd=script_dir, # Run main.py from its directory
+                stdout=subprocess.PIPE, # Capture output
+                stderr=subprocess.STDOUT, # Redirect stderr to stdout
+                text=True,
+                encoding='utf-8', # Specify UTF-8 encoding
+                errors='replace', # Handle potential encoding errors
+                bufsize=1, # Line buffered
+                env=current_env # Set PYTHONIOENCODING
+            )
+            bot_process_instance = self.bot_process_instance # Update global
+
+            # Start a thread to log bot's output
+            threading.Thread(target=self._log_subprocess_output, args=(self.bot_process_instance, "Bot"), daemon=True).start()
+
+            logger.info(f"Bot ({bot_script_name}) started successfully with PID {self.bot_process_instance.pid}.")
+            return True
+        except Exception as e:
+            logger.exception(f"Error starting bot: {e}")
+            self.bot_process_instance = None
+            bot_process_instance = None
+            return False
+
+    def _log_subprocess_output(self, process, name):
+        """Reads and logs output from a subprocess."""
+        if not process or not process.stdout:
+            logger.error(f"No process or stdout to log for {name}.")
+            return
+        
+        logger.info(f"Started logging output for {name} (PID: {process.pid}).")
+        try:
+            for line in iter(process.stdout.readline, ''):
+                if line:
+                    logger.info(f"[{name}] {line.strip()}")
+                if process.poll() is not None and not line: # Process ended and no more output
+                    break
+            process.stdout.close()
+        except Exception as e:
+            logger.error(f"Error logging output for {name}: {e}")
+        finally:
+            return_code = process.wait()
+            logger.info(f"{name} process (PID: {process.pid}) exited with code {return_code}.")
+
+
+    def _stop_bot_managed(self):
+        global bot_process_instance
+        bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        stopped = False
+
+        if self.bot_process_instance and self.bot_process_instance.poll() is None:
+            logger.info(f"Stopping bot process (PID: {self.bot_process_instance.pid}) started by this manager...")
+            try:
+                self.bot_process_instance.terminate()
+                self.bot_process_instance.wait(timeout=5)
+                logger.info("Bot process terminated.")
+                stopped = True
+            except subprocess.TimeoutExpired:
+                logger.warning("Bot process did not terminate in time, killing...")
+                self.bot_process_instance.kill()
+                self.bot_process_instance.wait(timeout=5)
+                logger.info("Bot process killed.")
+                stopped = True
+            except Exception as e:
+                logger.error(f"Error terminating/killing own bot process: {e}")
+            self.bot_process_instance = None
+            bot_process_instance = None
+        
+        # Fallback: find and kill any python process running the bot script
+        if not stopped:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    cmdline = proc.cmdline()
+                    if cmdline and sys.executable in cmdline[0] and any(bot_script_name in arg for arg in cmdline):
+                        logger.info(f"Found bot process '{bot_script_name}' (PID: {proc.pid}). Attempting to terminate...")
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                        logger.info(f"Bot process '{bot_script_name}' terminated.")
+                        stopped = True
+                        break # Assume only one instance for now
+                except psutil.TimeoutExpired:
+                    logger.warning(f"Bot process '{bot_script_name}' (PID: {proc.pid}) did not terminate, killing...")
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    logger.info(f"Bot process '{bot_script_name}' killed.")
+                    stopped = True
+                    break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
+                    continue
+        
+        if not stopped: # If no Popen instance and no external process found
+            logger.info(f"Bot process '{bot_script_name}' not found running.")
+            stopped = True
+
+        if self.bot_process_instance: # Clear Popen object if it exists
+            self.bot_process_instance = None
+            bot_process_instance = None
+        return stopped
+
+    def _restart_game_managed(self):
+        logger.info("Restarting game (managed)...")
+        # If GameMonitor (from game_manager) exists and is running, use it to restart
+        if self.game_monitor and self.game_monitor.running:
+            logger.info("Using game_manager's GameMonitor to restart game.")
+            return self.game_monitor.restart_now()
+        else:
+            # Fallback to the original method if game_monitor is not active
+            logger.info("game_manager's GameMonitor not active, using default method to restart game.")
+            self._stop_game_managed()
+            time.sleep(2) # Give it time to fully stop
+            return self._start_game_managed()
+
+    def _restart_bot_managed(self):
+        logger.info("Restarting bot (managed)...")
+        self._stop_bot_managed()
+        time.sleep(2) # Give it time to fully stop
+        return self._start_bot_managed()
+
+    def _restart_all_managed(self):
+        logger.info("Performing full restart (bot and game)...")
+        self._stop_bot_managed()
+        self._stop_game_managed()
+        time.sleep(3)
+        game_started = self._start_game_managed()
+        if game_started:
+            time.sleep(10) # Wait for game to initialize
+            bot_started = self._start_bot_managed()
+            if not bot_started:
+                logger.error("Failed to restart bot after restarting game.")
+                return False
+        else:
+            logger.error("Failed to restart game during full restart.")
+            # Optionally try to start bot anyway or declare full failure
+            # self._start_bot_managed() 
+            return False
+        
+        logger.info("Full restart completed.")
+        # Update last restart time if tracking it
+        # self.last_restart_time = datetime.datetime.now() 
+        return True
+
+    def _start_monitoring_thread(self):
+        if self.monitor_thread_instance and self.monitor_thread_instance.is_alive():
+            logger.info("Monitor thread already running.")
+            return
+
+        self.monitor_thread_instance = threading.Thread(target=self._monitoring_loop, daemon=True)
+        self.monitor_thread_instance.start()
+        logger.info("Started monitoring thread.")
+
+    def _monitoring_loop(self):
+        logger.info("Monitoring loop started.")
+        while self.keep_monitoring_flag.is_set():
+            try:
+                # Check game
+                if not self._is_game_running_managed():
+                    if self.game_process_instance is None : # Only restart if we are supposed to manage it or it was started by us and died
+                        logger.warning("Managed game process not found. Attempting to restart game...")
+                        self._start_game_managed() # Or _restart_game_managed()
+                
+                # Check bot
+                if not self._is_bot_running_managed():
+                     if self.bot_process_instance is None: # Only restart if we are supposed to manage it or it was started by us and died
+                        logger.warning("Managed bot process not found. Attempting to restart bot...")
+                        self._start_bot_managed() # Or _restart_bot_managed()
+
+                # Check for remote commands (if control_client_instance is set up)
+                if self.control_client_instance and hasattr(self.control_client_instance, 'check_signals'):
+                    self.control_client_instance.check_signals(self) # Pass self (WolfChatSetup instance)
+
+                time.sleep(self.config_data.get("GAME_WINDOW_CONFIG", {}).get("MONITOR_INTERVAL_SECONDS", 5))
+            except Exception as e:
+                logger.exception(f"Error in monitoring loop: {e}")
+                time.sleep(10) # Wait longer after an error
+        logger.info("Monitoring loop stopped.")
+
+    def _start_scheduler_thread(self):
+        if self.scheduler_thread_instance and self.scheduler_thread_instance.is_alive():
+            logger.info("Scheduler thread already running.")
+            return
+        
+        self._setup_scheduled_restarts() # Setup jobs based on current config
+
+        self.scheduler_thread_instance = threading.Thread(target=self._run_scheduler, daemon=True)
+        self.scheduler_thread_instance.start()
+        logger.info("Started scheduler thread.")
+
+    def _run_scheduler(self):
+        logger.info("Scheduler loop started.")
+        while self.keep_monitoring_flag.is_set(): # Use same flag as monitor
+            schedule.run_pending()
+            time.sleep(1)
+        logger.info("Scheduler loop stopped.")
+
+    def _setup_scheduled_restarts(self):
+        schedule.clear() # Clear previous jobs
+        
+        link_restarts = self.remote_data.get("LINK_RESTART_TIMES", True)
+        game_interval = self.remote_data.get("DEFAULT_GAME_RESTART_INTERVAL_MINUTES", 0)
+        bot_interval = self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 0)
+
+        if link_restarts and game_interval > 0:
+            logger.info(f"Scheduling linked restart (game & bot) every {game_interval} minutes.")
+            schedule.every(game_interval).minutes.do(self._restart_all_managed)
+        else:
+            if game_interval > 0:
+                logger.info(f"Scheduling game restart every {game_interval} minutes.")
+                schedule.every(game_interval).minutes.do(self._restart_game_managed)
+            if bot_interval > 0:
+                logger.info(f"Scheduling bot restart every {bot_interval} minutes.")
+                schedule.every(bot_interval).minutes.do(self._restart_bot_managed)
+        
+        if not schedule.jobs:
+            logger.info("No scheduled restarts configured.")
+
+
+    def _start_control_client(self):
+        if not HAS_SOCKETIO:
+            logger.warning("Cannot start ControlClient: python-socketio is not installed.")
+            return
+
+        if self.control_client_instance and self.control_client_instance.is_connected(): # is_connected or similar check
+            logger.info("Control client already connected.")
+            return
+
+        server_url = self.remote_data.get("REMOTE_SERVER_URL")
+        client_key = self.remote_data.get("REMOTE_CLIENT_KEY")
+
+        if not server_url or not client_key:
+            logger.warning("Remote server URL or client key not configured. Cannot start control client.")
+            messagebox.showwarning("Remote Config Missing", "Remote Server URL or Client Key is not set in Management tab.")
+            return
+
+        self.control_client_instance = ControlClient(server_url, client_key, wolf_chat_setup_instance=self) # Pass self
+        # The ControlClient should handle its own connection thread.
+        # self.control_client_instance.start_thread() or similar method
+        if self.control_client_instance.run_in_thread(): # Assuming run_in_thread starts the connection attempt
+             logger.info("Control client thread started.")
+        else:
+             logger.error("Failed to start control client thread.")
+             self.control_client_instance = None
+
+
+    def _stop_control_client(self):
+        if self.control_client_instance:
+            logger.info("Stopping control client...")
+            self.control_client_instance.stop() # This should handle thread shutdown
+            self.control_client_instance = None
+            logger.info("Control client stopped.")
+
+    def on_closing(self):
+        """Handle window close event."""
+        if messagebox.askokcancel("Quit", "Do you want to quit Wolf Chat Setup? This will stop any managed sessions and running scripts."):
+            print("Closing Setup...")
+            self.stop_managed_session() # Stop bot/game managed session if running
+            self.stop_process() # Stop bot/test script if running independently
+            self.stop_memory_scheduler() # Stop scheduler if running
+            self.destroy()
+
     def create_api_tab(self):
         """Create the API Settings tab"""
         tab = ttk.Frame(self.notebook)
@@ -853,25 +1685,21 @@ class WolfChatSetup(tk.Tk):
         height_entry = ttk.Spinbox(size_frame, textvariable=self.height_var, from_=300, to=3000, width=5)
         height_entry.pack(side=tk.LEFT)
         
-        # Auto-restart settings
-        restart_frame = ttk.LabelFrame(main_frame, text="Auto-Restart Settings")
-        restart_frame.pack(fill=tk.X, pady=10)
+        # Auto-restart settings (Now managed by 'Management' tab)
+        restart_info_frame = ttk.LabelFrame(main_frame, text="Auto-Restart Settings (Legacy)")
+        restart_info_frame.pack(fill=tk.X, pady=10)
         
-        self.restart_var = tk.BooleanVar(value=True)
-        restart_cb = ttk.Checkbutton(restart_frame, text="Enable scheduled game restart", variable=self.restart_var)
-        restart_cb.pack(anchor=tk.W, padx=10, pady=5)
+        legacy_restart_label = ttk.Label(restart_info_frame, 
+                                         text="Scheduled game/bot restarts are now configured in the 'Management' tab.",
+                                         justify=tk.LEFT, wraplength=680)
+        legacy_restart_label.pack(padx=10, pady=10, anchor=tk.W)
+
+        # Keep the variables for config.py compatibility if other parts of the app might read them,
+        # but their UI controls are removed from here.
+        self.restart_var = tk.BooleanVar(value=self.config_data.get("GAME_WINDOW_CONFIG", {}).get("ENABLE_SCHEDULED_RESTART", True))
+        self.interval_var = tk.IntVar(value=self.config_data.get("GAME_WINDOW_CONFIG", {}).get("RESTART_INTERVAL_MINUTES", 60))
         
-        interval_frame = ttk.Frame(restart_frame)
-        interval_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        interval_label = ttk.Label(interval_frame, text="Restart interval (minutes):")
-        interval_label.pack(side=tk.LEFT)
-        
-        self.interval_var = tk.IntVar(value=60)
-        interval_entry = ttk.Spinbox(interval_frame, textvariable=self.interval_var, from_=15, to=1440, width=5)
-        interval_entry.pack(side=tk.LEFT, padx=(5, 0))
-        
-        # Monitor interval
+        # Monitor interval (Still relevant for window positioning, not restart scheduling)
         monitor_frame = ttk.Frame(main_frame)
         monitor_frame.pack(fill=tk.X, pady=5)
         
@@ -975,6 +1803,24 @@ class WolfChatSetup(tk.Tk):
         related_info = ttk.Label(related_frame, text="(0 to disable related memories pre-loading)")
         related_info.pack(side=tk.LEFT, padx=(5, 0))
 
+        # Embedding Model Settings Frame
+        embedding_model_settings_frame = ttk.LabelFrame(main_frame, text="Embedding Model Settings")
+        embedding_model_settings_frame.pack(fill=tk.X, pady=10)
+
+        embedding_model_name_frame = ttk.Frame(embedding_model_settings_frame)
+        embedding_model_name_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        embedding_model_name_label = ttk.Label(embedding_model_name_frame, text="Embedding Model Name:", width=25) # Adjusted width
+        embedding_model_name_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.embedding_model_name_var = tk.StringVar(value="sentence-transformers/paraphrase-multilingual-mpnet-base-v2")
+        embedding_model_name_entry = ttk.Entry(embedding_model_name_frame, textvariable=self.embedding_model_name_var)
+        embedding_model_name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        embedding_model_info = ttk.Label(embedding_model_settings_frame, text="Default: sentence-transformers/paraphrase-multilingual-mpnet-base-v2", justify=tk.LEFT)
+        embedding_model_info.pack(anchor=tk.W, padx=10, pady=(0,5))
+
+
         # Information box
         info_frame = ttk.LabelFrame(main_frame, text="Information")
         info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -988,6 +1834,65 @@ class WolfChatSetup(tk.Tk):
 
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
         info_label.pack(padx=10, pady=10, anchor=tk.W)
+
+    # 記憶管理標籤頁
+    def create_memory_management_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="記憶管理")
+
+        main_frame = ttk.Frame(tab, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 備份時間設置
+        backup_frame = ttk.LabelFrame(main_frame, text="備份設定")
+        backup_frame.pack(fill=tk.X, pady=10)
+
+        time_frame = ttk.Frame(backup_frame)
+        time_frame.pack(fill=tk.X, pady=5, padx=10)
+        time_label = ttk.Label(time_frame, text="執行時間:", width=20)
+        time_label.pack(side=tk.LEFT, padx=(0, 5))
+        self.backup_hour_var = tk.IntVar(value=0)
+        hour_spinner = ttk.Spinbox(time_frame, from_=0, to=23, width=3, textvariable=self.backup_hour_var)
+        hour_spinner.pack(side=tk.LEFT)
+        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
+        self.backup_minute_var = tk.IntVar(value=0)
+        minute_spinner = ttk.Spinbox(time_frame, from_=0, to=59, width=3, textvariable=self.backup_minute_var)
+        minute_spinner.pack(side=tk.LEFT)
+
+        # 模型選擇
+        models_frame = ttk.LabelFrame(main_frame, text="模型選擇")
+        models_frame.pack(fill=tk.X, pady=10)
+
+        profile_model_frame = ttk.Frame(models_frame)
+        profile_model_frame.pack(fill=tk.X, pady=5, padx=10)
+        profile_model_label = ttk.Label(profile_model_frame, text="用戶檔案生成模型:", width=20)
+        profile_model_label.pack(side=tk.LEFT, padx=(0, 5))
+        # Initialize with a sensible default, will be overwritten by update_ui_from_data
+        # Use config_data which is loaded in __init__
+        profile_model_default = self.config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+        self.profile_model_var = tk.StringVar(value=profile_model_default) 
+        profile_model_entry = ttk.Entry(profile_model_frame, textvariable=self.profile_model_var)
+        profile_model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        summary_model_frame = ttk.Frame(models_frame)
+        summary_model_frame.pack(fill=tk.X, pady=5, padx=10)
+        summary_model_label = ttk.Label(summary_model_frame, text="聊天總結生成模型:", width=20)
+        summary_model_label.pack(side=tk.LEFT, padx=(0, 5))
+        self.summary_model_var = tk.StringVar(value="mistral-7b-instruct")
+        summary_model_entry = ttk.Entry(summary_model_frame, textvariable=self.summary_model_var)
+        summary_model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Information box
+        info_frame_mm = ttk.LabelFrame(main_frame, text="Information") # Renamed to avoid conflict
+        info_frame_mm.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        info_text_mm = (
+            "• 設定每日自動執行記憶備份的時間。\n"
+            "• 選擇用於生成用戶檔案和聊天總結的語言模型。\n"
+            "• 用戶檔案生成模型預設使用主LLM模型。"
+        )
+        info_label_mm = ttk.Label(info_frame_mm, text=info_text_mm, justify=tk.LEFT, wraplength=700)
+        info_label_mm.pack(padx=10, pady=10, anchor=tk.W)
 
     def create_bottom_buttons(self):
         """Create bottom action buttons"""
@@ -1015,9 +1920,16 @@ class WolfChatSetup(tk.Tk):
         self.run_bot_btn = ttk.Button(btn_frame, text="Run Chat Bot", command=self.run_chat_bot)
         self.run_bot_btn.pack(side=tk.RIGHT, padx=5)
 
-        # Stop button
-        self.stop_btn = ttk.Button(btn_frame, text="Stop Process", command=self.stop_process, state=tk.DISABLED)
+        # Stop button (for bot/test)
+        self.stop_btn = ttk.Button(btn_frame, text="Stop Bot/Test", command=self.stop_process, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Scheduler buttons
+        self.stop_scheduler_btn = ttk.Button(btn_frame, text="Stop Scheduler", command=self.stop_memory_scheduler, state=tk.DISABLED)
+        self.stop_scheduler_btn.pack(side=tk.RIGHT, padx=5)
+
+        self.start_scheduler_btn = ttk.Button(btn_frame, text="Start Scheduler", command=self.run_memory_scheduler)
+        self.start_scheduler_btn.pack(side=tk.RIGHT, padx=5)
         
     def install_dependencies(self):
         """Run the installation script for dependencies"""
@@ -1049,7 +1961,21 @@ class WolfChatSetup(tk.Tk):
                  messagebox.showwarning("Already Running", "Another process is already running. Please stop it first.")
                  return
 
-            self.running_process = subprocess.Popen([sys.executable, "main.py"])
+            # Run main.py, capturing output with UTF-8 encoding and setting PYTHONIOENCODING
+            current_env = os.environ.copy()
+            current_env["PYTHONIOENCODING"] = "utf-8"
+            self.running_process = subprocess.Popen(
+                [sys.executable, "main.py"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1,
+                env=current_env # Set PYTHONIOENCODING
+            )
+            # Start a thread to log bot's output for this independent run as well
+            threading.Thread(target=self._log_subprocess_output, args=(self.running_process, "ChatBot"), daemon=True).start()
             print("Attempting to start main.py...")
             self.update_run_button_states(False) # Disable run buttons, enable stop
         except Exception as e:
@@ -1091,7 +2017,78 @@ class WolfChatSetup(tk.Tk):
                 # Re-enable run buttons and disable stop button
                 self.update_run_button_states(True)
         else:
-            messagebox.showinfo("No Process", "No process is currently running.")
+            messagebox.showinfo("No Process", "No Bot/Test process is currently running.")
+
+    def run_memory_scheduler(self):
+        """Run the memory backup scheduler script"""
+        try:
+            scheduler_script = "memory_backup.py"
+            if not os.path.exists(scheduler_script):
+                messagebox.showerror("Error", f"Could not find {scheduler_script}")
+                return
+
+            if self.scheduler_process is not None and self.scheduler_process.poll() is None:
+                 messagebox.showwarning("Already Running", "The memory scheduler process is already running.")
+                 return
+
+            # Run with --schedule argument
+            # Use CREATE_NO_WINDOW flag on Windows to hide the console window
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW
+                
+            self.scheduler_process = subprocess.Popen(
+                [sys.executable, scheduler_script, "--schedule"],
+                creationflags=creationflags
+            )
+            print(f"Attempting to start {scheduler_script} --schedule... PID: {self.scheduler_process.pid}")
+            self.update_scheduler_button_states(False) # Disable start, enable stop
+        except Exception as e:
+            logger.exception(f"Failed to launch {scheduler_script}") # Log exception
+            messagebox.showerror("Error", f"Failed to launch {scheduler_script}: {str(e)}")
+            self.update_scheduler_button_states(True) # Re-enable start on failure
+
+    def stop_memory_scheduler(self):
+        """Stop the currently running memory scheduler process"""
+        if self.scheduler_process is not None and self.scheduler_process.poll() is None:
+            try:
+                print(f"Attempting to terminate memory scheduler process (PID: {self.scheduler_process.pid})...")
+                # Terminate the process group on non-Windows to ensure child processes are handled if any
+                if sys.platform != "win32":
+                    os.killpg(os.getpgid(self.scheduler_process.pid), signal.SIGTERM)
+                else:
+                    # On Windows, terminate the parent process directly
+                    self.scheduler_process.terminate()
+                
+                # Wait briefly to allow termination
+                try:
+                    self.scheduler_process.wait(timeout=3) 
+                    print("Scheduler process terminated gracefully.")
+                except subprocess.TimeoutExpired:
+                    print("Scheduler process did not terminate gracefully, killing...")
+                    if sys.platform != "win32":
+                         os.killpg(os.getpgid(self.scheduler_process.pid), signal.SIGKILL)
+                    else:
+                         self.scheduler_process.kill()
+                    self.scheduler_process.wait(timeout=2) # Wait after kill
+                    print("Scheduler process killed.")
+
+                self.scheduler_process = None
+                messagebox.showinfo("Scheduler Stopped", "The memory scheduler process has been terminated.")
+            except Exception as e:
+                logger.exception("Failed to terminate scheduler process") # Log exception
+                messagebox.showerror("Error", f"Failed to terminate scheduler process: {str(e)}")
+            finally:
+                self.scheduler_process = None # Ensure it's cleared
+                self.update_scheduler_button_states(True) # Update buttons
+        else:
+            # If process exists but poll() is not None (already terminated) or process is None
+            if self.scheduler_process is not None:
+                 self.scheduler_process = None # Clear stale process object
+            # messagebox.showinfo("No Scheduler Process", "The memory scheduler process is not running.") # Reduce popups
+            print("Scheduler process is not running or already stopped.")
+            self.update_scheduler_button_states(True) # Ensure buttons are in correct state
+
 
     def update_run_button_states(self, enable):
         """Enable or disable the run buttons and update stop button state"""
@@ -1102,6 +2099,18 @@ class WolfChatSetup(tk.Tk):
              self.run_test_btn.config(state=tk.NORMAL if enable else tk.DISABLED)
         if hasattr(self, 'stop_btn'):
              self.stop_btn.config(state=tk.DISABLED if enable else tk.NORMAL)
+
+    def update_scheduler_button_states(self, enable_start):
+        """Enable or disable the scheduler buttons"""
+        # Check if process is running
+        is_running = False
+        if self.scheduler_process is not None and self.scheduler_process.poll() is None:
+            is_running = True
+            
+        if hasattr(self, 'start_scheduler_btn'):
+             self.start_scheduler_btn.config(state=tk.NORMAL if not is_running else tk.DISABLED)
+        if hasattr(self, 'stop_scheduler_btn'):
+             self.stop_scheduler_btn.config(state=tk.DISABLED if not is_running else tk.NORMAL)
     
     def update_ui_from_data(self):
         """Update UI controls from loaded data"""
@@ -1159,14 +2168,38 @@ class WolfChatSetup(tk.Tk):
             # Memory Settings
             self.preload_profiles_var.set(self.config_data.get("ENABLE_PRELOAD_PROFILES", True))
             self.related_memories_var.set(self.config_data.get("PRELOAD_RELATED_MEMORIES", 2))
-            self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "user_profiles"))
+            self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "user_profiles")) # Default was user_profiles
             self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "conversations"))
             self.bot_memory_collection_var.set(self.config_data.get("BOT_MEMORY_COLLECTION", "wolfhart_memory"))
+            # Embedding Model Name for Memory Settings Tab
+            if hasattr(self, 'embedding_model_name_var'):
+                self.embedding_model_name_var.set(self.config_data.get("EMBEDDING_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"))
+
+
+            # Memory Management Tab Settings
+            if hasattr(self, 'backup_hour_var'): # Check if UI elements for memory management tab exist
+                self.backup_hour_var.set(self.config_data.get("MEMORY_BACKUP_HOUR", 0))
+                self.backup_minute_var.set(self.config_data.get("MEMORY_BACKUP_MINUTE", 0))
+                # Default profile model to LLM_MODEL if MEMORY_PROFILE_MODEL isn't set or matches LLM_MODEL
+                profile_model_config = self.config_data.get("MEMORY_PROFILE_MODEL", self.config_data.get("LLM_MODEL"))
+                self.profile_model_var.set(profile_model_config) 
+                self.summary_model_var.set(self.config_data.get("MEMORY_SUMMARY_MODEL", "mistral-7b-instruct"))
+
+            # Management Tab Settings
+            if hasattr(self, 'remote_url_var'): # Check if UI elements for management tab exist
+                self.remote_url_var.set(self.remote_data.get("REMOTE_SERVER_URL", ""))
+                self.remote_key_var.set(self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+                self.game_restart_interval_var.set(self.remote_data.get("DEFAULT_GAME_RESTART_INTERVAL_MINUTES", 120))
+                self.bot_restart_interval_var.set(self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 120))
+                self.link_restarts_var.set(self.remote_data.get("LINK_RESTART_TIMES", True))
+                self.game_process_name_var.set(self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe"))
 
             # Update visibility and states
             self.update_exa_settings_visibility()
+            self.update_management_buttons_state(True) # Initially, start button is enabled
 
         except Exception as e:
+            logger.exception("Error updating UI from data") # Log full traceback
             print(f"Error updating UI from data: {e}")
             import traceback
             traceback.print_exc()
@@ -1340,10 +2373,10 @@ class WolfChatSetup(tk.Tk):
             self.empty_settings_label.pack(expand=True, pady=20)
             self.remove_btn.config(state=tk.DISABLED)
     
-    def save_settings(self):
-        """Save all settings to config.py and .env files"""
+    def save_settings(self, show_success_message=True): # Added optional param
+        """Save all settings to config.py, .env, and remote_config.json files"""
         try:
-            # Update config data from UI
+            # Update config data from UI (for config.py and .env)
             
             # API settings
             self.config_data["OPENAI_API_BASE_URL"] = self.api_url_var.get()
@@ -1418,7 +2451,27 @@ class WolfChatSetup(tk.Tk):
             self.config_data["PROFILES_COLLECTION"] = self.profiles_collection_var.get()
             self.config_data["CONVERSATIONS_COLLECTION"] = self.conversations_collection_var.get()
             self.config_data["BOT_MEMORY_COLLECTION"] = self.bot_memory_collection_var.get()
+            # Save Embedding Model Name from Memory Settings Tab
+            if hasattr(self, 'embedding_model_name_var'):
+                self.config_data["EMBEDDING_MODEL_NAME"] = self.embedding_model_name_var.get()
 
+
+            # Get Memory Management settings from UI
+            if hasattr(self, 'backup_hour_var'): # Check if UI elements exist
+                self.config_data["MEMORY_BACKUP_HOUR"] = self.backup_hour_var.get()
+                self.config_data["MEMORY_BACKUP_MINUTE"] = self.backup_minute_var.get()
+                self.config_data["MEMORY_PROFILE_MODEL"] = self.profile_model_var.get()
+                self.config_data["MEMORY_SUMMARY_MODEL"] = self.summary_model_var.get()
+            
+            # Update remote_data from UI (for remote_config.json)
+            if hasattr(self, 'remote_url_var'): # Check if management tab UI elements exist
+                self.remote_data["REMOTE_SERVER_URL"] = self.remote_url_var.get()
+                self.remote_data["REMOTE_CLIENT_KEY"] = self.remote_key_var.get()
+                self.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = self.game_restart_interval_var.get()
+                self.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = self.bot_restart_interval_var.get()
+                self.remote_data["LINK_RESTART_TIMES"] = self.link_restarts_var.get()
+                self.remote_data["GAME_PROCESS_NAME"] = self.game_process_name_var.get()
+            
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:
                 if not self.exa_key_var.get():
@@ -1432,18 +2485,307 @@ class WolfChatSetup(tk.Tk):
             # Generate config.py and .env files
             save_env_file(self.env_data)
             generate_config_file(self.config_data, self.env_data)
+            save_remote_config(self.remote_data) # Save remote config
+
+            # If GameMonitor (from game_manager) exists, update its configuration
+            if self.game_monitor:
+                try:
+                    self.game_monitor.update_config(self.config_data, self.remote_data)
+                    logger.info("Game monitor (game_manager) configuration updated.")
+                except Exception as gm_update_err:
+                    logger.error(f"Failed to update game_manager's GameMonitor configuration: {gm_update_err}")
             
-            messagebox.showinfo("Success", "Settings saved successfully.\nRestart Wolf Chat for changes to take effect.")
-            # self.destroy() # Removed to keep the window open after saving
+            if show_success_message:
+                messagebox.showinfo("Success", "Settings saved successfully.\nRestart managed session for changes to take effect.")
             
         except Exception as e:
-            messagebox.showerror("Error", f"An error occurred while saving settings:\n{str(e)}")
+            logger.exception("Error saving settings") # Log the full traceback
+            if show_success_message: # Only show error if it's a direct save action
+                 messagebox.showerror("Error", f"An error occurred while saving settings:\n{str(e)}")
             import traceback
             traceback.print_exc()
+
+# ===============================================================
+# ControlClient Class (adapted from wolf_control.py)
+# ===============================================================
+if HAS_SOCKETIO:
+    class ControlClient:
+        def __init__(self, server_url, client_key, wolf_chat_setup_instance):
+            self.server_url = server_url
+            self.client_key = client_key
+            self.wolf_chat_setup = wolf_chat_setup_instance # Reference to the main app
+            
+            # Suppress InsecureRequestWarning when using ssl_verify=False, as is the current default
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
+            self.sio = socketio.Client(ssl_verify=False, logger=logger, engineio_logger=logger) # Use app's logger
+            self.connected = False
+            self.authenticated = False
+            self.should_exit_flag = threading.Event() # Use an event for thread control
+            self.client_thread = None
+            self.last_successful_connection_time = None # Track last successful connection/auth
+
+            self.registered_commands = [
+                "restart bot", "restart game", "restart all", 
+                "set game interval", "set bot interval", "set linked interval" 
+            ]
+            
+            # Event handlers
+            self.sio.on('connect', self._on_connect)
+            self.sio.on('disconnect', self._on_disconnect)
+            self.sio.on('authenticated', self._on_authenticated)
+            self.sio.on('command', self._on_command)
+
+        def is_connected(self):
+            return self.connected and self.authenticated
+
+        def run_in_thread(self):
+            if self.client_thread and self.client_thread.is_alive():
+                logger.info("Control client thread already running.")
+                return True
+            
+            self.should_exit_flag.clear()
+            self.client_thread = threading.Thread(target=self._run_forever, daemon=True)
+            self.client_thread.start()
+            return True
+
+        def _run_forever(self):
+            logger.info(f"ControlClient: Starting connection attempts to {self.server_url}")
+            last_heartbeat = time.time() # For heartbeat
+            retry_delay = 1.0  # Start with 1 second delay for exponential backoff
+            max_delay = 300.0  # Maximum delay of 5 minutes for exponential backoff
+            hourly_refresh_interval = 3600 # 1 hour in seconds
+
+            while not self.should_exit_flag.is_set():
+                current_time = time.time() # Get current time at the start of the loop iteration
+
+                if not self.sio.connected:
+                    # Reset connection time tracker when attempting to connect
+                    self.last_successful_connection_time = None
+                    try:
+                        logger.info(f"ControlClient: Attempting to connect to {self.server_url}...")
+                        self.sio.connect(self.server_url)
+                        # Connection successful, wait for authentication to set last_successful_connection_time
+                        logger.info("ControlClient: Successfully established socket connection. Waiting for authentication.")
+                        retry_delay = 1.0  # Reset delay on successful connection attempt
+                        # last_heartbeat = time.time() # Reset heartbeat timer only after authentication? Or here? Let's keep it after auth.
+                    except socketio.exceptions.ConnectionError as e:
+                        logger.error(f"ControlClient: Connection failed: {e}. Retrying in {retry_delay:.2f}s.")
+                        self.should_exit_flag.wait(retry_delay)
+                        # Implement exponential backoff with jitter
+                        retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
+                        retry_delay = max(1.0, retry_delay) # Ensure it's at least 1s
+                        continue
+                    except Exception as e: # Catch other potential errors during connection
+                        logger.error(f"ControlClient: Unexpected error during connection attempt: {e}. Retrying in {retry_delay:.2f}s.")
+                        self.should_exit_flag.wait(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
+                        retry_delay = max(1.0, retry_delay) # Ensure it's at least 1s
+                        continue
+
+                # If connected (socket established, maybe not authenticated yet)
+                if self.sio.connected:
+                    # Check for hourly refresh ONLY if authenticated and timer is set
+                    if self.authenticated and self.last_successful_connection_time and (current_time - self.last_successful_connection_time > hourly_refresh_interval):
+                        logger.info(f"ControlClient: Hourly session refresh triggered (Connected for > {hourly_refresh_interval}s). Disconnecting for refresh...")
+                        try:
+                            self.sio.disconnect()
+                            # Reset flags immediately after intentional disconnect
+                            self.connected = False
+                            self.authenticated = False
+                            self.last_successful_connection_time = None
+                            logger.info("ControlClient: Disconnected for hourly refresh. Will attempt reconnect in next cycle.")
+                            # Continue to the start of the loop to handle reconnection logic
+                            continue
+                        except Exception as e:
+                            logger.error(f"ControlClient: Error during planned hourly disconnect: {e}")
+                            # Reset flags anyway and let the loop retry
+                            self.connected = False
+                            self.authenticated = False
+                            self.last_successful_connection_time = None
+
+
+                    # Manage heartbeat if authenticated
+                    if self.authenticated and current_time - last_heartbeat > 60:  # Send heartbeat every 60 seconds
+                        try:
+                            self.sio.emit('heartbeat', {'timestamp': current_time})
+                            last_heartbeat = current_time
+                            logger.debug("ControlClient: Sent heartbeat.")
+                        except Exception as e:
+                            logger.error(f"ControlClient: Error sending heartbeat: {e}. Connection might be lost.")
+                            # Consider triggering disconnect/reconnect logic here if heartbeat fails repeatedly
+
+                    # Wait before next loop iteration, checking for exit signal
+                    self.should_exit_flag.wait(1) # Check for exit signal every second
+
+                else: # Not connected (e.g., after a disconnect, or failed connection attempt)
+                    # This path is hit after disconnects (intentional or unintentional)
+                    # Reset connection time tracker if not already None
+                    if self.last_successful_connection_time is not None:
+                         logger.debug("ControlClient: Resetting connection timer as client is not connected.")
+                         self.last_successful_connection_time = None
+
+                    logger.debug(f"ControlClient: Not connected, waiting {retry_delay:.2f}s before next connection attempt.")
+                    self.should_exit_flag.wait(retry_delay)
+                    # Exponential backoff for reconnection attempts
+                    retry_delay = min(retry_delay * 2, max_delay) * (0.8 + 0.4 * random.random())
+                    retry_delay = max(1.0, retry_delay)
+
+            logger.info("ControlClient: Exited _run_forever loop.")
+            if self.sio.connected:
+                self.sio.disconnect()
+
+        def _on_connect(self):
+            self.connected = True
+            # Don't reset timer here, wait for authentication
+            logger.info("ControlClient: Connected to server. Authenticating...")
+            self.sio.emit('authenticate', {
+                'type': 'client',
+                'clientKey': self.client_key,
+                'commands': self.registered_commands
+            })
+
+        def _on_disconnect(self):
+            was_connected = self.connected # Store previous state
+            self.connected = False
+            self.authenticated = False
+            self.last_successful_connection_time = None # Reset timer on any disconnect
+            if was_connected: # Only log if it was previously connected
+                logger.info("ControlClient: Disconnected from server.")
+            else:
+                logger.debug("ControlClient: Received disconnect event, but was already marked as disconnected.")
+
+            # Remove the immediate reconnection attempt here, let _run_forever handle it with backoff
+            # if not self.should_exit_flag.is_set():
+            #     logger.info("ControlClient: Disconnected. Reconnection will be handled by the main loop.")
+
+        def _on_authenticated(self, data):
+            if data.get('success'):
+                self.authenticated = True
+                self.last_successful_connection_time = time.time() # Start timer on successful auth
+                # Reset heartbeat timer upon successful authentication
+                # Find where last_heartbeat is accessible or make it accessible (e.g., self.last_heartbeat)
+                # For now, assume last_heartbeat is managed within _run_forever and will naturally reset timing
+                logger.info("ControlClient: Authentication successful. Hourly refresh timer started.")
+            else:
+                self.authenticated = False
+                self.last_successful_connection_time = None # Ensure timer is reset if auth fails
+                logger.error(f"ControlClient: Authentication failed: {data.get('error', 'Unknown error')}")
+                self.sio.disconnect() # Disconnect if auth fails
+
+        def _on_command(self, data):
+            command = data.get('command', '').lower()
+            args_str = data.get('args', '') # Assuming server might send args as a string
+            from_user = data.get('from', 'unknown')
+            logger.info(f"ControlClient: Received command '{command}' with args '{args_str}' from {from_user}")
+
+            try:
+                if command == "restart bot":
+                    self.wolf_chat_setup._restart_bot_managed()
+                    self._send_command_result(command, True, "Bot restart initiated.")
+                elif command == "restart game":
+                    self.wolf_chat_setup._restart_game_managed()
+                    self._send_command_result(command, True, "Game restart initiated.")
+                elif command == "restart all":
+                    self.wolf_chat_setup._restart_all_managed()
+                    self._send_command_result(command, True, "Full restart initiated.")
+                elif command == "set game interval" or command == "set bot interval" or command == "set linked interval":
+                    try:
+                        interval = int(args_str)
+                        if interval < 0: # 0 means disable
+                            self._send_command_result(command, False, "Interval must be non-negative.")
+                            return
+                        
+                        if command == "set game interval":
+                            self.wolf_chat_setup.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = interval
+                            if self.wolf_chat_setup.remote_data["LINK_RESTART_TIMES"]:
+                                 self.wolf_chat_setup.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = interval
+                        elif command == "set bot interval":
+                            self.wolf_chat_setup.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = interval
+                            if self.wolf_chat_setup.remote_data["LINK_RESTART_TIMES"]:
+                                 self.wolf_chat_setup.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = interval
+                        elif command == "set linked interval":
+                             self.wolf_chat_setup.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = interval
+                             self.wolf_chat_setup.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = interval
+                             self.wolf_chat_setup.remote_data["LINK_RESTART_TIMES"] = True
+                        
+                        save_remote_config(self.wolf_chat_setup.remote_data)
+                        self.wolf_chat_setup._setup_scheduled_restarts() # Re-apply schedule
+                        # Update UI if possible (tricky from non-main thread)
+                        # self.wolf_chat_setup.game_restart_interval_var.set(self.wolf_chat_setup.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"])
+                        # self.wolf_chat_setup.bot_restart_interval_var.set(self.wolf_chat_setup.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"])
+                        logger.info(f"Updated restart interval via remote: {command} to {interval} min. Saved and re-scheduled.")
+                        self._send_command_result(command, True, f"Interval updated to {interval} min and re-scheduled.")
+
+                    except ValueError:
+                        self._send_command_result(command, False, "Invalid interval value. Must be an integer.")
+                else:
+                    self._send_command_result(command, False, "Unsupported command.")
+            except Exception as e:
+                logger.exception(f"ControlClient: Error executing command '{command}'")
+                self._send_command_result(command, False, f"Error: {str(e)}")
+
+        def _send_command_result(self, command, success, message):
+            if self.sio.connected:
+                try:
+                    self.sio.emit('commandResult', {
+                        'command': command,
+                        'success': success,
+                        'message': message,
+                        'timestamp': time.time()
+                    })
+                except Exception as e:
+                    logger.error(f"ControlClient: Failed to send command result: {e}")
+
+        def check_signals(self, app_instance): # app_instance is self.wolf_chat_setup from the caller
+            """Periodically check connection status and commands, called by monitoring thread."""
+            # Note: _run_forever is the primary mechanism for establishing and maintaining connection.
+            # This function's connection check is a secondary check.
+            if not self.sio.connected or not self.authenticated:
+                logger.warning("ControlClient: Connection check in check_signals found client not connected/authenticated.")
+                # Avoid aggressive reconnection here if _run_forever is already handling it.
+                # If an explicit reconnect attempt is desired here:
+                # logger.info("ControlClient: Attempting reconnection from check_signals...")
+                # try:
+                #     if self.sio.connected: # e.g. connected but not authenticated
+                #         self.sio.disconnect()
+                #     if not self.sio.connected: # Check again before connecting
+                #         self.sio.connect(self.server_url)
+                # except Exception as e:
+                #     logger.error(f"ControlClient: Reconnection attempt from check_signals failed: {e}")
+            
+            # Placeholder for any other signal processing logic
+            # logger.debug("ControlClient: check_signals executed.")
+        
+        def stop(self):
+            logger.info("ControlClient: Stopping...")
+            self.should_exit_flag.set() # Signal the run_forever loop to exit
+            if self.sio.connected:
+                self.sio.disconnect() # Attempt to disconnect gracefully
+            
+            if self.client_thread and self.client_thread.is_alive():
+                logger.info("ControlClient: Waiting for client thread to join...")
+                self.client_thread.join(timeout=5) # Wait for the thread to finish
+                if self.client_thread.is_alive():
+                    logger.warning("ControlClient: Client thread did not join in time.")
+            self.client_thread = None
+            logger.info("ControlClient: Stopped.")
+else: # HAS_SOCKETIO is False
+    class ControlClient: # Dummy class if socketio is not available
+        def __init__(self, *args, **kwargs): logger.warning("Socket.IO not installed, ControlClient is a dummy.")
+        def run_in_thread(self): return False
+        def stop(self): pass
+        def is_connected(self): return False
+
 
 # ===============================================================
 # Main Entry Point
 # ===============================================================
 if __name__ == "__main__":
+    # Setup main logger for the application if not already done
+    if not logging.getLogger().handlers: # Check root logger
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
     app = WolfChatSetup()
+    app.protocol("WM_DELETE_WINDOW", app.on_closing) # Handle window close button
     app.mainloop()
