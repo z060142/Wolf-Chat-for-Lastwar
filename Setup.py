@@ -69,6 +69,7 @@ keep_monitoring_flag.set()
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 # Setup logger instance. This can be configured further if needed.
 logger = logging.getLogger(__name__)
+logger.propagate = False
 if not logger.handlers: # Avoid adding multiple handlers if script is reloaded
     handler = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -2783,8 +2784,8 @@ else: # HAS_SOCKETIO is False
 # ===============================================================
 if __name__ == "__main__":
     # Setup main logger for the application if not already done
-    if not logging.getLogger().handlers: # Check root logger
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    #if not logging.getLogger().handlers: # Check root logger
+    #    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     app = WolfChatSetup()
     app.protocol("WM_DELETE_WINDOW", app.on_closing) # Handle window close button

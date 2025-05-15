@@ -3,6 +3,7 @@
 llm_debug.log
 config.py
 config.py.bak
+simple_bubble_dedup.json
 __pycache__/
 debug_screenshots/
 chat_logs/
