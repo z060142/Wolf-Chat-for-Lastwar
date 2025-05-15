@@ -568,8 +568,8 @@ class WolfChatSetup(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"Wolf Chat Setup v{VERSION}")
-        self.geometry("800x600")
-        self.minsize(750, 550)
+        self.geometry("900x600")
+        self.minsize(900, 600)
         
         # Load existing data
         self.env_data = load_env_file()
