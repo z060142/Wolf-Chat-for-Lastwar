@@ -132,6 +132,17 @@ class GameMonitor:
 
         while not self.stop_event.is_set():
             try:
+                # Add to _monitor_loop method - just 7 lines that matter
+                if not self._is_game_running():
+                    self.logger.warning("Game process disappeared - restarting")
+                    time.sleep(2)  # Let resources release
+                    if self._start_game_process():
+                        self.logger.info("Game restarted successfully")
+                    else:
+                        self.logger.error("Game restart failed")
+                    time.sleep(self.monitor_interval) # Wait before next check after a restart attempt
+                    continue
+
                 # Check for scheduled restart
                 if self.next_restart_time and time.time() >= self.next_restart_time:
                     self.logger.info("Scheduled restart time reached. Performing restart...")
@@ -238,6 +249,17 @@ class GameMonitor:
             time.sleep(self.monitor_interval)
 
         self.logger.info("Game window monitoring loop finished")
+
+    def _is_game_running(self):
+        """Check if game is running"""
+        if not HAS_PSUTIL:
+            self.logger.warning("_is_game_running: psutil not available, cannot check process status.")
+            return True # Assume running if psutil is not available to avoid unintended restarts
+        try:
+            return any(p.name().lower() == self.game_process_name.lower() for p in psutil.process_iter(['name']))
+        except Exception as e:
+            self.logger.error(f"Error checking game process: {e}")
+            return False # Assume not running on error
 
     def _find_game_window(self):
         """Find the game window with the specified title"""

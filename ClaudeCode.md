@@ -644,6 +644,10 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     - 使用回調函數 (`callback`) 與調用者（即 `Setup.py`）通信，例如在遊戲重啟完成時。
     - 保留了獨立運行模式，以便在直接執行時仍能工作（主要用於測試或舊版兼容）。
     - 程式碼註解和日誌訊息已更新為英文。
+    - **新增遊戲崩潰自動恢復 (2025-05-15)**：
+        - 在 `_monitor_loop` 方法中，優先檢查遊戲進程 (`_is_game_running`) 是否仍在運行。
+        - 如果進程消失，會記錄警告並嘗試重新啟動遊戲 (`_start_game_process`)。
+        - 新增 `_is_game_running` 方法，使用 `psutil` 檢查具有指定進程名稱的遊戲是否正在運行。
 - **`Setup.py` (修改)**：
     - 導入 `game_manager`。
     - 在 `WolfChatSetup` 類的 `__init__` 方法中初始化 `self.game_monitor = None`。
