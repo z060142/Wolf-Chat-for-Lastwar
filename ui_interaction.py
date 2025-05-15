@@ -19,6 +19,7 @@ from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
 import math # Added for distance calculation in dual method
 import time # Ensure time is imported for MessageDeduplication
+from simple_bubble_dedup import SimpleBubbleDeduplication
 
 class MessageDeduplication:
     def __init__(self, expiry_seconds=3600):  # 1 hour expiry time
@@ -1697,6 +1698,15 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
     """
     print("\n--- Starting UI Monitoring Loop (Thread) ---")
 
+    # --- 初始化氣泡圖像去重系統（新增） ---
+    bubble_deduplicator = SimpleBubbleDeduplication(
+        storage_file="simple_bubble_dedup.json",
+        max_bubbles=4,    # 保留最近5個氣泡
+        threshold=7,      # 哈希差異閾值（值越小越嚴格）
+        hash_size=16      # 哈希大小
+    )
+    # --- 初始化氣泡圖像去重系統結束 ---
+
     # --- Initialization (Instantiate modules within the thread) ---
     # --- Template Dictionary Setup (Refactored) ---
     essential_templates = {
@@ -1837,6 +1847,12 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                     print("UI Thread: Processing clear_history command.")
                     recent_texts.clear()
                     deduplicator.clear_all() # Simultaneously clear deduplication records
+                    
+                    # --- 新增：清理氣泡去重記錄 ---
+                    if 'bubble_deduplicator' in locals():
+                        bubble_deduplicator.clear_all()
+                    # --- 清理氣泡去重記錄結束 ---
+                    
                     print("UI Thread: recent_texts and deduplicator records cleared.")
 
                 elif action == 'reset_state': # Added for F8 resume
@@ -1844,6 +1860,12 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                     recent_texts.clear()
                     last_processed_bubble_info = None
                     deduplicator.clear_all() # Simultaneously clear deduplication records
+                    
+                    # --- 新增：清理氣泡去重記錄 ---
+                    if 'bubble_deduplicator' in locals():
+                        bubble_deduplicator.clear_all()
+                    # --- 清理氣泡去重記錄結束 ---
+                    
                     print("UI Thread: recent_texts, last_processed_bubble_info, and deduplicator records reset.")
 
                 else:
@@ -2033,6 +2055,13 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                              print("Warning: Failed to capture bubble snapshot. Skipping this bubble.")
                              continue # Skip to next bubble
 
+                        # --- New: Image deduplication check ---
+                        if bubble_deduplicator.is_duplicate(bubble_snapshot, bubble_region_tuple):
+                            print("Detected duplicate bubble, skipping processing")
+                            perform_state_cleanup(detector, interactor)
+                            continue  # Skip processing this bubble
+                        # --- End of image deduplication check ---
+
                         # --- Save Snapshot for Debugging ---
                         try:
                             screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
@@ -2044,7 +2073,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                             screenshot_counter += 1
                         except Exception as save_err:
                             print(f"Error saving bubble snapshot to {screenshot_path}: {repr(save_err)}")
-
+                            
                     except Exception as snapshot_err:
                          print(f"Error taking initial bubble snapshot: {repr(snapshot_err)}")
                          continue # Skip to next bubble
@@ -2186,14 +2215,14 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                             continue  # Skip this bubble
 
                         # If not a duplicate by deduplicator, then check recent_texts (original safeguard)
-                        if bubble_text in recent_texts:
-                            print(f"UI Thread: Content '{bubble_text[:30]}...' in recent_texts history, skipping.")
-                            perform_state_cleanup(detector, interactor) # Cleanup as we are skipping
-                            continue
+                        # if bubble_text in recent_texts:
+                        #     print(f"UI Thread: Content '{bubble_text[:30]}...' in recent_texts history, skipping.")
+                        #     perform_state_cleanup(detector, interactor) # Cleanup as we are skipping
+                        #     continue
 
                         # If not a duplicate by any means, add to recent_texts and proceed
                         print(">>> New trigger event (passed deduplication) <<<")
-                        recent_texts.append(bubble_text)
+                        # recent_texts.append(bubble_text) # No longer needed with image deduplication
                     else:
                         # This case implies sender_name or bubble_text was None/empty,
                         # which should have been caught by earlier checks.
@@ -2277,6 +2306,16 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         }
                         trigger_queue.put(data_to_send)
                         print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
+                        
+                        # --- 新增：更新氣泡去重記錄中的發送者信息 ---
+                        # 注意：我們在前面已經添加了氣泡到去重系統，但當時還沒獲取發送者名稱
+                        # 這裡我們嘗試再次更新發送者信息（如果實現允許的話）
+                        if 'bubble_deduplicator' in locals() and bubble_snapshot and sender_name:
+                            bubble_id = bubble_deduplicator.generate_bubble_id(bubble_region_tuple)
+                            if bubble_id in bubble_deduplicator.recent_bubbles:
+                                bubble_deduplicator.recent_bubbles[bubble_id]['sender'] = sender_name
+                                bubble_deduplicator._save_storage()
+                        # --- 更新發送者信息結束 ---
 
                         # --- CRITICAL: Break loop after successfully processing one trigger ---
                         print("--- Single bubble processing complete. Breaking scan cycle. ---")
