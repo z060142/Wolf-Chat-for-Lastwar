@@ -105,16 +105,14 @@ def handle_f8():
             except Exception as e:
                  print(f"Error sending pause command (F8): {e}")
         else:
-            print("\n--- F8 pressed: Resuming script, resetting state, and resuming UI monitoring ---")
-            reset_command = {'action': 'reset_state'}
+            print("\n--- F8 pressed: Resuming script and UI monitoring ---")
             resume_command = {'action': 'resume'}
             try:
-                main_loop.call_soon_threadsafe(command_queue.put_nowait, reset_command)
                 # Add a small delay? Let's try without first.
                 # time.sleep(0.05) # Short delay between commands if needed
                 main_loop.call_soon_threadsafe(command_queue.put_nowait, resume_command)
             except Exception as e:
-                 print(f"Error sending reset/resume commands (F8): {e}")
+                 print(f"Error sending resume command (F8): {e}")
 
 def handle_f9():
     """Handles F9 press: Initiates script shutdown."""
