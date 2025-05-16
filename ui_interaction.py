@@ -20,42 +20,58 @@ import threading # Import threading for Lock if needed, or just use a simple fla
 import math # Added for distance calculation in dual method
 import time # Ensure time is imported for MessageDeduplication
 from simple_bubble_dedup import SimpleBubbleDeduplication
+import difflib # Added for text similarity
 
 class MessageDeduplication:
     def __init__(self, expiry_seconds=3600):  # 1 hour expiry time
-        self.processed_messages = {}  # {composite_key: timestamp}
+        self.processed_messages = {}  # {message_key: timestamp}
         self.expiry_seconds = expiry_seconds
 
-    def create_key(self, sender, content):
-        """Create a standardized composite key."""
-        # Thoroughly standardize text - remove all whitespace and punctuation, lowercase
-        clean_content = ''.join(c.lower() for c in content if c.isalnum())
-        clean_sender = ''.join(c.lower() for c in sender if c.isalnum())
-
-        # Truncate content to first 100 chars to prevent overly long keys
-        if len(clean_content) > 100:
-            clean_content = clean_content[:100]
-
-        return f"{clean_sender}:{clean_content}"
-
     def is_duplicate(self, sender, content):
-        """Check if the message is a duplicate within the expiry period."""
+        """Check if the message is a duplicate within the expiry period using text similarity."""
         if not sender or not content:
             return False  # Missing necessary info, treat as new message
 
-        key = self.create_key(sender, content)
         current_time = time.time()
-
-        # Check if duplicate and not expired
-        if key in self.processed_messages:
-            last_time = self.processed_messages[key]
-            if current_time - last_time < self.expiry_seconds:
-                print(f"Deduplicator: Detected duplicate message: {sender} - {content[:20]}...")
-                return True
-
-        # Update processing time
-        self.processed_messages[key] = current_time
+        
+        # 遍歷所有已處理的消息
+        for key, timestamp in list(self.processed_messages.items()):
+            # 檢查是否過期
+            if current_time - timestamp >= self.expiry_seconds:
+                # 從 processed_messages 中移除過期的項目，避免集合在迭代時改變大小
+                # 但由於我們使用了 list(self.processed_messages.items())，所以這裡可以安全地 continue
+                # 或者，如果希望立即刪除，則需要不同的迭代策略或在 purge_expired 中處理
+                continue # 繼續檢查下一個，過期項目由 purge_expired 處理
+                
+            # 解析之前儲存的發送者和內容
+            stored_sender, stored_content = key.split(":", 1)
+            
+            # 檢查發送者是否相同
+            if sender.lower() == stored_sender.lower():
+                # Calculate text similarity
+                similarity = difflib.SequenceMatcher(None, content, stored_content).ratio()
+                if similarity >= 0.95:  # Use 0.95 as threshold
+                    print(f"Deduplicator: Detected similar message (similarity: {similarity:.2f}): {sender} - {content[:20]}...")
+                    return True
+        
+        # 不是重複消息，儲存它
+        # 注意：這裡儲存的 content 是原始 content，不是 clean_content
+        message_key = f"{sender.lower()}:{content}"
+        self.processed_messages[message_key] = current_time
         return False
+
+    # create_key 方法已不再需要，可以移除
+    # def create_key(self, sender, content):
+    #     """Create a standardized composite key."""
+    #     # Thoroughly standardize text - remove all whitespace and punctuation, lowercase
+    #     clean_content = ''.join(c.lower() for c in content if c.isalnum())
+    #     clean_sender = ''.join(c.lower() for c in sender if c.isalnum())
+
+    #     # Truncate content to first 100 chars to prevent overly long keys
+    #     if len(clean_content) > 100:
+    #         clean_content = clean_content[:100]
+
+    #     return f"{clean_sender}:{clean_content}"
 
     def purge_expired(self):
         """Remove expired message records."""
