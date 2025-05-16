@@ -1853,10 +1853,8 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
                     print("UI Thread: Resuming monitoring internally after restart wait.")
                     monitoring_paused_flag[0] = False
-                    # Clear state to ensure fresh detection after restart
-                    recent_texts.clear()
-                    last_processed_bubble_info = None
-                    print("UI Thread: Monitoring resumed and state reset after restart.")
+                    # 删除 recent_texts.clear() 和 last_processed_bubble_info = None
+                    print("UI Thread: Monitoring resumed after restart. Duplicate detection state preserved.")
                     # --- End Internal Sequence ---
 
                 elif action == 'clear_history': # Added for F7
