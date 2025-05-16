@@ -18,6 +18,81 @@ import queue
 from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
 import math # Added for distance calculation in dual method
+import time # Ensure time is imported for MessageDeduplication
+from simple_bubble_dedup import SimpleBubbleDeduplication
+import difflib # Added for text similarity
+
+class MessageDeduplication:
+    def __init__(self, expiry_seconds=3600):  # 1 hour expiry time
+        self.processed_messages = {}  # {message_key: timestamp}
+        self.expiry_seconds = expiry_seconds
+
+    def is_duplicate(self, sender, content):
+        """Check if the message is a duplicate within the expiry period using text similarity."""
+        if not sender or not content:
+            return False  # Missing necessary info, treat as new message
+
+        current_time = time.time()
+        
+        # 遍歷所有已處理的消息
+        for key, timestamp in list(self.processed_messages.items()):
+            # 檢查是否過期
+            if current_time - timestamp >= self.expiry_seconds:
+                # 從 processed_messages 中移除過期的項目，避免集合在迭代時改變大小
+                # 但由於我們使用了 list(self.processed_messages.items())，所以這裡可以安全地 continue
+                # 或者，如果希望立即刪除，則需要不同的迭代策略或在 purge_expired 中處理
+                continue # 繼續檢查下一個，過期項目由 purge_expired 處理
+                
+            # 解析之前儲存的發送者和內容
+            stored_sender, stored_content = key.split(":", 1)
+            
+            # 檢查發送者是否相同
+            if sender.lower() == stored_sender.lower():
+                # Calculate text similarity
+                similarity = difflib.SequenceMatcher(None, content, stored_content).ratio()
+                if similarity >= 0.95:  # Use 0.95 as threshold
+                    print(f"Deduplicator: Detected similar message (similarity: {similarity:.2f}): {sender} - {content[:20]}...")
+                    return True
+        
+        # 不是重複消息，儲存它
+        # 注意：這裡儲存的 content 是原始 content，不是 clean_content
+        message_key = f"{sender.lower()}:{content}"
+        self.processed_messages[message_key] = current_time
+        return False
+
+    # create_key 方法已不再需要，可以移除
+    # def create_key(self, sender, content):
+    #     """Create a standardized composite key."""
+    #     # Thoroughly standardize text - remove all whitespace and punctuation, lowercase
+    #     clean_content = ''.join(c.lower() for c in content if c.isalnum())
+    #     clean_sender = ''.join(c.lower() for c in sender if c.isalnum())
+
+    #     # Truncate content to first 100 chars to prevent overly long keys
+    #     if len(clean_content) > 100:
+    #         clean_content = clean_content[:100]
+
+    #     return f"{clean_sender}:{clean_content}"
+
+    def purge_expired(self):
+        """Remove expired message records."""
+        current_time = time.time()
+        expired_keys = [k for k, t in self.processed_messages.items()
+                         if current_time - t >= self.expiry_seconds]
+
+        for key in expired_keys:
+            del self.processed_messages[key]
+
+        if expired_keys: # Log only if something was purged
+            print(f"Deduplicator: Purged {len(expired_keys)} expired message records.")
+        return len(expired_keys)
+
+    def clear_all(self):
+        """Clear all recorded messages (for F7/F8 functionality)."""
+        count = len(self.processed_messages)
+        self.processed_messages.clear()
+        if count > 0: # Log only if something was cleared
+            print(f"Deduplicator: Cleared all {count} message records.")
+        return count
 
 # --- Global Pause Flag ---
 # Using a simple mutable object (list) for thread-safe-like access without explicit lock
@@ -142,6 +217,9 @@ PROFILE_OPTION_IMG = os.path.join(TEMPLATE_DIR, "profile_option.png")
 COPY_NAME_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "copy_name_button.png")
 SEND_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "send_button.png")
 CHAT_INPUT_IMG = os.path.join(TEMPLATE_DIR, "chat_input.png")
+# 新增的模板路徑
+CHAT_OPTION_IMG = os.path.join(TEMPLATE_DIR, "chat_option.png")
+UPDATE_CONFIRM_IMG = os.path.join(TEMPLATE_DIR, "update_confirm.png")
 # State Detection
 PROFILE_NAME_PAGE_IMG = os.path.join(TEMPLATE_DIR, "Profile_Name_page.png")
 PROFILE_PAGE_IMG = os.path.join(TEMPLATE_DIR, "Profile_page.png")
@@ -1629,12 +1707,21 @@ def perform_state_cleanup(detector: DetectionModule, interactor: InteractionModu
 
 
 # --- UI Monitoring Loop Function (To be run in a separate thread) ---
-def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queue):
+def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queue, deduplicator: 'MessageDeduplication'):
     """
     Continuously monitors the UI, detects triggers, performs interactions,
     puts trigger data into trigger_queue, and processes commands from command_queue.
     """
     print("\n--- Starting UI Monitoring Loop (Thread) ---")
+
+    # --- 初始化氣泡圖像去重系統（新增） ---
+    bubble_deduplicator = SimpleBubbleDeduplication(
+        storage_file="simple_bubble_dedup.json",
+        max_bubbles=4,    # 保留最近5個氣泡
+        threshold=7,      # 哈希差異閾值（值越小越嚴格）
+        hash_size=16      # 哈希大小
+    )
+    # --- 初始化氣泡圖像去重系統結束 ---
 
     # --- Initialization (Instantiate modules within the thread) ---
     # --- Template Dictionary Setup (Refactored) ---
@@ -1667,7 +1754,9 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
         'page_sec': PAGE_SEC_IMG, 'page_str': PAGE_STR_IMG,
         'dismiss_button': DISMISS_BUTTON_IMG, 'confirm_button': CONFIRM_BUTTON_IMG,
         'close_button': CLOSE_BUTTON_IMG, 'back_arrow': BACK_ARROW_IMG,
-        'reply_button': REPLY_BUTTON_IMG
+        'reply_button': REPLY_BUTTON_IMG,
+        # 添加新模板
+        'chat_option': CHAT_OPTION_IMG, 'update_confirm': UPDATE_CONFIRM_IMG,
     }
     legacy_templates = {
         # Deprecated Keywords (for legacy method fallback)
@@ -1773,13 +1862,27 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                 elif action == 'clear_history': # Added for F7
                     print("UI Thread: Processing clear_history command.")
                     recent_texts.clear()
-                    print("UI Thread: recent_texts cleared.")
+                    deduplicator.clear_all() # Simultaneously clear deduplication records
+                    
+                    # --- 新增：清理氣泡去重記錄 ---
+                    if 'bubble_deduplicator' in locals():
+                        bubble_deduplicator.clear_all()
+                    # --- 清理氣泡去重記錄結束 ---
+                    
+                    print("UI Thread: recent_texts and deduplicator records cleared.")
 
                 elif action == 'reset_state': # Added for F8 resume
                     print("UI Thread: Processing reset_state command.")
                     recent_texts.clear()
                     last_processed_bubble_info = None
-                    print("UI Thread: recent_texts cleared and last_processed_bubble_info reset.")
+                    deduplicator.clear_all() # Simultaneously clear deduplication records
+                    
+                    # --- 新增：清理氣泡去重記錄 ---
+                    if 'bubble_deduplicator' in locals():
+                        bubble_deduplicator.clear_all()
+                    # --- 清理氣泡去重記錄結束 ---
+                    
+                    print("UI Thread: recent_texts, last_processed_bubble_info, and deduplicator records reset.")
 
                 else:
                     print(f"UI Thread: Received unknown command: {action}")
@@ -1803,6 +1906,19 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
         # --- If not paused, proceed with UI Monitoring ---
         # print("[DEBUG] UI Loop: Monitoring is active. Proceeding...") # DEBUG REMOVED
+
+        # --- 添加檢查 chat_option 狀態 ---
+        try:
+            chat_option_locs = detector._find_template('chat_option', confidence=0.8)
+            if chat_option_locs:
+                print("UI Thread: Detected chat_option overlay. Pressing ESC to dismiss...")
+                interactor.press_key('esc')
+                time.sleep(0.2)  # 給一點時間讓界面響應
+                print("UI Thread: Pressed ESC to dismiss chat_option. Continuing...")
+                continue  # 重新開始循環以確保界面已清除
+        except Exception as chat_opt_err:
+            print(f"UI Thread: Error checking for chat_option: {chat_opt_err}")
+            # 繼續執行，不要中斷主流程
 
         # --- Check for Main Screen Navigation ---
         # print("[DEBUG] UI Loop: Checking for main screen navigation...") # DEBUG REMOVED
@@ -1842,8 +1958,19 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
             # Use a slightly lower confidence maybe, or state_confidence
             chat_room_locs = detector._find_template('chat_room', confidence=detector.state_confidence)
             if not chat_room_locs:
-                print("UI Thread: Not in chat room state before bubble detection. Attempting cleanup...")
-                # Call the existing cleanup function to try and return
+                print("UI Thread: Not in chat room state before bubble detection. Checking for update confirm...")
+                
+                # 檢查是否存在更新確認按鈕
+                update_confirm_locs = detector._find_template('update_confirm', confidence=0.8)
+                if update_confirm_locs:
+                    print("UI Thread: Detected update_confirm button. Clicking to proceed...")
+                    interactor.click_at(update_confirm_locs[0][0], update_confirm_locs[0][1])
+                    time.sleep(0.5)  # 給更新過程一些時間
+                    print("UI Thread: Clicked update_confirm button. Continuing...")
+                    continue  # 重新開始循環以重新檢查狀態
+                
+                # 沒有找到更新確認按鈕，繼續原有的清理邏輯
+                print("UI Thread: No update_confirm button found. Attempting cleanup...")
                 perform_state_cleanup(detector, interactor)
                 # Regardless of cleanup success, restart the loop to re-evaluate state from the top
                 print("UI Thread: Continuing loop after attempting chat room cleanup.")
@@ -1944,6 +2071,13 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                              print("Warning: Failed to capture bubble snapshot. Skipping this bubble.")
                              continue # Skip to next bubble
 
+                        # --- New: Image deduplication check ---
+                        if bubble_deduplicator.is_duplicate(bubble_snapshot, bubble_region_tuple):
+                            print("Detected duplicate bubble, skipping processing")
+                            perform_state_cleanup(detector, interactor)
+                            continue  # Skip processing this bubble
+                        # --- End of image deduplication check ---
+
                         # --- Save Snapshot for Debugging ---
                         try:
                             screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
@@ -1955,7 +2089,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                             screenshot_counter += 1
                         except Exception as save_err:
                             print(f"Error saving bubble snapshot to {screenshot_path}: {repr(save_err)}")
-
+                            
                     except Exception as snapshot_err:
                          print(f"Error taking initial bubble snapshot: {repr(snapshot_err)}")
                          continue # Skip to next bubble
@@ -2009,16 +2143,6 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         print("Error: Could not get dialogue content for this bubble (after re-location).")
                         perform_state_cleanup(detector, interactor) # Attempt cleanup
                         continue # Skip to next bubble
-
-                    # Check recent text history
-                    # print("[DEBUG] UI Loop: Checking recent text history...") # DEBUG REMOVED
-                    if bubble_text in recent_texts:
-                        print(f"Content '{bubble_text[:30]}...' in recent history, skipping this bubble.")
-                        continue # Skip to next bubble
-
-                    print(">>> New trigger event <<<")
-                    # Add to recent texts *before* potentially long interaction
-                    recent_texts.append(bubble_text)
 
                     # 5. Interact: Get Sender Name (uses re-location internally via retrieve_sender_name_interaction)
                     # print("[DEBUG] UI Loop: Retrieving sender name...") # DEBUG REMOVED
@@ -2097,6 +2221,32 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         print("Error: Could not get sender name for this bubble, skipping.")
                         continue # Skip to next bubble
 
+                    # --- Deduplication Check ---
+                    # This is the new central point for deduplication and recent_texts logic
+                    if sender_name and bubble_text: # Ensure both are valid before deduplication
+                        if deduplicator.is_duplicate(sender_name, bubble_text):
+                            print(f"UI Thread: Skipping duplicate message via Deduplicator: {sender_name} - {bubble_text[:30]}...")
+                            # Cleanup UI state as interaction might have occurred during sender_name retrieval
+                            perform_state_cleanup(detector, interactor)
+                            continue  # Skip this bubble
+
+                        # If not a duplicate by deduplicator, then check recent_texts (original safeguard)
+                        # if bubble_text in recent_texts:
+                        #     print(f"UI Thread: Content '{bubble_text[:30]}...' in recent_texts history, skipping.")
+                        #     perform_state_cleanup(detector, interactor) # Cleanup as we are skipping
+                        #     continue
+
+                        # If not a duplicate by any means, add to recent_texts and proceed
+                        print(">>> New trigger event (passed deduplication) <<<")
+                        # recent_texts.append(bubble_text) # No longer needed with image deduplication
+                    else:
+                        # This case implies sender_name or bubble_text was None/empty,
+                        # which should have been caught by earlier checks.
+                        # If somehow reached, log and skip.
+                        print(f"Warning: sender_name ('{sender_name}') or bubble_text ('{bubble_text[:30]}...') is invalid before deduplication check. Skipping.")
+                        perform_state_cleanup(detector, interactor)
+                        continue
+
                     # --- Attempt to activate reply context ---
                     # print("[DEBUG] UI Loop: Attempting to activate reply context...") # DEBUG REMOVED
                     reply_context_activated = False
@@ -2172,6 +2322,16 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                         }
                         trigger_queue.put(data_to_send)
                         print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
+                        
+                        # --- 新增：更新氣泡去重記錄中的發送者信息 ---
+                        # 注意：我們在前面已經添加了氣泡到去重系統，但當時還沒獲取發送者名稱
+                        # 這裡我們嘗試再次更新發送者信息（如果實現允許的話）
+                        if 'bubble_deduplicator' in locals() and bubble_snapshot and sender_name:
+                            bubble_id = bubble_deduplicator.generate_bubble_id(bubble_region_tuple)
+                            if bubble_id in bubble_deduplicator.recent_bubbles:
+                                bubble_deduplicator.recent_bubbles[bubble_id]['sender'] = sender_name
+                                bubble_deduplicator._save_storage()
+                        # --- 更新發送者信息結束 ---
 
                         # --- CRITICAL: Break loop after successfully processing one trigger ---
                         print("--- Single bubble processing complete. Breaking scan cycle. ---")

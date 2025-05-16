@@ -124,7 +124,14 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     *   **計算頭像座標**：根據**新**找到的氣泡左上角座標，應用特定偏移量 (`AVATAR_OFFSET_X_REPLY`, `AVATAR_OFFSET_Y_REPLY`) 計算頭像點擊位置。
     *   **互動（含重試）**：點擊計算出的頭像位置，檢查是否成功進入個人資料頁面 (`Profile_page.png`)。若失敗，最多重試 3 次（每次重試前會再次重新定位氣泡）。若成功，則繼續導航菜單複製用戶名稱。
     *   **原始偏移量**：原始的 `-55` 像素水平偏移量 (`AVATAR_OFFSET_X`) 仍保留，用於 `remove_user_position` 等其他功能。
-5.  **防重複處理 (Duplicate Prevention)**：使用最近處理過的文字內容歷史 (`recent_texts`) 防止對相同訊息重複觸發。
+5.  **防重複處理 (Duplicate Prevention)**：
+    *   **基於圖像哈希的去重 (Image Hash Deduplication)**: 新增 `simple_bubble_dedup.py` 模塊，實現基於圖像感知哈希 (Perceptual Hash) 的去重系統。
+        *   **原理**: 系統會計算最近處理過的氣泡圖像的感知哈希值，並保存最近的 N 個 (預設 5 個) 氣泡的哈希。當偵測到新氣泡時，會計算其哈希並與保存的哈希進行比對。如果哈希差異小於設定的閾值 (預設 5)，則認為是重複氣泡並跳過處理。
+        *   **實現**: 在 `ui_interaction.py` 的 `run_ui_monitoring_loop` 函數中初始化 `SimpleBubbleDeduplication` 實例，並在偵測到關鍵字並截取氣泡快照後，調用 `is_duplicate` 方法進行檢查。
+        *   **狀態管理**: 使用 `simple_bubble_dedup.json` 文件持久化保存最近的氣泡哈希記錄。
+        *   **清理**: F7 (`clear_history`) 和 F8 (`reset_state`) 功能已擴展，會同時清除圖像去重系統中的記錄。
+        *   **發送者信息更新**: 在成功處理並將氣泡信息放入隊列後，會嘗試更新去重記錄中對應氣泡的發送者名稱。
+    *   **文字內容歷史 (已棄用)**: 原有的基於 `recent_texts` 的文字內容重複檢查邏輯已**移除或註解**，圖像哈希去重成為主要的去重機制。
 
 #### LLM 整合
 
@@ -644,6 +651,10 @@ Wolf Chat 是一個基於 MCP (Modular Capability Provider) 框架的聊天機�
     - 使用回調函數 (`callback`) 與調用者（即 `Setup.py`）通信，例如在遊戲重啟完成時。
     - 保留了獨立運行模式，以便在直接執行時仍能工作（主要用於測試或舊版兼容）。
     - 程式碼註解和日誌訊息已更新為英文。
+    - **新增遊戲崩潰自動恢復 (2025-05-15)**：
+        - 在 `_monitor_loop` 方法中，優先檢查遊戲進程 (`_is_game_running`) 是否仍在運行。
+        - 如果進程消失，會記錄警告並嘗試重新啟動遊戲 (`_start_game_process`)。
+        - 新增 `_is_game_running` 方法，使用 `psutil` 檢查具有指定進程名稱的遊戲是否正在運行。
 - **`Setup.py` (修改)**：
     - 導入 `game_manager`。
     - 在 `WolfChatSetup` 類的 `__init__` 方法中初始化 `self.game_monitor = None`。

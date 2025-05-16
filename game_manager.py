@@ -72,6 +72,10 @@ class GameMonitor:
         self.monitor_thread = None
         self.stop_event = threading.Event()
 
+        # Add these tracking variables
+        self.last_focus_failure_count = 0
+        self.last_successful_foreground = time.time()
+
         self.logger.info(f"GameMonitor initialized. Game window: '{self.window_title}', Process: '{self.game_process_name}'")
         self.logger.info(f"Position: ({self.window_x}, {self.window_y}), Size: {self.window_width}x{self.window_height}")
         self.logger.info(f"Scheduled Restart: {'Enabled' if self.enable_restart else 'Disabled'}, Interval: {self.restart_interval} minutes")
@@ -128,6 +132,17 @@ class GameMonitor:
 
         while not self.stop_event.is_set():
             try:
+                # Add to _monitor_loop method - just 7 lines that matter
+                if not self._is_game_running():
+                    self.logger.warning("Game process disappeared - restarting")
+                    time.sleep(2)  # Let resources release
+                    if self._start_game_process():
+                        self.logger.info("Game restarted successfully")
+                    else:
+                        self.logger.error("Game restart failed")
+                    time.sleep(self.monitor_interval) # Wait before next check after a restart attempt
+                    continue
+
                 # Check for scheduled restart
                 if self.next_restart_time and time.time() >= self.next_restart_time:
                     self.logger.info("Scheduled restart time reached. Performing restart...")
@@ -160,51 +175,41 @@ class GameMonitor:
                             if current_pos != target_pos or current_size != target_size:
                                 window.moveTo(target_pos[0], target_pos[1])
                                 window.resizeTo(target_size[0], target_size[1])
-                                # Verify if move and resize were successful
                                 time.sleep(0.1)
-                                window.activate() # Try activating to ensure changes apply
+                                window.activate()
                                 time.sleep(0.1)
+                                # Check if changes were successful
                                 new_pos = (window.left, window.top)
                                 new_size = (window.width, window.height)
                                 if new_pos == target_pos and new_size == target_size:
-                                    current_message += f"Adjusted game window to position ({target_pos[0]},{target_pos[1]}) size {target_size[0]}x{target_size[1]}. "
+                                    current_message += f"Adjusted window position/size. "
                                     adjustment_made = True
-                                else:
-                                    self.logger.warning(f"Attempted to adjust window pos/size, but result mismatch. Target: {target_pos}/{target_size}, Actual: {new_pos}/{new_size}")
 
-
-                            # 2. Check and bring to foreground
+                            # 2. Check and bring to foreground using enhanced method
                             current_foreground_hwnd = win32gui.GetForegroundWindow()
-
                             if current_foreground_hwnd != hwnd:
-                                try:
-                                    # Use HWND_TOP to bring window to top, not HWND_TOPMOST
-                                    win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, 0, 0, 0, 0,
-                                                         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
-
-                                    # Set as foreground window (gain focus)
-                                    win32gui.SetForegroundWindow(hwnd)
-
-                                    # Verify if window is active
-                                    time.sleep(0.1)
-                                    foreground_hwnd = win32gui.GetForegroundWindow()
-
-                                    if foreground_hwnd == hwnd:
-                                        current_message += "Brought game window to foreground and set focus. "
-                                        adjustment_made = True
-                                    else:
-                                        # Use fallback method
-                                        self.logger.warning("SetForegroundWindow failed, trying fallback window.activate()")
-                                        try:
-                                            window.activate()
-                                            time.sleep(0.1)
-                                            if win32gui.GetForegroundWindow() == hwnd:
-                                                current_message += "Set game window focus using fallback method. "
-                                                adjustment_made = True
-                                        except Exception as activate_err:
-                                            self.logger.warning(f"Fallback method window.activate() failed: {activate_err}")
-                                except Exception as focus_err:
-                                    self.logger.warning(f"Error setting window focus: {focus_err}")
+                                # Use enhanced forceful focus method
+                                success, method_used = self._force_window_foreground(hwnd, window)
+                                if success:
+                                    current_message += f"Focused window using {method_used}. "
+                                    adjustment_made = True
+                                    if not hasattr(self, 'last_focus_failure_count'):
+                                        self.last_focus_failure_count = 0
+                                    self.last_focus_failure_count = 0
+                                else:
+                                    # Increment failure counter
+                                    if not hasattr(self, 'last_focus_failure_count'):
+                                        self.last_focus_failure_count = 0
+                                    self.last_focus_failure_count += 1
+                                    
+                                    # Log warning with consecutive failure count
+                                    self.logger.warning(f"Window focus failed (attempt {self.last_focus_failure_count}): {method_used}")
+                                    
+                                    # Restart game after too many failures
+                                    if self.last_focus_failure_count >= 15:
+                                        self.logger.warning("Excessive focus failures, restarting game...")
+                                        self._perform_restart()
+                                        self.last_focus_failure_count = 0
                         else:
                             # Use basic functions on non-Windows platforms
                             current_pos = (window.left, window.top)
@@ -225,7 +230,7 @@ class GameMonitor:
                                 adjustment_made = True
                             except Exception as activate_err:
                                 self.logger.warning(f"Error activating window: {activate_err}")
-
+                                
                     except Exception as e:
                         self.logger.error(f"Unexpected error while monitoring game window: {e}")
 
@@ -245,6 +250,17 @@ class GameMonitor:
 
         self.logger.info("Game window monitoring loop finished")
 
+    def _is_game_running(self):
+        """Check if game is running"""
+        if not HAS_PSUTIL:
+            self.logger.warning("_is_game_running: psutil not available, cannot check process status.")
+            return True # Assume running if psutil is not available to avoid unintended restarts
+        try:
+            return any(p.name().lower() == self.game_process_name.lower() for p in psutil.process_iter(['name']))
+        except Exception as e:
+            self.logger.error(f"Error checking game process: {e}")
+            return False # Assume not running on error
+
     def _find_game_window(self):
         """Find the game window with the specified title"""
         try:
@@ -255,27 +271,181 @@ class GameMonitor:
             self.logger.debug(f"Error finding game window: {e}")
         return None
 
-    def _find_game_process(self):
-        """Find the game process"""
-        if not HAS_PSUTIL:
-            self.logger.warning("psutil is not available, cannot perform process lookup")
+    def _force_window_foreground(self, hwnd, window):
+        """Aggressive window focus implementation"""
+        if not HAS_WIN32:
+            return False, "win32 modules unavailable"
+            
+        success = False
+        methods_tried = []
+        
+        # Method 1: HWND_TOPMOST strategy
+        methods_tried.append("HWND_TOPMOST")
+        try:
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+            time.sleep(0.1)
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, 0, 0, 0, 0,
+                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+            
+            win32gui.SetForegroundWindow(hwnd)
+            time.sleep(0.2)
+            if win32gui.GetForegroundWindow() == hwnd:
+                return True, "HWND_TOPMOST"
+        except Exception as e:
+            self.logger.debug(f"Method 1 failed: {e}")
+
+        # Method 2: Minimize/restore cycle
+        methods_tried.append("MinimizeRestore")
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            time.sleep(0.3)
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.2)
+            win32gui.SetForegroundWindow(hwnd)
+            
+            if win32gui.GetForegroundWindow() == hwnd:
+                return True, "MinimizeRestore"
+        except Exception as e:
+            self.logger.debug(f"Method 2 failed: {e}")
+
+        # Method 3: Thread input attach
+        methods_tried.append("ThreadAttach")
+        try:
+            import win32process
+            import win32api
+            
+            current_thread_id = win32api.GetCurrentThreadId()
+            window_thread_id = win32process.GetWindowThreadProcessId(hwnd)[0]
+            
+            if current_thread_id != window_thread_id:
+                win32process.AttachThreadInput(current_thread_id, window_thread_id, True)
+                try:
+                    win32gui.BringWindowToTop(hwnd)
+                    win32gui.SetForegroundWindow(hwnd)
+                    
+                    time.sleep(0.2)
+                    if win32gui.GetForegroundWindow() == hwnd:
+                        return True, "ThreadAttach"
+                finally:
+                    win32process.AttachThreadInput(current_thread_id, window_thread_id, False)
+        except Exception as e:
+            self.logger.debug(f"Method 3 failed: {e}")
+
+        # Method 4: Flash + Window messages
+        methods_tried.append("Flash+Messages")
+        try:
+            # First flash to get attention
+            win32gui.FlashWindow(hwnd, True)
+            time.sleep(0.2)
+            
+            # Then send specific window messages
+            win32gui.SendMessage(hwnd, win32con.WM_SETREDRAW, 0, 0)
+            win32gui.SendMessage(hwnd, win32con.WM_SETREDRAW, 1, 0)
+            win32gui.RedrawWindow(hwnd, None, None, 
+                                 win32con.RDW_FRAME | win32con.RDW_INVALIDATE | 
+                                 win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN)
+                                 
+            win32gui.PostMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE, 0)
+            win32gui.PostMessage(hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
+            
+            time.sleep(0.2)
+            if win32gui.GetForegroundWindow() == hwnd:
+                return True, "Flash+Messages"
+        except Exception as e:
+            self.logger.debug(f"Method 4 failed: {e}")
+
+        # Method 5: Hide/Show cycle
+        methods_tried.append("HideShow")
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+            time.sleep(0.2)
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            time.sleep(0.2)
+            win32gui.SetForegroundWindow(hwnd)
+            
+            if win32gui.GetForegroundWindow() == hwnd:
+                return True, "HideShow"
+        except Exception as e:
+            self.logger.debug(f"Method 5 failed: {e}")
+
+        return False, f"All methods failed: {', '.join(methods_tried)}"
+
+    def _find_game_process_by_window(self):
+        """Find process using both window title and process name"""
+        if not HAS_PSUTIL or not HAS_WIN32:
             return None
 
         try:
-            for proc in psutil.process_iter(['pid', 'name', 'exe']):
-                try:
-                    proc_info = proc.info
-                    proc_name = proc_info.get('name')
+            window = self._find_game_window()
+            if not window:
+                return None
 
-                    if proc_name and proc_name.lower() == self.game_process_name.lower():
-                        self.logger.info(f"Found game process '{proc_name}' (PID: {proc.pid})")
+            hwnd = window._hWnd
+            window_pid = None
+            try:
+                import win32process
+                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            except Exception:
+                return None
+
+            if window_pid:
+                try:
+                    proc = psutil.Process(window_pid)
+                    proc_name = proc.name()
+                    
+                    if proc_name.lower() == self.game_process_name.lower():
+                        self.logger.info(f"Found game process '{proc_name}' (PID: {proc.pid}) with window title '{self.window_title}'")
                         return proc
+                    else:
+                        self.logger.debug(f"Window process name mismatch: expected '{self.game_process_name}', got '{proc_name}'")
+                        return proc # Returning proc even if name mismatches, as per user's code.
+                except Exception:
+                    pass
+            
+            # Fallback to name-based search if window-based fails or PID doesn't match process name.
+            # The user's provided code implies a fallback to _find_game_process_by_name()
+            # This will be handled by the updated _find_game_process method.
+            # For now, if the window PID didn't lead to a matching process name, we return None here.
+            # The original code had "return self._find_game_process_by_name()" here,
+            # but that would create a direct dependency. The new _find_game_process handles the fallback.
+            # So, if we reach here, it means the window was found, PID was obtained, but process name didn't match.
+            # The original code returns `proc` even on mismatch, so I'll keep that.
+            # If `window_pid` was None or `psutil.Process(window_pid)` failed, it would have returned None or passed.
+            # The logic "return self._find_game_process_by_name()" was in the original snippet,
+            # I will include it here as per the snippet, but note that the overall _find_game_process will also call it.
+            return self._find_game_process_by_name() # As per user snippet
+            
+        except Exception as e:
+            self.logger.error(f"Process-by-window lookup error: {e}")
+            return None
+
+    def _find_game_process(self):
+        """Find game process with combined approach"""
+        # Try window-based process lookup first
+        proc = self._find_game_process_by_window()
+        if proc:
+            return proc
+            
+        # Fall back to name-only lookup
+        # This is the original _find_game_process logic, now as a fallback.
+        if not HAS_PSUTIL:
+            self.logger.debug("psutil not available for name-only process lookup fallback.") # Changed to debug as primary is window based
+            return None
+        try:
+            for p_iter in psutil.process_iter(['pid', 'name', 'exe']):
+                try:
+                    proc_info = p_iter.info
+                    proc_name = proc_info.get('name')
+                    if proc_name and proc_name.lower() == self.game_process_name.lower():
+                        self.logger.info(f"Found game process by name '{proc_name}' (PID: {p_iter.pid}) as fallback")
+                        return p_iter
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
         except Exception as e:
-            self.logger.error(f"Error finding game process: {e}")
-
-        self.logger.info(f"Game process '{self.game_process_name}' not found")
+            self.logger.error(f"Error in name-only game process lookup: {e}")
+        
+        self.logger.info(f"Game process '{self.game_process_name}' not found by name either.")
         return None
 
     def _perform_restart(self):
@@ -298,7 +468,7 @@ class GameMonitor:
                 self.logger.error("Failed to start game")
 
             # 4. Wait for game to launch
-            restart_wait_time = 30  # seconds
+            restart_wait_time = 45  # seconds, increased from 30
             self.logger.info(f"Waiting for game to start ({restart_wait_time} seconds)...")
             time.sleep(restart_wait_time)
 

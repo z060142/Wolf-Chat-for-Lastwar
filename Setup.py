@@ -69,6 +69,7 @@ keep_monitoring_flag.set()
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 # Setup logger instance. This can be configured further if needed.
 logger = logging.getLogger(__name__)
+logger.propagate = False
 if not logger.handlers: # Avoid adding multiple handlers if script is reloaded
     handler = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -568,8 +569,8 @@ class WolfChatSetup(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"Wolf Chat Setup v{VERSION}")
-        self.geometry("800x600")
-        self.minsize(750, 550)
+        self.geometry("900x600")
+        self.minsize(900, 600)
         
         # Load existing data
         self.env_data = load_env_file()
@@ -2783,8 +2784,8 @@ else: # HAS_SOCKETIO is False
 # ===============================================================
 if __name__ == "__main__":
     # Setup main logger for the application if not already done
-    if not logging.getLogger().handlers: # Check root logger
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    #if not logging.getLogger().handlers: # Check root logger
+    #    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     app = WolfChatSetup()
     app.protocol("WM_DELETE_WINDOW", app.on_closing) # Handle window close button
