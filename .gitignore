@@ -11,3 +11,4 @@ backup/
 chroma_data/
 wolf_control.py
 remote_config.json
+wolf_chat_dedup.json
