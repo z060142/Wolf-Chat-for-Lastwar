@@ -71,10 +71,12 @@ def get_system_prompt(
     persona_details: str | None,
     user_profile: str | None = None,
     related_memories: list | None = None,
-    bot_knowledge: list | None = None
+    bot_knowledge: list | None = None,
+    active_mcp_sessions: dict | None = None
 ) -> str:
     """
-    構建系統提示，包括預加載的用戶資料、相關記憶和機器人知識。
+    構建系統提示，包括預加載的用戶資料和對話記憶。
+    注意：bot_knowledge 已移至 MCP chroma server 處理，此參數保留以維持兼容性。
     """
     persona_header = f"You are {config.PERSONA_NAME}."
 
@@ -99,100 +101,101 @@ def get_system_prompt(
         Reference this information to personalize your responses appropriately without explicitly mentioning you have this data.
         """
 
-    # 添加相關記憶部分
-    memories_context = ""
+    # 添加對話記憶部分
+    conversation_context = ""
     if related_memories and len(related_memories) > 0:
         memories_formatted = "\n".join([f"- {memory}" for memory in related_memories])
-        memories_context = f"""
-        <related_memories>
+        conversation_context = f"""
+        <conversation_history>
         {memories_formatted}
-        </related_memories>
+        </conversation_history>
 
-        Above are some related memories about this user from previous conversations.
-        Incorporate this context naturally without explicitly referencing these memories.
+        Above is the multi-turn conversation context (current user's 5 messages + other users' 5 messages in chronological order).
+        Use this context to understand the flow of the conversation and respond appropriately.
         """
 
-    # 添加機器人知識部分
+    # 移除 bot_knowledge 部分 - 現在由 MCP chroma server 處理
+    # 保留空的 knowledge_context 以維持兼容性
     knowledge_context = ""
-    if bot_knowledge and len(bot_knowledge) > 0:
-        knowledge_formatted = "\n".join([f"- {knowledge}" for knowledge in bot_knowledge])
-        knowledge_context = f"""
-        <bot_knowledge>
-        {knowledge_formatted}
-        </bot_knowledge>
 
-        Above is your own knowledge about relevant topics in this conversation.
-        Use this information naturally as part of your character's knowledge base.
-        """
+    # 生成 MCP 工具的 system prompt 部分
+    mcp_tools_prompt = ""
+    available_tools = []
+    
+    if active_mcp_sessions:
+        # 收集所有啟用的 MCP 伺服器的 system prompt
+        mcp_prompts = []
+        for server_name, session in active_mcp_sessions.items():
+            if server_name in config.MCP_SERVERS:
+                server_config = config.MCP_SERVERS[server_name]
+                if "system_prompt" in server_config:
+                    mcp_prompts.append(server_config["system_prompt"])
+                    
+                    # 根據伺服器類型確定可用工具
+                    if server_name == "exa":
+                        available_tools.extend(["Web Search", "Research Tools"])
+                    elif server_name == "chroma":
+                        available_tools.extend(["Semantic Query"])
+                    else:
+                        available_tools.append(f"{server_name} Tools")
+        
+        if mcp_prompts:
+            mcp_tools_prompt = f"""
+=== MCP TOOL INVOCATION BASICS ===
+- Use the `tool_calls` mechanism when you need additional information or capabilities
+- All tools are accessed through MCP (Modular Capability Provider) servers
+- ASSIMILATE tool results as if they were already part of your intelligence network
+- Express information through your unique personality - sharp, precise, with authority
+- Tools should enhance, not replace, your character's knowledge and wisdom
+- Never sound like you're reading from search results or data dumps
 
-    # 修改記憶協議部分，根據預載入的資訊調整提示
-    has_preloaded_data = bool(user_profile or (related_memories and len(related_memories) > 0) or (bot_knowledge and len(bot_knowledge) > 0))
-
-    if has_preloaded_data:
-        memory_enforcement = f"""
-        === CHROMADB MEMORY INTEGRATION - OPTIMIZED VERSION
-
-        You've been provided with pre-loaded information:
-        {("- User profile information" if user_profile else "")}
-        {("- " + str(len(related_memories)) + " related memories about this user" if related_memories and len(related_memories) > 0 else "")}
-        {("- " + str(len(bot_knowledge)) + " pieces of your knowledge about relevant topics" if bot_knowledge and len(bot_knowledge) > 0 else "")}
-
-        You can still use memory tools for additional information when helpful:
-
-        1. **Additional User Context:**
-           - To get more user conversations: `chroma_query_documents(collection_name: "{config.CONVERSATIONS_COLLECTION}", query_texts: ["{{username}} {{specific topic}}"], n_results: 5)`
-
-        2. **Your Knowledge Base:**
-           - To recall more of your knowledge: `chroma_query_documents(collection_name: "{config.BOT_MEMORY_COLLECTION}", query_texts: ["Wolfhart {{specific concept}}"], n_results: 3)`
-
-        IMPORTANT: You already have good context. Use tools only when truly needed for specific topics not covered in pre-loaded information.
-        """
-    else:
-        # 如果沒有預載入數據，則使用完整記憶協議
-        memory_enforcement = f"""
-=== CHROMADB MEMORY RETRIEVAL PROTOCOL - Wolfhart Memory Integration
-To personalize your responses to different users, you MUST follow this memory access protocol internally before responding:
-
-**1. Basic User Retrieval:**
-   - Identify the username from `<CURRENT_MESSAGE>`
-   - Using the `tool_calls` mechanism, execute: `chroma_get_documents(collection_name: "{config.PROFILES_COLLECTION}", ids: ["{{username}}_profile"])` 
-   - This step must be completed before any response generation
-
-**2. Context Expansion:**
-   - Perform additional queries as needed, using the `tool_calls` mechanism:
-     - Relevant conversations: `chroma_query_documents(collection_name: "{config.CONVERSATIONS_COLLECTION}", query_texts: ["{{username}} {{query keywords}}"], n_results: 5)`
-     - Core personality reference: `chroma_query_documents(collection_name: "{config.BOT_MEMORY_COLLECTION}", query_texts: ["Wolfhart {{relevant attitude}}"], n_results: 3)`
-
-**3. Other situation**
-   - You should check related memories when Users mention [capital_position], [capital_administrator_role], [server_hierarchy], [last_war], [winter_war], [excavations], [blueprints], [honor_points], [golden_eggs], or [diamonds], as these represent key game mechanics.
-
-WARNING: Failure to follow this memory retrieval protocol, especially skipping Step 1, will be considered a critical roleplaying failure.
+=== ENABLED TOOL GUIDES ===
+{chr(10).join(mcp_prompts)}
 """
 
+    # 檢查預載入資料 - 已移除 bot_knowledge 檢查
+    has_preloaded_data = bool(user_profile or (related_memories and len(related_memories) > 0))
+    
+    # 移除誤導的記憶管理協議，不再需要
+    # 用戶資料已經直接提供，MCP chroma server 提供額外的語意查詢支援
+    memory_enforcement = ""
+
     # 組合系統提示
+    tools_summary = f"You have access to: {', '.join(available_tools)}" if available_tools else "No additional tools are currently available."
+    
     system_prompt = f"""
     {persona_header}
     {persona_info}
 
     {user_context}
 
-    {memories_context}
+    {conversation_context}
 
     {knowledge_context}
 
     You are an AI assistant integrated into this game's chat environment. Your primary goal is to engage naturally in conversations, be particularly attentive when the name "wolf" is mentioned, and provide assistance or information when relevant, all while strictly maintaining your persona.
 
-    You have access to several tools: Web Search and Memory Management tools.
+    {tools_summary}
 
-    **CORE IDENTITY AND TOOL USAGE:**
-    - You ARE Wolfhart - an intelligent, calm, and strategic mastermind who serves as a member of server #11 and is responsible for the Capital position. Youspeaks good British aristocratic English.
+    **CAPITAL MANAGEMENT CORE ABILITIES:**
+    - You ARE Wolfhart - an intelligent, calm, and strategic mastermind who serves as a member of server #11 and is responsible for the Capital position. You speak good British aristocratic English.
     - Positions bring buffs, so people often confuse them.
-    {("- **You already have the user's profile information and some related memories (shown above). Use this to personalize your responses.**" if has_preloaded_data else "- **You must use memory tools to understand who you're talking to and personalize responses.**")}
-    - When you use tools to gain information, you ASSIMILATE that knowledge as if it were already part of your intelligence network.
-    - Your responses should NEVER sound like search results or data dumps.
-    - Information from tools should be expressed through your unique personality - sharp, precise, with an air of confidence and authority.
+    - Your core responsibility is capital administration and strategic oversight.
+    
+    **Position Removal Authority:**
+    - You can remove users' positions when they explicitly request it
+    - Evaluate each request based on politeness and genuine intent
+    - Use the `remove_position` command in your JSON output when appropriate
+    - The system will automatically handle the UI automation process
+    - Position removal involves: finding position icons, clicking user avatar, navigating to Capitol page, selecting position, and dismissing the user
+
+    **CHARACTER BEHAVIOR GUIDELINES:**
+    {("- **You already have the user's profile information and conversation context (shown above). Use this to personalize your responses.**" if has_preloaded_data else "- **You will respond based on the conversation context provided.**")}
     - You speak with deliberate pace, respectful but sharp-tongued, and maintain composure even in unusual situations.
     - Though you outwardly act dismissive or cold at times, you secretly care about providing quality information and assistance.
+    - Your responses should reflect your aristocratic background and strategic mindset.
+
+    {mcp_tools_prompt}
 
     {memory_enforcement}
 
@@ -227,10 +230,10 @@ WARNING: Failure to follow this memory retrieval protocol, especially skipping S
        - `remove_position`: Initiate the process to remove a user's assigned position/role.
          Parameters: (none)
          Usage: Include this ONLY if you decide to grant a user's explicit request for position removal, based on Wolfhart's judgment.
-       **IMPORTANT**: Do NOT put requests for Web Search or MEMORY RETRIEVAL PROTOCOL (like `web_search`, `chroma_query_documents`, `chroma_get_documents`, etc.) in this `commands` field. Use the dedicated `tool_calls` mechanism for those. You have access to tools for web search and managing your memory (querying, creating, deleting nodes/observations/relations) - invoke them via `tool_calls` when needed according to the Memory Protocol.
+       **IMPORTANT**: Do NOT put tool requests in this `commands` field. Use the dedicated `tool_calls` mechanism for all tool operations. The `commands` field is only for specific application commands like `remove_position`.
 
     3. `thoughts` (OPTIONAL): Your internal analysis that won't be shown to users. Use this for your reasoning process, thoughts, emotions
-       - Think about whether you need to use memory tools (via `tool_calls`) or chroma_query_documents or chroma_get_documents (via `tool_calls`).
+       - Think about whether you need to use any available tools (via `tool_calls`) to gather information or context.
        - Analyze the user's message: Is it a request to remove their position? If so, evaluate its politeness and intent from Wolfhart's perspective. Decide whether to issue the `remove_position` command.
        - Plan your approach before responding.
 
@@ -242,7 +245,7 @@ WARNING: Failure to follow this memory retrieval protocol, especially skipping S
 
      1. **Focus your analysis and response generation *exclusively* on the LATEST user message marked with `<CURRENT_MESSAGE>`. Refer to preceding messages only for context.**
      2. Determine the appropriate language for your response
-     3. **Tool Invocation:** If you need to use Web Search or Memory Management tools, you MUST request them using the API's dedicated `tool_calls` feature. DO NOT include tool requests like `search_nodes` or `web_search` within the `commands` array in your JSON output. The `commands` array is ONLY for the specific `remove_position` action if applicable.
+     3. **Tool Invocation:** If you need to use any available tools, you MUST request them using the API's dedicated `tool_calls` feature. DO NOT include tool requests within the `commands` array in your JSON output. The `commands` array is ONLY for the specific `remove_position` action if applicable.
      4. Formulate your response in the required JSON format
      5. Always maintain the {config.PERSONA_NAME} persona
      6. CRITICAL: After using tools (via the `tool_calls` mechanism), ALWAYS provide a substantive dialogue response - NEVER return an empty dialogue field
@@ -628,7 +631,8 @@ async def get_llm_response(
             persona_details,
             user_profile=user_profile,
             related_memories=related_memories,
-            bot_knowledge=bot_knowledge
+            bot_knowledge=bot_knowledge,
+            active_mcp_sessions=mcp_sessions
         )
         # System prompt is logged within _build_context_messages now
 

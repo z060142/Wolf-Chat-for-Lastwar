@@ -55,6 +55,68 @@ DEFAULT_CONFIG_SECTION = """# ==================================================
 # Get current Windows username for default paths
 CURRENT_USERNAME = os.getenv("USERNAME", "user")
 
+# Default system prompts for MCP servers
+DEFAULT_EXA_SYSTEM_PROMPT = """
+**WEB SEARCH CAPABILITIES:**
+You have access to advanced web search tools for real-time information:
+- `web_search`: General web search with customizable parameters
+- `research_paper_search`: Academic and research paper searches
+- `twitter_search`: Social media content search
+- `company_research`: Corporate information and analysis
+- `crawling`: Deep web content extraction
+- `competitor_finder`: Market analysis and competitor research
+
+**USAGE GUIDELINES:**
+- Use these tools when users ask for current information, facts, or research
+- Search results should be naturally integrated into your responses
+- Always maintain your character's personality when presenting search results
+- Prefer recent and authoritative sources when available
+
+**SEARCH PARAMETERS:**
+- `query`: Search terms (required)
+- `numResults`: Number of results to return (default: 5)
+- `category`: Content category filter (optional)
+- `type`: Search type specification (optional)
+        """
+
+DEFAULT_CHROMA_SYSTEM_PROMPT = """
+**CHROMADB SEMANTIC QUERY CAPABILITIES:**
+You have access to a persistent ChromaDB system for semantic queries to support complex conversations:
+- `chroma_query_documents`: Query documents by semantic similarity
+- `chroma_get_documents`: Retrieve specific documents by ID
+- `chroma_add_documents`: Store new information in memory
+- `chroma_update_documents`: Update existing documents
+- `chroma_delete_documents`: Remove documents from memory
+
+**MEMORY COLLECTIONS:**
+- `wolfhart_memory`: Main memory collection for profiles, conversations, and knowledge
+
+**COMPLEX CONVERSATION SUPPORT:**
+Use ChromaDB tools to help with complex conversations by querying relevant knowledge and context:
+
+**1. Semantic Knowledge Queries:**
+   - For game-related topics: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["Wolfhart {topic}"], n_results: 3)`
+   - For specific concepts: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["{concept} {context}"], n_results: 2)`
+
+**2. Game Mechanics Knowledge:**
+   - When users mention game mechanics, query related knowledge
+   - Key game terms: [capital_position], [capital_administrator_role], [server_hierarchy], [last_war], [winter_war], [excavations], [blueprints], [honor_points], [golden_eggs], [diamonds]
+   - Use: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["Wolfhart {game_term}"], n_results: 2)`
+
+**3. Contextual Information:**
+   - For deeper context: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["{user} {topic}"], n_results: 5)`
+   - For related memories: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["{relevant_keywords}"], n_results: 3)`
+
+**USAGE GUIDELINES:**
+- This is to help you complete more complex conversations, not basic user profile retrieval
+- Use semantic search when you need additional context or knowledge
+- Query relevant game mechanics when users mention specific terms
+- Store important conversation context for future reference
+- Maintain consistency in document IDs and metadata
+
+IMPORTANT: User profile data is already provided directly. Use these tools for additional context and knowledge when needed for complex conversations.
+        """
+
 # Global variables for game/bot management
 game_process_instance = None
 bot_process_instance = None # This will replace/co-exist with self.running_process
@@ -280,6 +342,11 @@ def load_current_config():
                             if data_dir_match:
                                 config_data["MCP_SERVERS"]["chroma"]["data_dir"] = data_dir_match.group(1)
                         
+                        # Extract system prompt for all servers
+                        system_prompt_match = re.search(r'"system_prompt":\s*"""(.+?)"""', server_block, re.DOTALL)
+                        if system_prompt_match:
+                            config_data["MCP_SERVERS"][server_name]["system_prompt"] = system_prompt_match.group(1).strip()
+                        
                         # For custom servers, store the raw configuration
                         if server_name not in ["exa", "chroma"]:
                             config_data["MCP_SERVERS"][server_name]["raw_config"] = server_block
@@ -441,7 +508,13 @@ def generate_config_file(config_data, env_data):
                     f.write("        ],\n")
                     f.write("        \"env\": {\n")
                     f.write("            \"EXA_API_KEY\": EXA_API_KEY\n")
-                    f.write("        }\n")
+                    f.write("        },\n")
+                    # Add system prompt
+                    system_prompt = server_config.get("system_prompt", DEFAULT_EXA_SYSTEM_PROMPT).strip()
+                    if system_prompt:
+                        f.write("        \"system_prompt\": \"\"\"")
+                        f.write(system_prompt)
+                        f.write("\"\"\"\n")
             
             # Handle Chroma server
             elif server_name == "chroma":
@@ -458,11 +531,25 @@ def generate_config_file(config_data, env_data):
                 # Escape backslashes in the path for the string literal in config.py
                 escaped_data_dir = absolute_data_dir.replace('\\', '\\\\')
                 f.write(f"            \"{escaped_data_dir}\"\n")
-                f.write("        ]\n")
+                f.write("        ],\n")
+                # Add system prompt
+                system_prompt = server_config.get("system_prompt", DEFAULT_CHROMA_SYSTEM_PROMPT).strip()
+                if system_prompt:
+                    f.write("        \"system_prompt\": \"\"\"")
+                    f.write(system_prompt)
+                    f.write("\"\"\"\n")
             
             # Handle custom server - just write as raw JSON
-            elif server_name == "custom" and "raw_config" in server_config:
-                f.write(server_config["raw_config"])
+            elif server_name != "exa" and server_name != "chroma":
+                if "raw_config" in server_config:
+                    f.write(server_config["raw_config"])
+                    # Add system prompt for custom servers
+                    system_prompt = server_config.get("system_prompt", "").strip()
+                    if system_prompt:
+                        f.write(",\n        \"system_prompt\": \"\"\"")
+                        f.write(system_prompt)
+                        f.write("\"\"\"")
+                    f.write("\n")
             
             f.write("    },\n")
         
@@ -1497,6 +1584,24 @@ class WolfChatSetup(tk.Tk):
                                  wraplength=400)
         smithery_info.pack(pady=5)
         
+        # System Prompt
+        prompt_frame = ttk.LabelFrame(self.exa_frame, text="System Prompt")
+        prompt_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.exa_system_prompt_text = scrolledtext.ScrolledText(prompt_frame, height=8, width=50)
+        self.exa_system_prompt_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Set default system prompt
+        self.exa_system_prompt_text.insert(tk.END, DEFAULT_EXA_SYSTEM_PROMPT.strip())
+        
+        # Add reset button
+        prompt_btn_frame = ttk.Frame(prompt_frame)
+        prompt_btn_frame.pack(fill=tk.X, pady=2)
+        
+        reset_exa_prompt_btn = ttk.Button(prompt_btn_frame, text="Reset to Default", 
+                                         command=self.reset_exa_system_prompt)
+        reset_exa_prompt_btn.pack(side=tk.RIGHT, padx=5)
+        
         # Information text
         info_frame = ttk.LabelFrame(self.exa_frame, text="Information")
         info_frame.pack(fill=tk.X, pady=10)
@@ -1537,9 +1642,27 @@ class WolfChatSetup(tk.Tk):
         browse_btn = ttk.Button(dir_frame, text="Browse", command=self.browse_chroma_dir)
         browse_btn.pack(side=tk.LEFT, padx=(5, 0))
         
+        # System Prompt
+        prompt_frame = ttk.LabelFrame(self.chroma_frame, text="System Prompt")
+        prompt_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.chroma_system_prompt_text = scrolledtext.ScrolledText(prompt_frame, height=8, width=50)
+        self.chroma_system_prompt_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Set default system prompt
+        self.chroma_system_prompt_text.insert(tk.END, DEFAULT_CHROMA_SYSTEM_PROMPT.strip())
+        
+        # Add reset button
+        prompt_btn_frame = ttk.Frame(prompt_frame)
+        prompt_btn_frame.pack(fill=tk.X, pady=2)
+        
+        reset_chroma_prompt_btn = ttk.Button(prompt_btn_frame, text="Reset to Default", 
+                                           command=self.reset_chroma_system_prompt)
+        reset_chroma_prompt_btn.pack(side=tk.RIGHT, padx=5)
+        
         # Information text
         info_frame = ttk.LabelFrame(self.chroma_frame, text="Information")
-        info_frame.pack(fill=tk.X, pady=10, expand=True)
+        info_frame.pack(fill=tk.X, pady=10)
         
         info_text = (
             "• Chroma MCP provides vector database storage for memory features\n"
@@ -1591,6 +1714,13 @@ class WolfChatSetup(tk.Tk):
             '        ]'
         )
         self.custom_config_text.insert(tk.END, default_config)
+        
+        # System Prompt
+        prompt_label = ttk.Label(self.custom_frame, text="System Prompt (Optional):")
+        prompt_label.pack(anchor=tk.W, pady=(10, 5))
+        
+        self.custom_system_prompt_text = scrolledtext.ScrolledText(self.custom_frame, height=6, width=50)
+        self.custom_system_prompt_text.pack(fill=tk.BOTH, expand=True, pady=5)
         
         # Information text
         info_frame = ttk.LabelFrame(self.custom_frame, text="Information")
@@ -2134,6 +2264,11 @@ class WolfChatSetup(tk.Tk):
                     self.exa_type_var.set("local")
                     if "server_path" in exa_config:
                         self.exa_path_var.set(exa_config.get("server_path", ""))
+                
+                # Load system prompt
+                system_prompt = exa_config.get("system_prompt", DEFAULT_EXA_SYSTEM_PROMPT)
+                self.exa_system_prompt_text.delete("1.0", tk.END)
+                self.exa_system_prompt_text.insert(tk.END, system_prompt.strip())
             
             # Chroma settings
             if "chroma" in self.config_data.get("MCP_SERVERS", {}):
@@ -2146,6 +2281,11 @@ class WolfChatSetup(tk.Tk):
                 else:
                     # Set default as absolute path
                     self.chroma_dir_var.set(DEFAULT_CHROMA_DATA_PATH)
+                
+                # Load system prompt
+                system_prompt = chroma_config.get("system_prompt", DEFAULT_CHROMA_SYSTEM_PROMPT)
+                self.chroma_system_prompt_text.delete("1.0", tk.END)
+                self.chroma_system_prompt_text.insert(tk.END, system_prompt.strip())
             
             # Update servers list to include custom servers
             self.update_servers_list()
@@ -2266,6 +2406,33 @@ class WolfChatSetup(tk.Tk):
             normalized_path = file_path.replace("\\", "/")
             self.game_path_var.set(normalized_path)
     
+    def reset_exa_system_prompt(self):
+        """Reset Exa system prompt to default"""
+        self.exa_system_prompt_text.delete("1.0", tk.END)
+        self.exa_system_prompt_text.insert(tk.END, DEFAULT_EXA_SYSTEM_PROMPT.strip())
+    
+    def reset_chroma_system_prompt(self):
+        """Reset Chroma system prompt to default"""
+        self.chroma_system_prompt_text.delete("1.0", tk.END)
+        self.chroma_system_prompt_text.insert(tk.END, DEFAULT_CHROMA_SYSTEM_PROMPT.strip())
+    
+    def validate_system_prompt(self, prompt_text):
+        """Validate system prompt input"""
+        if not prompt_text or not prompt_text.strip():
+            return True, ""  # Empty prompt is valid
+        
+        # Check for basic formatting issues
+        if len(prompt_text.strip()) > 10000:
+            return False, "System prompt is too long (maximum 10,000 characters)"
+        
+        # Check for dangerous patterns (basic safety)
+        dangerous_patterns = ['<script>', '<?php', '#!/bin/', 'rm -rf', 'del /']
+        for pattern in dangerous_patterns:
+            if pattern.lower() in prompt_text.lower():
+                return False, f"System prompt contains potentially dangerous content: {pattern}"
+        
+        return True, ""
+    
     def update_servers_list(self):
         """Update the servers listbox with current servers"""
         self.servers_listbox.delete(0, tk.END)
@@ -2311,6 +2478,11 @@ class WolfChatSetup(tk.Tk):
                 if "raw_config" in server_config:
                     self.custom_config_text.delete("1.0", tk.END)
                     self.custom_config_text.insert("1.0", server_config["raw_config"])
+                
+                # Load system prompt for custom server
+                system_prompt = server_config.get("system_prompt", "")
+                self.custom_system_prompt_text.delete("1.0", tk.END)
+                self.custom_system_prompt_text.insert("1.0", system_prompt)
             
             self.custom_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             self.remove_btn.config(state=tk.NORMAL)  # Can remove custom servers
@@ -2330,7 +2502,8 @@ class WolfChatSetup(tk.Tk):
         
         self.config_data["MCP_SERVERS"][new_name] = {
             "enabled": True,
-            "raw_config": '        "command": "npx",\n        "args": [\n            "custom-mcp-server"\n        ]'
+            "raw_config": '        "command": "npx",\n        "args": [\n            "custom-mcp-server"\n        ]',
+            "system_prompt": ""
         }
         
         # Update UI
@@ -2400,12 +2573,28 @@ class WolfChatSetup(tk.Tk):
             if self.exa_type_var.get() == "local":
                 self.config_data["MCP_SERVERS"]["exa"]["server_path"] = self.exa_path_var.get()
             
+            # Save Exa system prompt
+            exa_prompt = self.exa_system_prompt_text.get("1.0", tk.END).strip()
+            is_valid, error_message = self.validate_system_prompt(exa_prompt)
+            if not is_valid:
+                messagebox.showerror("Error", f"Exa system prompt validation failed: {error_message}")
+                return
+            self.config_data["MCP_SERVERS"]["exa"]["system_prompt"] = exa_prompt
+            
             # Chroma server
             if "chroma" not in self.config_data["MCP_SERVERS"]:
                 self.config_data["MCP_SERVERS"]["chroma"] = {}
             
             self.config_data["MCP_SERVERS"]["chroma"]["enabled"] = self.chroma_enable_var.get()
             self.config_data["MCP_SERVERS"]["chroma"]["data_dir"] = self.chroma_dir_var.get()
+            
+            # Save Chroma system prompt
+            chroma_prompt = self.chroma_system_prompt_text.get("1.0", tk.END).strip()
+            is_valid, error_message = self.validate_system_prompt(chroma_prompt)
+            if not is_valid:
+                messagebox.showerror("Error", f"Chroma system prompt validation failed: {error_message}")
+                return
+            self.config_data["MCP_SERVERS"]["chroma"]["system_prompt"] = chroma_prompt
             
             # Custom server - check if one is currently selected
             selection = self.servers_listbox.curselection()
@@ -2432,6 +2621,14 @@ class WolfChatSetup(tk.Tk):
                     # Update other settings
                     self.config_data["MCP_SERVERS"][new_name]["enabled"] = self.custom_enable_var.get()
                     self.config_data["MCP_SERVERS"][new_name]["raw_config"] = self.custom_config_text.get("1.0", tk.END).strip()
+                    
+                    # Save custom server system prompt
+                    custom_prompt = self.custom_system_prompt_text.get("1.0", tk.END).strip()
+                    is_valid, error_message = self.validate_system_prompt(custom_prompt)
+                    if not is_valid:
+                        messagebox.showerror("Error", f"Custom server system prompt validation failed: {error_message}")
+                        return
+                    self.config_data["MCP_SERVERS"][new_name]["system_prompt"] = custom_prompt
             
             # Game window settings
             self.config_data["GAME_WINDOW_CONFIG"] = {
