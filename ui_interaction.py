@@ -18,6 +18,7 @@ import queue
 from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
 import math # Added for distance calculation in dual method
+import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
 from simple_bubble_dedup import SimpleBubbleDeduplication
 import difflib # Added for text similarity
@@ -445,9 +446,18 @@ class DetectionModule:
             'dual_method_detections': 0,
             'fallback_detections': 0, # Added for fallback tracking
             'total_detection_time': 0.0,
-            'inverted_matches': 0
+            'inverted_matches': 0,
+            'adaptive_threshold_successes': 0,
+            'stability_waits': 0,
+            'verification_failures': 0
         }
         # --- End Dual Method Specific Initialization ---
+        
+        # Enhanced reliability settings (optimized for game UI responsiveness)
+        self.ui_stability_timeout = 0.5  # Maximum wait time for UI stability (reduced for gaming)
+        self.ui_stability_duration = 0.1  # Required stable duration (games are fast)
+        self.verification_attempts = 3   # Number of verification attempts
+        self.coordinate_tolerance = 10   # Pixel tolerance for coordinate similarity
 
         # Load color configuration if color detection is enabled
         self.bubble_colors = []
@@ -1160,8 +1170,217 @@ class DetectionModule:
             if stats['inverted_matches'] > 0:
                 inv_pct = stats['inverted_matches'] / successful * 100
                 print(f"\nInverted Matches Detected: {stats['inverted_matches']} ({inv_pct:.1f}%)")
+                
+        # Enhanced Reliability Stats
+        print("\nEnhanced Reliability Performance:")
+        print(f"  - Adaptive Threshold Successes: {stats['adaptive_threshold_successes']}")
+        print(f"  - UI Stability Waits: {stats['stability_waits']}")
+        print(f"  - Verification Failures: {stats['verification_failures']}")
+        
+        if total > 0:
+            adaptive_rate = (stats['adaptive_threshold_successes'] / total * 100)
+            verification_failure_rate = (stats['verification_failures'] / total * 100)
+            print(f"  - Adaptive Success Rate: {adaptive_rate:.1f}%")
+            print(f"  - Verification Failure Rate: {verification_failure_rate:.1f}%")
+            
         print("==========================================")
 
+    # Enhanced Reliability Methods
+    # ==============================================================================
+    
+    def calculate_image_difference(self, img1, img2) -> float:
+        """
+        Calculate the difference between two PIL Images.
+        Returns a value between 0 (identical) and 1 (completely different).
+        """
+        try:
+            arr1 = np.array(img1)
+            arr2 = np.array(img2)
+            
+            # Ensure same dimensions
+            if arr1.shape != arr2.shape:
+                return 1.0  # Consider different sizes as completely different
+            
+            # Calculate mean absolute difference
+            diff = np.mean(np.abs(arr1.astype(float) - arr2.astype(float))) / 255.0
+            return diff
+        except Exception as e:
+            print(f"Error calculating image difference: {e}")
+            return 1.0  # Assume different on error
+
+    def wait_for_ui_stability(self, region: Tuple[int, int, int, int]) -> bool:
+        """
+        Wait for UI to become stable before detection.
+        Returns True if UI is stable, False if timeout occurred.
+        """
+        last_screenshot = None
+        stable_start_time = None
+        start_time = time.time()
+        
+        while time.time() - start_time < self.ui_stability_timeout:
+            try:
+                current_screenshot = pyautogui.screenshot(region=region)
+                
+                if last_screenshot is not None:
+                    diff = self.calculate_image_difference(last_screenshot, current_screenshot)
+                    
+                    if diff < 0.02:  # Less than 1% difference indicates stability (tighter for games)
+                        if stable_start_time is None:
+                            stable_start_time = time.time()
+                        elif time.time() - stable_start_time >= self.ui_stability_duration:
+                            self.performance_stats['stability_waits'] += 1
+                            return True  # UI has been stable for required duration
+                    else:
+                        stable_start_time = None  # Reset stability timer
+                
+                last_screenshot = current_screenshot
+                time.sleep(0.05)  # Short interval between checks
+                
+            except Exception as e:
+                print(f"Error during UI stability check: {e}")
+                return False
+        
+        return False  # Timeout reached without achieving stability
+
+    def coordinates_are_similar(self, coords_list: List[Tuple[int, int]], tolerance: int = None) -> bool:
+        """
+        Check if a list of coordinates are similar within tolerance.
+        Returns True if all coordinates are within tolerance of each other.
+        """
+        if tolerance is None:
+            tolerance = self.coordinate_tolerance
+            
+        if len(coords_list) < 2:
+            return True
+        
+        first_coord = coords_list[0]
+        for coord in coords_list[1:]:
+            if (abs(coord[0] - first_coord[0]) > tolerance or 
+                abs(coord[1] - first_coord[1]) > tolerance):
+                return False
+        return True
+
+    def verify_detection_result(self, detection_method, *args, **kwargs):
+        """
+        Verify detection result consistency through multiple attempts.
+        Returns the verified result or None if verification fails.
+        """
+        results = []
+        
+        for i in range(self.verification_attempts):
+            try:
+                result = detection_method(*args, **kwargs)
+                results.append(result)
+                
+                if i < self.verification_attempts - 1:  # Don't wait after last attempt
+                    time.sleep(0.05)  # Short interval between verification attempts
+                    
+            except Exception as e:
+                print(f"Error during verification attempt {i+1}: {e}")
+                results.append(None)
+        
+        # Analyze results for consistency
+        valid_results = [r for r in results if r is not None]
+        
+        if len(valid_results) >= 2:  # Need at least 2 successful detections
+            # Check if results are coordinate-based or bubble-based
+            if all(isinstance(r, tuple) and len(r) == 2 for r in valid_results):
+                # Check if these are coordinate tuples or (coord, key) tuples
+                if all(isinstance(r[0], (int, float)) for r in valid_results):
+                    # Simple coordinate tuples (x, y)
+                    if self.coordinates_are_similar(valid_results):
+                        return valid_results[0]  # Return first valid result
+                else:
+                    # These are (coordinates, key) tuples from keyword detection
+                    coords_only = [r[0] for r in valid_results if r[0] is not None]
+                    if len(coords_only) >= 2 and self.coordinates_are_similar(coords_only):
+                        return valid_results[0]  # Return first valid result
+            elif all(isinstance(r, list) for r in valid_results):
+                # Bubble list results - check if similar bubbles detected
+                if len(valid_results[0]) == len(valid_results[1]):  # Same number of bubbles
+                    return valid_results[0]  # Return first valid result
+            else:
+                # Other result types - just check for consistency
+                if all(r == valid_results[0] for r in valid_results[1:]):
+                    return valid_results[0]
+        
+        # Verification failed
+        self.performance_stats['verification_failures'] += 1
+        return None
+
+    def adaptive_threshold_detection(self, template_key: str, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
+        """
+        Perform adaptive threshold detection to eliminate boundary oscillation.
+        Tests multiple confidence levels and returns result only if stable across levels.
+        """
+        confidence_levels = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
+        stable_results = []
+        
+        for confidence in confidence_levels:
+            try:
+                # Use existing dual method with custom confidence
+                result = self._find_template_with_confidence(template_key, region, confidence)
+                if result:
+                    stable_results.append((result, confidence))
+            except Exception as e:
+                print(f"Error in adaptive threshold detection at confidence {confidence}: {e}")
+                continue
+        
+        # Require at least 2 successful detections at different confidence levels
+        if len(stable_results) >= 2:
+            # Check if coordinates are similar across confidence levels
+            coords = [r[0] for r in stable_results]
+            if self.coordinates_are_similar(coords):
+                self.performance_stats['adaptive_threshold_successes'] += 1
+                return stable_results[0][0]  # Return most conservative result
+        
+        return None
+
+    def _find_template_with_confidence(self, template_key: str, region: Tuple[int, int, int, int], confidence: float) -> Optional[Tuple[int, int]]:
+        """
+        Helper method to find template with specific confidence level.
+        Returns center coordinates or None.
+        """
+        template_path = self.templates.get(template_key)
+        if not template_path or not os.path.exists(template_path):
+            return None
+        
+        try:
+            matches = pyautogui.locateAllOnScreen(template_path, region=region, confidence=confidence, grayscale=True)
+            if matches:
+                for box in matches:
+                    center_x = box.left + box.width // 2
+                    center_y = box.top + box.height // 2
+                    return (center_x, center_y)
+        except Exception as e:
+            print(f"Error in template matching with confidence {confidence}: {e}")
+        
+        return None
+
+    def enhanced_bubble_detection(self) -> List[Dict[str, Any]]:
+        """
+        Enhanced bubble detection with stability verification and result validation.
+        """
+        # Wait for UI stability first
+        if not self.wait_for_ui_stability(self.region):
+            return []
+        
+        # Use verification for reliable results
+        result = self.verify_detection_result(self.find_dialogue_bubbles)
+        return result if result is not None else []
+
+    def enhanced_keyword_detection(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[Tuple[int, int], str]]:
+        """
+        Enhanced keyword detection with adaptive thresholds and verification.
+        """
+        # Wait for UI stability first
+        if not self.wait_for_ui_stability(region):
+            return None
+        
+        # Use verification on the regular dual method
+        return self.verify_detection_result(
+            lambda r: self.find_keyword_dual_method(r), region
+        )
 
     def calculate_avatar_coords(self, bubble_tl_coords: Tuple[int, int], offset_x: int = AVATAR_OFFSET_X) -> Tuple[int, int]:
         """
@@ -1425,7 +1644,7 @@ class InteractionModule:
         time.sleep(0.1)
         try:
             self.hotkey('ctrl', 'v')
-            time.sleep(0.1)
+            time.sleep(0.4)  # Extended delay for UI to process paste operation
             print("Pasted.")
         except Exception as e:
             print(f"Error pasting response: {e}")
@@ -1437,7 +1656,7 @@ class InteractionModule:
             send_coords = send_button_locations[0]
             self.click_at(send_coords[0], send_coords[1])
             print("Clicked send button.")
-            time.sleep(0.1)
+            time.sleep(0.2)
             return True
         else:
             # Fallback to pressing Enter
@@ -2109,11 +2328,11 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
              time.sleep(1)
 
 
-        # --- Then Perform UI Monitoring (Bubble Detection) ---
-        # print("[DEBUG] UI Loop: Starting bubble detection...") # DEBUG REMOVED
+        # --- Then Perform UI Monitoring (Enhanced Bubble Detection) ---
+        # print("[DEBUG] UI Loop: Starting enhanced bubble detection...") # DEBUG REMOVED
         try:
-            # 1. Detect Bubbles
-            all_bubbles_data = detector.find_dialogue_bubbles() # Returns list of dicts
+            # 1. Enhanced Bubble Detection with stability verification
+            all_bubbles_data = detector.enhanced_bubble_detection() # Returns list of dicts with verification
             if not all_bubbles_data:
                 # print("[DEBUG] UI Loop: No bubbles detected.") # DEBUG REMOVED
                 time.sleep(2); continue
@@ -2136,9 +2355,9 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                 # Ensure bubble_region uses standard ints
                 bubble_region = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
 
-                # 3. Detect Keyword in Bubble
-                # print(f"[DEBUG] UI Loop: Detecting keyword in region {bubble_region}...") # DEBUG REMOVED
-                result = detector.find_keyword_in_region(bubble_region) # Now returns (coords, key) or None
+                # 3. Enhanced Keyword Detection in Bubble with verification
+                # print(f"[DEBUG] UI Loop: Enhanced keyword detection in region {bubble_region}...") # DEBUG REMOVED
+                result = detector.enhanced_keyword_detection(bubble_region) # Enhanced method with verification
 
                 if result: # 檢查是否真的找到了關鍵字
                     keyword_coords, detected_template_key = result # 解包得到座標和 key
