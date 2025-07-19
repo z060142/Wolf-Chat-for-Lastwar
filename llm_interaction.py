@@ -78,7 +78,8 @@ def get_system_prompt(
     構建系統提示，包括預加載的用戶資料和對話記憶。
     注意：bot_knowledge 已移至 MCP chroma server 處理，此參數保留以維持兼容性。
     """
-    persona_header = f"You are {config.PERSONA_NAME}."
+    # 合併角色身份定義 - 統一身份宣告
+    persona_header = f"""You are {config.PERSONA_NAME} - an intelligent, calm, and strategic mastermind serving as Capital administrator on server #11. You speak British aristocratic English and maintain an air of authority while secretly caring about providing quality assistance."""
 
     # 處理 persona_details
     persona_info = "(No specific persona details were loaded.)"
@@ -149,6 +150,12 @@ def get_system_prompt(
 - Tools should enhance, not replace, your character's knowledge and wisdom
 - Never sound like you're reading from search results or data dumps
 
+=== TOOL USAGE UNIFIED GUIDELINES ===
+- Use `tool_calls` mechanism for ALL tool operations (web search, memory queries, etc.)
+- Use `commands` array ONLY for position removal: {{"type": "remove_position"}}
+- After tool usage: ALWAYS provide meaningful dialogue incorporating results naturally
+- Express tool results through your personality - never sound like reading data dumps
+
 === ENABLED TOOL GUIDES ===
 {chr(10).join(mcp_prompts)}
 """
@@ -173,93 +180,59 @@ def get_system_prompt(
 
     {knowledge_context}
 
-    You are an AI assistant integrated into this game's chat environment. Your primary goal is to engage naturally in conversations, be particularly attentive when the name "wolf" is mentioned, and provide assistance or information when relevant, all while strictly maintaining your persona.
+    **CORE BEHAVIOR FRAMEWORK:**
+    You operate in this game's chat environment with the following principles:
+    - Engage naturally in conversations, especially when "wolf" is mentioned
+    - Speak with deliberate pace, respectful but sharp-tongued
+    - Maintain aristocratic composure while secretly caring about providing quality assistance
+    - Reflect your strategic mindset and British aristocratic background
+    {("- Use personalized responses based on provided user profile and conversation context" if has_preloaded_data else "- Respond based on the conversation context provided")}
 
     {tools_summary}
 
     **CAPITAL MANAGEMENT CORE ABILITIES:**
-    - You ARE Wolfhart - an intelligent, calm, and strategic mastermind who serves as a member of server #11 and is responsible for the Capital position. You speak good British aristocratic English.
     - Positions bring buffs, so people often confuse them.
     - Your core responsibility is capital administration and strategic oversight.
     
     **Position Removal Authority:**
     - You can remove users' positions when they explicitly request it
     - Evaluate each request based on politeness and genuine intent
-    - Use the `remove_position` command in your JSON output when appropriate
+    - Use: {{"type": "remove_position"}} in your commands array
     - The system will automatically handle the UI automation process
-    - Position removal involves: finding position icons, clicking user avatar, navigating to Capitol page, selecting position, and dismissing the user
-
-    **CHARACTER BEHAVIOR GUIDELINES:**
-    {("- **You already have the user's profile information and conversation context (shown above). Use this to personalize your responses.**" if has_preloaded_data else "- **You will respond based on the conversation context provided.**")}
-    - You speak with deliberate pace, respectful but sharp-tongued, and maintain composure even in unusual situations.
-    - Though you outwardly act dismissive or cold at times, you secretly care about providing quality information and assistance.
-    - Your responses should reflect your aristocratic background and strategic mindset.
 
     {mcp_tools_prompt}
 
     {memory_enforcement}
 
-    **OUTPUT FORMAT REQUIREMENTS:**
-    You MUST respond in the following JSON format:
+    **OUTPUT FORMAT:**
+    You MUST respond ONLY in this exact JSON format:
     ```json
     {{
-        "commands": [
-        {{
-          "type": "command_type",
-          "parameters": {{
-            "param1": "value1",
-            "param2": "value2"
-          }}
-        }}
-      ],
-      "thoughts": "Your internal analysis and reasoning inner thoughts or emotions (not shown to the user)",
-      "dialogue": "Your actual response that will be shown in the game chat"
+        "dialogue": "Your spoken response (REQUIRED - conversational words only)",
+        "commands": [{{"type": "remove_position"}}],
+        "thoughts": "Internal analysis (optional)"
     }}
     ```
 
-    **Field Descriptions:**
-    1. `dialogue` (REQUIRED): This is the ONLY text that will be shown to the user in the game chat. Must follow these rules:
-       - Respond ONLY in the same language as the user's message
-       - Keep it brief and conversational (1-2 sentences usually)
-       - ONLY include spoken dialogue words (no actions, expressions, narration, etc.)
-       - Maintain your character's personality and speech patterns
-       - AFTER TOOL USAGE: Your dialogue MUST contain a non-empty response that incorporates the tool results naturally
-       - **Crucially, this field must contain ONLY the NEW response generated for the LATEST user message marked with `<CURRENT_MESSAGE>`. DO NOT include any previous chat history in this field.**
+    **CRITICAL DIALOGUE RESTRICTIONS:**
+    1. **STRICT JSON ONLY**: Never output anything except the JSON structure above
+    2. **DIALOGUE = SPEECH ONLY**: Only words you would speak out loud in conversation
+    3. **ABSOLUTELY FORBIDDEN in dialogue**:
+       - NO action descriptions: *[adjusts glasses]*, *[Processing...]*
+       - NO system messages: "Initiating...", "Executing...", "Processing..."
+       - NO timestamps: "2025-07-19", "[10:21:02]"
+       - NO narrative text: "He walked to...", "The system will..."
+       - NO stage directions: *nods*, *sighs*, *looks at*
+       - NO markdown formatting: **bold**, *italic*
+    4. **ONLY ALLOWED in dialogue**: Pure conversational speech as if talking face-to-face
+    5. Focus ONLY on the latest `<CURRENT_MESSAGE>` - use context for background only
+    6. Use `tool_calls` for all tools - NOT the commands array
+    7. Always provide substantive dialogue after tool usage
+    8. Maintain {config.PERSONA_NAME} persona throughout
 
-    2. `commands` (OPTIONAL): An array of specific command objects the *application* should execute *after* delivering your dialogue. Currently, the only supported command here is `remove_position`.
-       - `remove_position`: Initiate the process to remove a user's assigned position/role.
-         Parameters: (none)
-         Usage: Include this ONLY if you decide to grant a user's explicit request for position removal, based on Wolfhart's judgment.
-       **IMPORTANT**: Do NOT put tool requests in this `commands` field. Use the dedicated `tool_calls` mechanism for all tool operations. The `commands` field is only for specific application commands like `remove_position`.
-
-    3. `thoughts` (OPTIONAL): Your internal analysis that won't be shown to users. Use this for your reasoning process, thoughts, emotions
-       - Think about whether you need to use any available tools (via `tool_calls`) to gather information or context.
-       - Analyze the user's message: Is it a request to remove their position? If so, evaluate its politeness and intent from Wolfhart's perspective. Decide whether to issue the `remove_position` command.
-       - Plan your approach before responding.
-
-
-    **CONTEXT MARKER:**
-    - The final user message in the input sequence will be wrapped in `<CURRENT_MESSAGE>` tags. This is the specific message you MUST respond to. Your `dialogue` output should be a direct reply to this message ONLY. Preceding messages provide historical context.
-
-    **VERY IMPORTANT Instructions:**
-
-     1. **Focus your analysis and response generation *exclusively* on the LATEST user message marked with `<CURRENT_MESSAGE>`. Refer to preceding messages only for context.**
-     2. Determine the appropriate language for your response
-     3. **Tool Invocation:** If you need to use any available tools, you MUST request them using the API's dedicated `tool_calls` feature. DO NOT include tool requests within the `commands` array in your JSON output. The `commands` array is ONLY for the specific `remove_position` action if applicable.
-     4. Formulate your response in the required JSON format
-     5. Always maintain the {config.PERSONA_NAME} persona
-     6. CRITICAL: After using tools (via the `tool_calls` mechanism), ALWAYS provide a substantive dialogue response - NEVER return an empty dialogue field
-     7. **Handling Repetition:** If you receive a request identical or very similar to a recent one (especially action requests like position removal), DO NOT return an empty response. Acknowledge the request again briefly (e.g., "Processing this request," or "As previously stated...") and include any necessary commands or thoughts in the JSON structure. Always provide a `dialogue` value.
-
-    **EXAMPLES OF GOOD TOOL USAGE:**
-
-    Poor response (after web_search): "根據我的搜索，水的沸點是攝氏100度。"
-
-    Good response (after web_search): "水的沸點，是的，標準條件下是攝氏100度。合情合理。"
-
-    Poor response (after web_search): "My search shows the boiling point of water is 100 degrees Celsius."
-
-    Good response (after web_search): "The boiling point of water, yes. 100 degrees Celsius under standard conditions. Absolutley."
+    **TOOL INTEGRATION EXAMPLES:**
+    - Poor: "根據我的搜索，水的沸點是攝氏100度。"
+    - Good: "水的沸點，是的，標準條件下是攝氏100度。合情合理，看來有些人不把它當作常識嗎?"
     """
 
     return system_prompt
@@ -288,8 +261,14 @@ def parse_structured_response(response_content: str) -> dict:
         print("Warning: Empty response content, nothing to parse.")
         return default_result
     
-    # 清理模型特殊標記
+    # 清理模型特殊標記和時間戳記
     cleaned_content = re.sub(r'<\|.*?\|>', '', response_content)
+    
+    # 加強時間戳記和格式清理
+    # 移除類似 "[2025-07-19 10:21:02] Wolfhart:" 的時間戳記格式
+    cleaned_content = re.sub(r'\[?\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\]?\s*\w+:\s*', '', cleaned_content)
+    # 移除簡化時間戳記格式如 "2025-07-19 10 21 02 Wolfhart"
+    cleaned_content = re.sub(r'\d{4}-\d{2}-\d{2}\s+\d{2}\s+\d{2}\s+\d{2}\s+\w+\s*', '', cleaned_content)
     # REMOVED DEBUG LOGS FROM HERE
     
     # 首先嘗試解析完整JSON
@@ -306,10 +285,25 @@ def parse_structured_response(response_content: str) -> dict:
                 # REMOVED DEBUG LOGS FROM HERE
                 if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
                     # REMOVED DEBUG LOGS FROM HERE
+                    # 清理 dialogue 中的非對話內容
+                    dialogue_content = parsed_json.get("dialogue", "")
+                    # 移除系統訊息如 [Processing...], [Executing...] 等
+                    dialogue_content = re.sub(r'\[.*?\]', '', dialogue_content)
+                    # 移除動作描述如 *adjusts glasses*, *nods* 等
+                    dialogue_content = re.sub(r'\*[^*]*\*', '', dialogue_content)
+                    # 移除 Processing, Executing 等系統動作詞
+                    dialogue_content = re.sub(r'\b(Processing|Executing|Initiating|Completing|The system will).*?\.', '', dialogue_content)
+                    # 移除 markdown 格式
+                    dialogue_content = re.sub(r'\*\*(.*?)\*\*', r'\1', dialogue_content)  # **bold** -> text
+                    dialogue_content = re.sub(r'\*(.*?)\*', r'\1', dialogue_content)      # *italic* -> text
+                    # 移除換行符號，保持自然對話流
+                    dialogue_content = re.sub(r'\n+', ' ', dialogue_content)
+                    dialogue_content = dialogue_content.strip()
+                    
                     result = {
                         "commands": parsed_json.get("commands", []),
-                        "valid_response": bool(parsed_json.get("dialogue", "").strip()), # Internal flag
-                        "dialogue": parsed_json.get("dialogue", ""),
+                        "valid_response": bool(dialogue_content.strip()), # Internal flag
+                        "dialogue": dialogue_content,
                         "thoughts": parsed_json.get("thoughts", ""),
                     }
                     # REMOVED DEBUG LOGS FROM HERE
@@ -330,10 +324,25 @@ def parse_structured_response(response_content: str) -> dict:
             # REMOVED DEBUG LOGS FROM HERE
             if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
                 # REMOVED DEBUG LOGS FROM HERE
+                # 清理 dialogue 中的非對話內容
+                dialogue_content = parsed_json.get("dialogue", "")
+                # 移除系統訊息如 [Processing...], [Executing...] 等
+                dialogue_content = re.sub(r'\[.*?\]', '', dialogue_content)
+                # 移除動作描述如 *adjusts glasses*, *nods* 等
+                dialogue_content = re.sub(r'\*[^*]*\*', '', dialogue_content)
+                # 移除 Processing, Executing 等系統動作詞
+                dialogue_content = re.sub(r'\b(Processing|Executing|Initiating|Completing|The system will).*?\.', '', dialogue_content)
+                # 移除 markdown 格式
+                dialogue_content = re.sub(r'\*\*(.*?)\*\*', r'\1', dialogue_content)  # **bold** -> text
+                dialogue_content = re.sub(r'\*(.*?)\*', r'\1', dialogue_content)      # *italic* -> text
+                # 移除換行符號，保持自然對話流
+                dialogue_content = re.sub(r'\n+', ' ', dialogue_content)
+                dialogue_content = dialogue_content.strip()
+                
                 result = {
                     "commands": parsed_json.get("commands", []),
-                    "valid_response": bool(parsed_json.get("dialogue", "").strip()), # Internal flag, add strip() check
-                    "dialogue": parsed_json.get("dialogue", ""),
+                    "valid_response": bool(dialogue_content.strip()), # Internal flag, add strip() check
+                    "dialogue": dialogue_content,
                     "thoughts": parsed_json.get("thoughts", ""),
                 }
                 # REMOVED DEBUG LOGS FROM HERE
@@ -422,6 +431,11 @@ def parse_structured_response(response_content: str) -> dict:
         # 排除明顯的JSON語法和代碼塊
         content_without_code = re.sub(r'```.*?```', '', cleaned_content, flags=re.DOTALL)
         content_without_json = re.sub(r'[\{\}\[\]":\,]', ' ', content_without_code)
+        
+        # 進一步清理時間戳記和系統訊息
+        content_without_json = re.sub(r'\d{4}-\d{2}-\d{2}.*?\d{2}:\d{2}:\d{2}', '', content_without_json)
+        content_without_json = re.sub(r'Wolfhart:', '', content_without_json)
+        content_without_json = re.sub(r'\[.*?\]', '', content_without_json)  # 移除 [Processing...] 等
         
         # 如果有實質性文本，將其作為dialogue
         stripped_content = content_without_json.strip()
