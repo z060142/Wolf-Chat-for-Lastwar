@@ -717,6 +717,15 @@ class WolfChatSetup(tk.Tk):
         remote_frame = ttk.LabelFrame(main_frame, text="Remote Control Settings")
         remote_frame.pack(fill=tk.X, pady=10)
 
+        # Remote Control Enable/Disable
+        remote_enable_frame = ttk.Frame(remote_frame)
+        remote_enable_frame.pack(fill=tk.X, pady=5, padx=10)
+        self.enable_remote_control_var = tk.BooleanVar(value=True)  # Default to enabled
+        enable_remote_cb = ttk.Checkbutton(remote_enable_frame, text="Enable Remote Control", 
+                                         variable=self.enable_remote_control_var,
+                                         command=self.toggle_remote_control_fields)
+        enable_remote_cb.pack(side=tk.LEFT)
+
         # Remote Server URL
         remote_url_frame = ttk.Frame(remote_frame)
         remote_url_frame.pack(fill=tk.X, pady=5, padx=10)
@@ -2334,6 +2343,10 @@ class WolfChatSetup(tk.Tk):
                 self.bot_restart_interval_var.set(self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 120))
                 self.link_restarts_var.set(self.remote_data.get("LINK_RESTART_TIMES", True))
                 self.game_process_name_var.set(self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe"))
+            
+            # Load remote control toggle from config.py
+            if hasattr(self, 'enable_remote_control_var'):
+                self.enable_remote_control_var.set(self.config_data.get("ENABLE_REMOTE_CONTROL", True))
 
             # Update visibility and states
             self.update_exa_settings_visibility()
@@ -2361,6 +2374,15 @@ class WolfChatSetup(tk.Tk):
             entry_widget.config(show="")
         else:
             entry_widget.config(show="*")
+    
+    def toggle_remote_control_fields(self):
+        """Toggle enabled/disabled state of remote control fields"""
+        enabled = self.enable_remote_control_var.get()
+        # Enable/disable the URL and key entry fields based on checkbox state
+        for widget in [self.remote_url_var, self.remote_key_var]:
+            # Note: tkinter StringVar doesn't have a disable method, 
+            # we'll handle this in the save function instead
+            pass
     
     def update_exa_settings_visibility(self):
         """Update visibility of Exa settings based on server type"""
@@ -2669,6 +2691,10 @@ class WolfChatSetup(tk.Tk):
                 self.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = self.bot_restart_interval_var.get()
                 self.remote_data["LINK_RESTART_TIMES"] = self.link_restarts_var.get()
                 self.remote_data["GAME_PROCESS_NAME"] = self.game_process_name_var.get()
+            
+            # Save remote control toggle to config.py
+            if hasattr(self, 'enable_remote_control_var'):
+                self.config_data["ENABLE_REMOTE_CONTROL"] = self.enable_remote_control_var.get()
             
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:
