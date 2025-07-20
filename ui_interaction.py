@@ -18,81 +18,197 @@ import queue
 from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
 import math # Added for distance calculation in dual method
+import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
 from simple_bubble_dedup import SimpleBubbleDeduplication
 import difflib # Added for text similarity
+import os # Already imported, but good to note for RobustMessageDeduplication
+import json # Already imported, but good to note for RobustMessageDeduplication
 
-class MessageDeduplication:
-    def __init__(self, expiry_seconds=3600):  # 1 hour expiry time
-        self.processed_messages = {}  # {message_key: timestamp}
+# 替換現有的 MessageDeduplication 類
+class RobustMessageDeduplication:
+    def __init__(self, storage_file="persistent_dedup.json", expiry_seconds=3600):
+        self.storage_file = storage_file
         self.expiry_seconds = expiry_seconds
-
-    def is_duplicate(self, sender, content):
-        """Check if the message is a duplicate within the expiry period using text similarity."""
-        if not sender or not content:
-            return False  # Missing necessary info, treat as new message
-
-        current_time = time.time()
+        self.processed_messages = {}
+        self.last_save_time = 0
+        self.save_interval = 10  # 每10秒保存一次
         
-        # 遍歷所有已處理的消息
-        for key, timestamp in list(self.processed_messages.items()):
-            # 檢查是否過期
-            if current_time - timestamp >= self.expiry_seconds:
-                # 從 processed_messages 中移除過期的項目，避免集合在迭代時改變大小
-                # 但由於我們使用了 list(self.processed_messages.items())，所以這裡可以安全地 continue
-                # 或者，如果希望立即刪除，則需要不同的迭代策略或在 purge_expired 中處理
-                continue # 繼續檢查下一個，過期項目由 purge_expired 處理
-                
-            # 解析之前儲存的發送者和內容
-            stored_sender, stored_content = key.split(":", 1)
+        # 啟動時加載持久化數據
+        self._load_from_storage()
+        
+        # 清理過期記錄
+        self._cleanup_expired()
+        
+        print(f"RobustDeduplication initialized with {len(self.processed_messages)} existing records")
+    
+    def _load_from_storage(self):
+        """從持久化文件加載去重記錄"""
+        try:
+            if os.path.exists(self.storage_file):
+                with open(self.storage_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.processed_messages = data.get('messages', {})
+                    print(f"Loaded {len(self.processed_messages)} dedup records from storage")
+        except Exception as e:
+            print(f"Warning: Could not load dedup storage: {e}")
+            self.processed_messages = {}
+    
+    def _save_to_storage(self, force=False):
+        """保存去重記錄到持久化文件"""
+        current_time = time.time()
+        if not force and (current_time - self.last_save_time) < self.save_interval:
+            return
+        
+        try:
+            # 只保存未過期的記錄
+            valid_records = {}
+            for key, timestamp in self.processed_messages.items():
+                if current_time - timestamp < self.expiry_seconds:
+                    valid_records[key] = timestamp
             
-            # 檢查發送者是否相同
-            if sender.lower() == stored_sender.lower():
-                # Calculate text similarity
-                similarity = difflib.SequenceMatcher(None, content, stored_content).ratio()
-                if similarity >= 0.95:  # Use 0.95 as threshold
-                    print(f"Deduplicator: Detected similar message (similarity: {similarity:.2f}): {sender} - {content[:20]}...")
-                    return True
-        
-        # 不是重複消息，儲存它
-        # 注意：這裡儲存的 content 是原始 content，不是 clean_content
-        message_key = f"{sender.lower()}:{content}"
-        self.processed_messages[message_key] = current_time
-        return False
-
-    # create_key 方法已不再需要，可以移除
-    # def create_key(self, sender, content):
-    #     """Create a standardized composite key."""
-    #     # Thoroughly standardize text - remove all whitespace and punctuation, lowercase
-    #     clean_content = ''.join(c.lower() for c in content if c.isalnum())
-    #     clean_sender = ''.join(c.lower() for c in sender if c.isalnum())
-
-    #     # Truncate content to first 100 chars to prevent overly long keys
-    #     if len(clean_content) > 100:
-    #         clean_content = clean_content[:100]
-
-    #     return f"{clean_sender}:{clean_content}"
-
-    def purge_expired(self):
-        """Remove expired message records."""
+            data = {
+                'messages': valid_records,
+                'last_updated': current_time
+            }
+            
+            with open(self.storage_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            
+            self.processed_messages = valid_records
+            self.last_save_time = current_time
+            
+        except Exception as e:
+            print(f"Error saving dedup storage: {e}")
+    
+    def _cleanup_expired(self):
+        """清理過期記錄"""
         current_time = time.time()
-        expired_keys = [k for k, t in self.processed_messages.items()
-                         if current_time - t >= self.expiry_seconds]
-
-        for key in expired_keys:
-            del self.processed_messages[key]
-
-        if expired_keys: # Log only if something was purged
-            print(f"Deduplicator: Purged {len(expired_keys)} expired message records.")
-        return len(expired_keys)
-
+        before_count = len(self.processed_messages)
+        
+        self.processed_messages = {
+            key: timestamp for key, timestamp in self.processed_messages.items()
+            if current_time - timestamp < self.expiry_seconds
+        }
+        
+        after_count = len(self.processed_messages)
+        if before_count > after_count:
+            print(f"Cleaned up {before_count - after_count} expired dedup records")
+    
+    def _create_message_key(self, sender, content):
+        """創建標準化的消息鍵"""
+        # 標準化處理
+        clean_sender = sender.lower().strip() if sender else ""
+        clean_content = ' '.join(content.strip().split()) if content else ""
+        return f"{clean_sender}:{clean_content}"
+    
+    def is_duplicate(self, sender, content):
+        """強化的重複檢查"""
+        if not sender or not content:
+            print("Deduplication: Missing sender or content, treating as new")
+            return False
+        
+        current_time = time.time()
+        
+        # 定期清理（每5分鐘）
+        if hasattr(self, '_last_cleanup'):
+            if current_time - self._last_cleanup > 300:
+                self._cleanup_expired()
+                self._last_cleanup = current_time
+        else:
+            self._last_cleanup = current_time
+        
+        # 創建消息鍵
+        message_key = self._create_message_key(sender, content)
+        
+        # 精確匹配檢查
+        if message_key in self.processed_messages:
+            age = current_time - self.processed_messages[message_key]
+            if age < self.expiry_seconds:
+                print(f"DUPLICATE EXACT: {sender} - {content[:40]}... (age: {age:.1f}s)")
+                return True
+            else:
+                # 過期了，移除
+                del self.processed_messages[message_key]
+        
+        # 相似性檢查（更嚴格）
+        clean_content = ' '.join(content.strip().split())
+        for existing_key, timestamp in list(self.processed_messages.items()):
+            age = current_time - timestamp
+            if age >= self.expiry_seconds:
+                continue
+                
+            try:
+                stored_sender, stored_content = existing_key.split(":", 1)
+                if sender.lower().strip() == stored_sender:
+                    # 計算相似度
+                    similarity = difflib.SequenceMatcher(None, clean_content, stored_content).ratio()
+                    if similarity >= 0.95:  # 95%相似度
+                        print(f"DUPLICATE SIMILAR: {sender} - {content[:40]}... (similarity: {similarity:.3f}, age: {age:.1f}s)")
+                        return True
+            except ValueError:
+                continue
+        
+        # 記錄新消息
+        self.processed_messages[message_key] = current_time
+        print(f"NEW MESSAGE RECORDED: {sender} - {content[:40]}...")
+        
+        # 異步保存（不阻塞主流程）
+        self._save_to_storage()
+        
+        return False
+    
     def clear_all(self):
-        """Clear all recorded messages (for F7/F8 functionality)."""
-        count = len(self.processed_messages)
+        """清空所有記錄"""
         self.processed_messages.clear()
-        if count > 0: # Log only if something was cleared
-            print(f"Deduplicator: Cleared all {count} message records.")
-        return count
+        self._save_to_storage(force=True)
+        print("All dedup records cleared and persisted")
+    
+    def get_stats(self):
+        """獲取統計信息"""
+        current_time = time.time()
+        active_count = sum(1 for timestamp in self.processed_messages.values() 
+                          if current_time - timestamp < self.expiry_seconds)
+        
+        return {
+            'total_records': len(self.processed_messages),
+            'active_records': active_count,
+            'oldest_record_age': min([current_time - t for t in self.processed_messages.values()]) if self.processed_messages else 0
+        }
+
+# 診斷工具：狀態重置檢測器
+class StateResetDetector:
+    def __init__(self, log_file="state_resets.log"):
+        self.log_file = log_file
+        self.start_time = time.time()
+        self.reset_count = 0
+        
+    def log_reset(self, reset_type, context=""):
+        """記錄狀態重置事件"""
+        self.reset_count += 1
+        timestamp = time.time()
+        
+        log_entry = f"{timestamp:.3f}: RESET #{self.reset_count} - {reset_type} - {context}\n"
+        
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
+        except:
+            pass
+        
+        print(f"STATE RESET DETECTED: {reset_type} - {context}")
+    
+    def check_object_identity(self, obj, obj_name):
+        """檢查對象是否被重新創建"""
+        obj_id = id(obj)
+        attr_name = f"_{obj_name}_last_id"
+        
+        if hasattr(self, attr_name):
+            last_id = getattr(self, attr_name)
+            if last_id != obj_id:
+                self.log_reset("OBJECT_RECREATED", f"{obj_name} object was recreated")
+        
+        setattr(self, attr_name, obj_id)
 
 # --- Global Pause Flag ---
 # Using a simple mutable object (list) for thread-safe-like access without explicit lock
@@ -330,9 +446,18 @@ class DetectionModule:
             'dual_method_detections': 0,
             'fallback_detections': 0, # Added for fallback tracking
             'total_detection_time': 0.0,
-            'inverted_matches': 0
+            'inverted_matches': 0,
+            'adaptive_threshold_successes': 0,
+            'stability_waits': 0,
+            'verification_failures': 0
         }
         # --- End Dual Method Specific Initialization ---
+        
+        # Enhanced reliability settings (optimized for game UI responsiveness)
+        self.ui_stability_timeout = 0.5  # Maximum wait time for UI stability (reduced for gaming)
+        self.ui_stability_duration = 0.1  # Required stable duration (games are fast)
+        self.verification_attempts = 3   # Number of verification attempts
+        self.coordinate_tolerance = 10   # Pixel tolerance for coordinate similarity
 
         # Load color configuration if color detection is enabled
         self.bubble_colors = []
@@ -1045,8 +1170,217 @@ class DetectionModule:
             if stats['inverted_matches'] > 0:
                 inv_pct = stats['inverted_matches'] / successful * 100
                 print(f"\nInverted Matches Detected: {stats['inverted_matches']} ({inv_pct:.1f}%)")
+                
+        # Enhanced Reliability Stats
+        print("\nEnhanced Reliability Performance:")
+        print(f"  - Adaptive Threshold Successes: {stats['adaptive_threshold_successes']}")
+        print(f"  - UI Stability Waits: {stats['stability_waits']}")
+        print(f"  - Verification Failures: {stats['verification_failures']}")
+        
+        if total > 0:
+            adaptive_rate = (stats['adaptive_threshold_successes'] / total * 100)
+            verification_failure_rate = (stats['verification_failures'] / total * 100)
+            print(f"  - Adaptive Success Rate: {adaptive_rate:.1f}%")
+            print(f"  - Verification Failure Rate: {verification_failure_rate:.1f}%")
+            
         print("==========================================")
 
+    # Enhanced Reliability Methods
+    # ==============================================================================
+    
+    def calculate_image_difference(self, img1, img2) -> float:
+        """
+        Calculate the difference between two PIL Images.
+        Returns a value between 0 (identical) and 1 (completely different).
+        """
+        try:
+            arr1 = np.array(img1)
+            arr2 = np.array(img2)
+            
+            # Ensure same dimensions
+            if arr1.shape != arr2.shape:
+                return 1.0  # Consider different sizes as completely different
+            
+            # Calculate mean absolute difference
+            diff = np.mean(np.abs(arr1.astype(float) - arr2.astype(float))) / 255.0
+            return diff
+        except Exception as e:
+            print(f"Error calculating image difference: {e}")
+            return 1.0  # Assume different on error
+
+    def wait_for_ui_stability(self, region: Tuple[int, int, int, int]) -> bool:
+        """
+        Wait for UI to become stable before detection.
+        Returns True if UI is stable, False if timeout occurred.
+        """
+        last_screenshot = None
+        stable_start_time = None
+        start_time = time.time()
+        
+        while time.time() - start_time < self.ui_stability_timeout:
+            try:
+                current_screenshot = pyautogui.screenshot(region=region)
+                
+                if last_screenshot is not None:
+                    diff = self.calculate_image_difference(last_screenshot, current_screenshot)
+                    
+                    if diff < 0.02:  # Less than 1% difference indicates stability (tighter for games)
+                        if stable_start_time is None:
+                            stable_start_time = time.time()
+                        elif time.time() - stable_start_time >= self.ui_stability_duration:
+                            self.performance_stats['stability_waits'] += 1
+                            return True  # UI has been stable for required duration
+                    else:
+                        stable_start_time = None  # Reset stability timer
+                
+                last_screenshot = current_screenshot
+                time.sleep(0.05)  # Short interval between checks
+                
+            except Exception as e:
+                print(f"Error during UI stability check: {e}")
+                return False
+        
+        return False  # Timeout reached without achieving stability
+
+    def coordinates_are_similar(self, coords_list: List[Tuple[int, int]], tolerance: int = None) -> bool:
+        """
+        Check if a list of coordinates are similar within tolerance.
+        Returns True if all coordinates are within tolerance of each other.
+        """
+        if tolerance is None:
+            tolerance = self.coordinate_tolerance
+            
+        if len(coords_list) < 2:
+            return True
+        
+        first_coord = coords_list[0]
+        for coord in coords_list[1:]:
+            if (abs(coord[0] - first_coord[0]) > tolerance or 
+                abs(coord[1] - first_coord[1]) > tolerance):
+                return False
+        return True
+
+    def verify_detection_result(self, detection_method, *args, **kwargs):
+        """
+        Verify detection result consistency through multiple attempts.
+        Returns the verified result or None if verification fails.
+        """
+        results = []
+        
+        for i in range(self.verification_attempts):
+            try:
+                result = detection_method(*args, **kwargs)
+                results.append(result)
+                
+                if i < self.verification_attempts - 1:  # Don't wait after last attempt
+                    time.sleep(0.05)  # Short interval between verification attempts
+                    
+            except Exception as e:
+                print(f"Error during verification attempt {i+1}: {e}")
+                results.append(None)
+        
+        # Analyze results for consistency
+        valid_results = [r for r in results if r is not None]
+        
+        if len(valid_results) >= 2:  # Need at least 2 successful detections
+            # Check if results are coordinate-based or bubble-based
+            if all(isinstance(r, tuple) and len(r) == 2 for r in valid_results):
+                # Check if these are coordinate tuples or (coord, key) tuples
+                if all(isinstance(r[0], (int, float)) for r in valid_results):
+                    # Simple coordinate tuples (x, y)
+                    if self.coordinates_are_similar(valid_results):
+                        return valid_results[0]  # Return first valid result
+                else:
+                    # These are (coordinates, key) tuples from keyword detection
+                    coords_only = [r[0] for r in valid_results if r[0] is not None]
+                    if len(coords_only) >= 2 and self.coordinates_are_similar(coords_only):
+                        return valid_results[0]  # Return first valid result
+            elif all(isinstance(r, list) for r in valid_results):
+                # Bubble list results - check if similar bubbles detected
+                if len(valid_results[0]) == len(valid_results[1]):  # Same number of bubbles
+                    return valid_results[0]  # Return first valid result
+            else:
+                # Other result types - just check for consistency
+                if all(r == valid_results[0] for r in valid_results[1:]):
+                    return valid_results[0]
+        
+        # Verification failed
+        self.performance_stats['verification_failures'] += 1
+        return None
+
+    def adaptive_threshold_detection(self, template_key: str, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
+        """
+        Perform adaptive threshold detection to eliminate boundary oscillation.
+        Tests multiple confidence levels and returns result only if stable across levels.
+        """
+        confidence_levels = [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9]
+        stable_results = []
+        
+        for confidence in confidence_levels:
+            try:
+                # Use existing dual method with custom confidence
+                result = self._find_template_with_confidence(template_key, region, confidence)
+                if result:
+                    stable_results.append((result, confidence))
+            except Exception as e:
+                print(f"Error in adaptive threshold detection at confidence {confidence}: {e}")
+                continue
+        
+        # Require at least 2 successful detections at different confidence levels
+        if len(stable_results) >= 2:
+            # Check if coordinates are similar across confidence levels
+            coords = [r[0] for r in stable_results]
+            if self.coordinates_are_similar(coords):
+                self.performance_stats['adaptive_threshold_successes'] += 1
+                return stable_results[0][0]  # Return most conservative result
+        
+        return None
+
+    def _find_template_with_confidence(self, template_key: str, region: Tuple[int, int, int, int], confidence: float) -> Optional[Tuple[int, int]]:
+        """
+        Helper method to find template with specific confidence level.
+        Returns center coordinates or None.
+        """
+        template_path = self.templates.get(template_key)
+        if not template_path or not os.path.exists(template_path):
+            return None
+        
+        try:
+            matches = pyautogui.locateAllOnScreen(template_path, region=region, confidence=confidence, grayscale=True)
+            if matches:
+                for box in matches:
+                    center_x = box.left + box.width // 2
+                    center_y = box.top + box.height // 2
+                    return (center_x, center_y)
+        except Exception as e:
+            print(f"Error in template matching with confidence {confidence}: {e}")
+        
+        return None
+
+    def enhanced_bubble_detection(self) -> List[Dict[str, Any]]:
+        """
+        Enhanced bubble detection with stability verification and result validation.
+        """
+        # Wait for UI stability first
+        if not self.wait_for_ui_stability(self.region):
+            return []
+        
+        # Use verification for reliable results
+        result = self.verify_detection_result(self.find_dialogue_bubbles)
+        return result if result is not None else []
+
+    def enhanced_keyword_detection(self, region: Tuple[int, int, int, int]) -> Optional[Tuple[Tuple[int, int], str]]:
+        """
+        Enhanced keyword detection with adaptive thresholds and verification.
+        """
+        # Wait for UI stability first
+        if not self.wait_for_ui_stability(region):
+            return None
+        
+        # Use verification on the regular dual method
+        return self.verify_detection_result(
+            lambda r: self.find_keyword_dual_method(r), region
+        )
 
     def calculate_avatar_coords(self, bubble_tl_coords: Tuple[int, int], offset_x: int = AVATAR_OFFSET_X) -> Tuple[int, int]:
         """
@@ -1310,7 +1644,7 @@ class InteractionModule:
         time.sleep(0.1)
         try:
             self.hotkey('ctrl', 'v')
-            time.sleep(0.1)
+            time.sleep(0.4)  # Extended delay for UI to process paste operation
             print("Pasted.")
         except Exception as e:
             print(f"Error pasting response: {e}")
@@ -1322,7 +1656,7 @@ class InteractionModule:
             send_coords = send_button_locations[0]
             self.click_at(send_coords[0], send_coords[1])
             print("Clicked send button.")
-            time.sleep(0.1)
+            time.sleep(0.2)
             return True
         else:
             # Fallback to pressing Enter
@@ -1707,12 +2041,13 @@ def perform_state_cleanup(detector: DetectionModule, interactor: InteractionModu
 
 
 # --- UI Monitoring Loop Function (To be run in a separate thread) ---
-def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queue, deduplicator: 'MessageDeduplication'):
+def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: queue.Queue, deduplicator: 'RobustMessageDeduplication', state_monitor: 'StateResetDetector'):
     """
     Continuously monitors the UI, detects triggers, performs interactions,
     puts trigger data into trigger_queue, and processes commands from command_queue.
+    Includes state monitoring and robust deduplication.
     """
-    print("\n--- Starting UI Monitoring Loop (Thread) ---")
+    print("\n--- Starting Enhanced UI Monitoring Loop (Thread) ---")
 
     # --- 初始化氣泡圖像去重系統（新增） ---
     bubble_deduplicator = SimpleBubbleDeduplication(
@@ -1792,8 +2127,18 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
     main_screen_click_counter = 0 # Counter for consecutive main screen clicks
 
     loop_counter = 0 # Add loop counter for debugging
+    
     while True:
         loop_counter += 1
+        
+        # 每100次循環檢查一次對象狀態
+        if loop_counter % 100 == 0:
+            state_monitor.check_object_identity(deduplicator, "deduplicator")
+            
+            # 輸出統計信息
+            stats = deduplicator.get_stats()
+            print(f"Dedup Stats: {stats['active_records']} active records (total: {stats['total_records']})")
+        
         # print(f"\n--- UI Loop Iteration #{loop_counter} ---") # DEBUG REMOVED
 
         # --- Process ALL Pending Commands First ---
@@ -1853,10 +2198,8 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
 
                     print("UI Thread: Resuming monitoring internally after restart wait.")
                     monitoring_paused_flag[0] = False
-                    # Clear state to ensure fresh detection after restart
-                    recent_texts.clear()
-                    last_processed_bubble_info = None
-                    print("UI Thread: Monitoring resumed and state reset after restart.")
+                    # 删除 recent_texts.clear() 和 last_processed_bubble_info = None
+                    print("UI Thread: Monitoring resumed after restart. Duplicate detection state preserved.")
                     # --- End Internal Sequence ---
 
                 elif action == 'clear_history': # Added for F7
@@ -1985,11 +2328,11 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
              time.sleep(1)
 
 
-        # --- Then Perform UI Monitoring (Bubble Detection) ---
-        # print("[DEBUG] UI Loop: Starting bubble detection...") # DEBUG REMOVED
+        # --- Then Perform UI Monitoring (Enhanced Bubble Detection) ---
+        # print("[DEBUG] UI Loop: Starting enhanced bubble detection...") # DEBUG REMOVED
         try:
-            # 1. Detect Bubbles
-            all_bubbles_data = detector.find_dialogue_bubbles() # Returns list of dicts
+            # 1. Enhanced Bubble Detection with stability verification
+            all_bubbles_data = detector.enhanced_bubble_detection() # Returns list of dicts with verification
             if not all_bubbles_data:
                 # print("[DEBUG] UI Loop: No bubbles detected.") # DEBUG REMOVED
                 time.sleep(2); continue
@@ -2012,9 +2355,9 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                 # Ensure bubble_region uses standard ints
                 bubble_region = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
 
-                # 3. Detect Keyword in Bubble
-                # print(f"[DEBUG] UI Loop: Detecting keyword in region {bubble_region}...") # DEBUG REMOVED
-                result = detector.find_keyword_in_region(bubble_region) # Now returns (coords, key) or None
+                # 3. Enhanced Keyword Detection in Bubble with verification
+                # print(f"[DEBUG] UI Loop: Enhanced keyword detection in region {bubble_region}...") # DEBUG REMOVED
+                result = detector.enhanced_keyword_detection(bubble_region) # Enhanced method with verification
 
                 if result: # 檢查是否真的找到了關鍵字
                     keyword_coords, detected_template_key = result # 解包得到座標和 key
@@ -2225,7 +2568,7 @@ def run_ui_monitoring_loop(trigger_queue: queue.Queue, command_queue: queue.Queu
                     # This is the new central point for deduplication and recent_texts logic
                     if sender_name and bubble_text: # Ensure both are valid before deduplication
                         if deduplicator.is_duplicate(sender_name, bubble_text):
-                            print(f"UI Thread: Skipping duplicate message via Deduplicator: {sender_name} - {bubble_text[:30]}...")
+                            print(f"UI Thread: Message blocked by robust deduplication: {sender_name} - {bubble_text[:30]}...")
                             # Cleanup UI state as interaction might have occurred during sender_name retrieval
                             perform_state_cleanup(detector, interactor)
                             continue  # Skip this bubble

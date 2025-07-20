@@ -16,8 +16,8 @@ from mcp import ClientSession, StdioServerParameters, types
 # --- Keyboard Imports ---
 import threading
 import time
-# Import MessageDeduplication from ui_interaction
-from ui_interaction import MessageDeduplication
+# Import RobustMessageDeduplication and StateResetDetector from ui_interaction
+from ui_interaction import RobustMessageDeduplication, StateResetDetector 
 try:
     import keyboard # Needs pip install keyboard
 except ImportError:
@@ -483,33 +483,45 @@ async def run_main_with_exit_stack():
 
         # 5. Start UI Monitoring in a separate thread
         print("\n--- Starting UI monitoring thread ---")
-        # 5c. Create MessageDeduplication instance
-        deduplicator = MessageDeduplication(expiry_seconds=3600) # Default 1 hour
+        
+        # 5c. Initialize Robust Deduplication System
+        def initialize_robust_deduplication():
+            """初始化強化版去重系統"""
+            deduplicator_instance = RobustMessageDeduplication(
+                storage_file="wolf_chat_dedup.json",
+                expiry_seconds=3600  # 1小時過期
+            )
+            state_monitor_instance = StateResetDetector("wolf_chat_state_resets.log")
+            return deduplicator_instance, state_monitor_instance
 
-        # Use the new monitoring loop function, passing both queues and the deduplicator
+        deduplicator, state_monitor = initialize_robust_deduplication()
+
+        # Use the new monitoring loop function, passing trigger_queue, command_queue, deduplicator, and state_monitor
         monitor_task = loop.create_task(
-            asyncio.to_thread(ui_interaction.run_ui_monitoring_loop, trigger_queue, command_queue, deduplicator), # Pass command_queue and deduplicator
-            name="ui_monitor"
+            asyncio.to_thread(ui_interaction.run_ui_monitoring_loop_enhanced, trigger_queue, command_queue, deduplicator, state_monitor),
+            name="ui_monitor_enhanced"
         )
         ui_monitor_task = monitor_task # Store task reference for shutdown
         # Note: UI task cancellation is handled in shutdown()
 
         # 5b. Game Window Monitoring is now handled by Setup.py
 
-        # 5d. Start Periodic Cleanup Timer for Deduplicator
-        def periodic_cleanup():
+        # 5d. Start Periodic Cleanup and Stats Logging Timer for Deduplicator
+        def periodic_robust_cleanup_and_stats():
             if not shutdown_requested: # Only run if not shutting down
-                print("Main Thread: Running periodic deduplicator cleanup...")
-                deduplicator.purge_expired()
+                print("Main Thread: Running periodic robust deduplicator cleanup and stats logging...")
+                deduplicator._cleanup_expired() # Call internal cleanup
+                stats = deduplicator.get_stats()
+                print(f"Main Thread - Dedup Stats: {stats['active_records']} active records (total: {stats['total_records']})")
                 # Reschedule the timer
-                cleanup_timer = threading.Timer(600, periodic_cleanup) # 10 minutes
+                cleanup_timer = threading.Timer(600, periodic_robust_cleanup_and_stats) # 10 minutes
                 cleanup_timer.daemon = True
                 cleanup_timer.start()
             else:
-                print("Main Thread: Shutdown requested, not rescheduling deduplicator cleanup.")
+                print("Main Thread: Shutdown requested, not rescheduling robust deduplicator cleanup.")
 
-        print("\n--- Starting periodic deduplicator cleanup timer (10 min interval) ---")
-        initial_cleanup_timer = threading.Timer(600, periodic_cleanup)
+        print("\n--- Starting periodic robust deduplicator cleanup and stats timer (10 min interval) ---")
+        initial_cleanup_timer = threading.Timer(600, periodic_robust_cleanup_and_stats)
         initial_cleanup_timer.daemon = True
         initial_cleanup_timer.start()
         # Note: This timer will run in a separate thread.

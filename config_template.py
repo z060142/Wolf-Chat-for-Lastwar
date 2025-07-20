@@ -32,6 +32,22 @@ exa_config_arg_string = json.dumps(exa_config_dict)
 # =============================================================================
 MCP_SERVERS = ${MCP_SERVERS}
 
+# Default MCP server configurations include system prompts for each server
+# These are dynamically loaded based on enabled servers in the UI
+# 
+# Template structure for MCP servers:
+# {
+#     "server_name": {
+#         "command": "command_to_run",
+#         "args": ["arg1", "arg2", ...],
+#         "env": {"ENV_VAR": "value"},
+#         "system_prompt": """
+#         **SERVER CAPABILITIES:**
+#         Description of what this server provides...
+#         """
+#     }
+# }
+
 # =============================================================================
 # MCP Client Configuration
 # =============================================================================

@@ -1,5 +1,6 @@
 .env
 *.log
+*.backup
 llm_debug.log
 config.py
 config.py.bak
@@ -9,5 +10,7 @@ debug_screenshots/
 chat_logs/
 backup/
 chroma_data/
+.claude/
 wolf_control.py
 remote_config.json
+wolf_chat_dedup.json
