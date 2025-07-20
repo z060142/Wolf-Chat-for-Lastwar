@@ -206,7 +206,7 @@ def save_env_file(env_data):
 
 def load_current_config():
     """Extract settings from existing config.py if it exists"""
-    # 新增一個幫助函數來標準化路徑
+    # Add a helper function to normalize paths
     def normalize_path(path):
         """Convert backslashes to forward slashes in paths"""
         if path:
@@ -673,7 +673,7 @@ class WolfChatSetup(tk.Tk):
         self.create_mcp_tab()
         self.create_game_tab()
         self.create_memory_tab() 
-        self.create_memory_management_tab() # 新增記憶管理標籤頁
+        self.create_memory_management_tab() # Add memory management tab
         self.create_management_tab() # New tab for combined management
 
         # Create bottom buttons
@@ -1889,7 +1889,7 @@ class WolfChatSetup(tk.Tk):
         profiles_col_label = ttk.Label(profiles_col_frame, text="Profiles Collection:", width=20)
         profiles_col_label.pack(side=tk.LEFT, padx=(0, 5))
 
-        # 修正：將預設值改為 "wolfhart_memory" 以匹配實際用法
+        # Fix: Change default value to "wolfhart_memory" to match actual usage
         self.profiles_collection_var = tk.StringVar(value="wolfhart_memory")
         profiles_col_entry = ttk.Entry(profiles_col_frame, textvariable=self.profiles_collection_var)
         profiles_col_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -1966,21 +1966,21 @@ class WolfChatSetup(tk.Tk):
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
         info_label.pack(padx=10, pady=10, anchor=tk.W)
 
-    # 記憶管理標籤頁
+    # Memory management tab
     def create_memory_management_tab(self):
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="記憶管理")
+        self.notebook.add(tab, text="Memory Management")
 
         main_frame = ttk.Frame(tab, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 備份時間設置
-        backup_frame = ttk.LabelFrame(main_frame, text="備份設定")
+        # Backup time settings
+        backup_frame = ttk.LabelFrame(main_frame, text="Backup Settings")
         backup_frame.pack(fill=tk.X, pady=10)
 
         time_frame = ttk.Frame(backup_frame)
         time_frame.pack(fill=tk.X, pady=5, padx=10)
-        time_label = ttk.Label(time_frame, text="執行時間:", width=20)
+        time_label = ttk.Label(time_frame, text="Execution Time:", width=20)
         time_label.pack(side=tk.LEFT, padx=(0, 5))
         self.backup_hour_var = tk.IntVar(value=0)
         hour_spinner = ttk.Spinbox(time_frame, from_=0, to=23, width=3, textvariable=self.backup_hour_var)
@@ -1990,13 +1990,13 @@ class WolfChatSetup(tk.Tk):
         minute_spinner = ttk.Spinbox(time_frame, from_=0, to=59, width=3, textvariable=self.backup_minute_var)
         minute_spinner.pack(side=tk.LEFT)
 
-        # 模型選擇
-        models_frame = ttk.LabelFrame(main_frame, text="模型選擇")
+        # Model selection
+        models_frame = ttk.LabelFrame(main_frame, text="Model Selection")
         models_frame.pack(fill=tk.X, pady=10)
 
         profile_model_frame = ttk.Frame(models_frame)
         profile_model_frame.pack(fill=tk.X, pady=5, padx=10)
-        profile_model_label = ttk.Label(profile_model_frame, text="用戶檔案生成模型:", width=20)
+        profile_model_label = ttk.Label(profile_model_frame, text="User Profile Model:", width=20)
         profile_model_label.pack(side=tk.LEFT, padx=(0, 5))
         # Initialize with a sensible default, will be overwritten by update_ui_from_data
         # Use config_data which is loaded in __init__
@@ -2007,7 +2007,7 @@ class WolfChatSetup(tk.Tk):
 
         summary_model_frame = ttk.Frame(models_frame)
         summary_model_frame.pack(fill=tk.X, pady=5, padx=10)
-        summary_model_label = ttk.Label(summary_model_frame, text="聊天總結生成模型:", width=20)
+        summary_model_label = ttk.Label(summary_model_frame, text="Chat Summary Model:", width=20)
         summary_model_label.pack(side=tk.LEFT, padx=(0, 5))
         self.summary_model_var = tk.StringVar(value="mistral-7b-instruct")
         summary_model_entry = ttk.Entry(summary_model_frame, textvariable=self.summary_model_var)
@@ -2018,9 +2018,9 @@ class WolfChatSetup(tk.Tk):
         info_frame_mm.pack(fill=tk.BOTH, expand=True, pady=10)
 
         info_text_mm = (
-            "• 設定每日自動執行記憶備份的時間。\n"
-            "• 選擇用於生成用戶檔案和聊天總結的語言模型。\n"
-            "• 用戶檔案生成模型預設使用主LLM模型。"
+            "• Set the time for daily automatic memory backup execution.\n"
+            "• Choose language models for generating user profiles and chat summaries.\n"
+            "• User profile model defaults to the main LLM model."
         )
         info_label_mm = ttk.Label(info_frame_mm, text=info_text_mm, justify=tk.LEFT, wraplength=700)
         info_label_mm.pack(padx=10, pady=10, anchor=tk.W)
@@ -2379,7 +2379,7 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.expanduser("~")
         )
         if file_path:
-            # 標準化路徑格式（將反斜線改為正斜線）
+            # Normalize path format (convert backslashes to forward slashes)
             normalized_path = file_path.replace("\\", "/")
             self.exa_path_var.set(normalized_path)
     
@@ -2390,7 +2390,7 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.dirname(DEFAULT_CHROMA_DATA_PATH)
         )
         if dir_path:
-            # 標準化路徑格式（將反斜線改為正斜線）
+            # Normalize path format (convert backslashes to forward slashes)
             normalized_path = os.path.abspath(dir_path).replace("\\", "/")
             self.chroma_dir_var.set(normalized_path)
     
@@ -2402,7 +2402,7 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.expanduser("~")
         )
         if file_path:
-            # 標準化路徑格式（將反斜線改為正斜線）
+            # Normalize path format (convert backslashes to forward slashes)
             normalized_path = file_path.replace("\\", "/")
             self.game_path_var.set(normalized_path)
     
@@ -2643,7 +2643,7 @@ class WolfChatSetup(tk.Tk):
                 "MONITOR_INTERVAL_SECONDS": self.monitor_interval_var.get()
             }
 
-            # 保存記憶設定
+            # Save memory settings
             self.config_data["ENABLE_PRELOAD_PROFILES"] = self.preload_profiles_var.get()
             self.config_data["PRELOAD_RELATED_MEMORIES"] = self.related_memories_var.get()
             self.config_data["PROFILES_COLLECTION"] = self.profiles_collection_var.get()
