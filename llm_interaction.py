@@ -111,7 +111,7 @@ def get_system_prompt(
         {memories_formatted}
         </conversation_history>
 
-        Above is the multi-turn conversation context (current user's 5 messages + other users' 5 messages in chronological order).
+        Above is the multi-turn conversation context (current user's 5 interactions including bot responses + other users' 5 interactions including bot responses in chronological order).
         Use this context to understand the flow of the conversation and respond appropriately.
         """
 
@@ -558,8 +558,8 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
         A list of message dictionaries for the OpenAI API.
     """
     # Limits
-    SAME_SENDER_LIMIT = 5  # Last 4 interactions (user + bot response = 1 interaction)
-    OTHER_SENDER_LIMIT = 3 # Last 3 messages from other users
+    SAME_SENDER_LIMIT = 5  # Last 5 interactions (user + bot response = 1 interaction)
+    OTHER_SENDER_LIMIT = 5 # Last 5 interactions from other users (user + bot response = 1 interaction)
 
     relevant_history = []
     same_sender_interactions = 0
@@ -599,8 +599,15 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
                 same_sender_interactions += 1
         elif speaker_type == 'user': # Message from a different user
             if other_sender_messages < OTHER_SENDER_LIMIT:
-                # Include only the user's message from others for brevity
+                # Include the user's message from others
                 relevant_history.append(api_message) # Append other user message with timestamp
+                # Check for preceding bot response to other users too
+                if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
+                     # Include the bot's response to other users as well
+                     bot_timestamp, bot_speaker_type, bot_speaker_name, bot_message = history[i-1]
+                     bot_formatted_timestamp = bot_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                     bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name}: {bot_message}"
+                     relevant_history.append({"role": "assistant", "content": bot_formatted_content}) # Append bot message with timestamp
                 other_sender_messages += 1
         # Bot responses are handled when processing the user message they replied to.
 
