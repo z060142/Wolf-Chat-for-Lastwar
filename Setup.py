@@ -30,6 +30,18 @@ import psutil
 import random # Added for exponential backoff jitter
 import urllib3 # Added for SSL warning suppression
 import game_manager # Added for new game monitoring module
+
+# Wolf Chat State Management Components (Added by refactoring)
+from setup_components import (
+    state_manager, 
+    ProcessType, 
+    ProcessState, 
+    ConfigType,
+    thread_safe_process_manager, 
+    thread_safe_monitor, 
+    thread_safe_remote_control,
+    config_transaction_manager
+)
 try:
     import socketio
     HAS_SOCKETIO = True
@@ -117,13 +129,36 @@ Use ChromaDB tools to help with complex conversations by querying relevant knowl
 IMPORTANT: User profile data is already provided directly. Use these tools for additional context and knowledge when needed for complex conversations.
         """
 
-# Global variables for game/bot management
+# Global variables for game/bot management (Replaced with state manager)
+# These are now managed by the state_manager singleton
+# Direct access replaced with state_manager calls
+
+# Legacy compatibility - these will redirect to state manager
+def get_game_process_instance():
+    return state_manager.get_process_instance(ProcessType.GAME)
+
+def set_game_process_instance(instance):
+    state_manager.set_process_instance(ProcessType.GAME, instance)
+
+def get_bot_process_instance():
+    return state_manager.get_process_instance(ProcessType.BOT)
+
+def set_bot_process_instance(instance):
+    state_manager.set_process_instance(ProcessType.BOT, instance)
+
+def get_control_client_instance():
+    return state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+
+def set_control_client_instance(instance):
+    state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, instance)
+
+# Legacy global variables for backward compatibility
 game_process_instance = None
-bot_process_instance = None # This will replace/co-exist with self.running_process
+bot_process_instance = None  
 control_client_instance = None
-monitor_thread_instance = None # Renamed to avoid conflict if 'monitor_thread' is used elsewhere
-scheduler_thread_instance = None # Renamed
-keep_monitoring_flag = threading.Event() # Renamed for clarity
+monitor_thread_instance = None
+scheduler_thread_instance = None
+keep_monitoring_flag = state_manager.get_monitoring_flag() # Renamed for clarity
 keep_monitoring_flag.set()
 
 # Basic logging setup
@@ -679,8 +714,22 @@ class WolfChatSetup(tk.Tk):
         # Create bottom buttons
         self.create_bottom_buttons()
         
-        # Initialize running process tracker (will be managed by new system)
-        self.running_process = None # This might be replaced by bot_process_instance
+        # Initialize state management integration FIRST (Added by refactoring)
+        self.state_manager = state_manager
+        self.process_manager = thread_safe_process_manager
+        self.monitor = thread_safe_monitor
+        self.remote_control = thread_safe_remote_control
+        self.config_tx_manager = config_transaction_manager
+        
+        # Legacy instance variables - now redirect to state manager
+        self._setup_legacy_compatibility()
+        
+        # Initialize basic attributes FIRST before using properties
+        self.scheduler_process = None
+        self.game_monitor = None
+        
+        # Initialize running process tracker (now managed by state system)
+        self.running_process = None # This will now work with state manager
         
         # Initialize new process management variables
         self.bot_process_instance = None
@@ -688,18 +737,143 @@ class WolfChatSetup(tk.Tk):
         self.control_client_instance = None
         self.monitor_thread_instance = None
         self.scheduler_thread_instance = None
-        self.keep_monitoring_flag = threading.Event()
-        self.keep_monitoring_flag.set()
-
-        # Initialize scheduler process tracker
-        self.scheduler_process = None
         
-        # Initialize game monitor instance (will be created in start_managed_session)
-        self.game_monitor = None
+        # keep_monitoring_flag now managed by state manager
+        self.keep_monitoring_flag = self.state_manager.get_monitoring_flag()
+        self.keep_monitoring_flag.set()
 
 
         # Set initial states based on loaded data
         self.update_ui_from_data()
+
+    def _setup_legacy_compatibility(self):
+        """設置向後相容性支持"""
+        # 這些屬性現在重定向到狀態管理器
+        self._running_process = None
+        self._bot_process_instance = None
+        self._game_process_instance = None
+        self._control_client_instance = None
+        self._monitor_thread_instance = None
+        self._scheduler_thread_instance = None
+    
+    @property
+    def running_process(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @running_process.setter
+    def running_process(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property
+    def bot_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @bot_process_instance.setter
+    def bot_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property 
+    def game_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.GAME)
+    
+    @game_process_instance.setter
+    def game_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.GAME, value)
+    
+    @property
+    def control_client_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+    
+    @control_client_instance.setter
+    def control_client_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
+
+
+    def _setup_legacy_compatibility(self):
+        """設置向後相容性支持"""
+        # 這些屬性現在重定向到狀態管理器
+        self._running_process = None
+        self._bot_process_instance = None
+        self._game_process_instance = None
+        self._control_client_instance = None
+        self._monitor_thread_instance = None
+        self._scheduler_thread_instance = None
+    
+    @property
+    def running_process(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @running_process.setter
+    def running_process(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property
+    def bot_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @bot_process_instance.setter
+    def bot_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property 
+    def game_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.GAME)
+    
+    @game_process_instance.setter
+    def game_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.GAME, value)
+    
+    @property
+    def control_client_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+    
+    @control_client_instance.setter
+    def control_client_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
+
+
+    def _setup_legacy_compatibility(self):
+        """設置向後相容性支持"""
+        # 這些屬性現在重定向到狀態管理器
+        self._running_process = None
+        self._bot_process_instance = None
+        self._game_process_instance = None
+        self._control_client_instance = None
+        self._monitor_thread_instance = None
+        self._scheduler_thread_instance = None
+    
+    @property
+    def running_process(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @running_process.setter
+    def running_process(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property
+    def bot_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @bot_process_instance.setter
+    def bot_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property 
+    def game_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.GAME)
+    
+    @game_process_instance.setter
+    def game_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.GAME, value)
+    
+    @property
+    def control_client_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+    
+    @control_client_instance.setter
+    def control_client_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
+
         self.update_scheduler_button_states(True) # Set initial scheduler button state
     
     def create_management_tab(self):
@@ -885,7 +1059,8 @@ class WolfChatSetup(tk.Tk):
         # Start Scheduler Thread
         self._start_scheduler_thread()
 
-        self.update_management_buttons_state(False) # Disable start, enable stop
+        # 根據實際狀態更新按鈕，而不是硬編碼
+        self._update_buttons_based_on_state()
         # messagebox.showinfo("Session Started", "Managed bot and game session started. Check console for logs.") # Removed popup
         logger.info("Managed bot and game session started. Check console for logs.") # Log instead of popup
 
@@ -948,7 +1123,8 @@ class WolfChatSetup(tk.Tk):
         self.bot_process_instance = None
         self.game_process_instance = None
         
-        self.update_management_buttons_state(True) # Enable start, disable stop
+        # 根據實際狀態更新按鈕，而不是硬編碼
+        self._update_buttons_based_on_state()
         messagebox.showinfo("Session Stopped", "Managed bot and game session stopped.")
 
     def update_management_buttons_state(self, enable_start):
@@ -971,22 +1147,29 @@ class WolfChatSetup(tk.Tk):
         return None
 
     def _is_game_running_managed(self):
-        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
-        if self.game_process_instance and self.game_process_instance.poll() is None:
-            # Check if the process name matches, in case Popen object is stale but a process with same PID exists
-            try:
-                p = psutil.Process(self.game_process_instance.pid)
-                if p.name().lower() == game_process_name.lower():
-                    return True
-            except psutil.NoSuchProcess:
-                self.game_process_instance = None # Stale process object
-                return False # Popen object is stale and process is gone
+        """使用線程安全包裝器檢查遊戲進程狀態"""
         
-        # Fallback to checking by name if self.game_process_instance is None or points to a dead/wrong process
-        return self._find_process_by_name(game_process_name) is not None
+        # 首先檢查狀態管理器中的進程實例
+        if self.state_manager.is_process_alive(ProcessType.GAME):
+            return True
+        
+        # 如果狀態管理器中沒有，檢查系統中是否有同名進程運行
+        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+        try:
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'] and proc.info['name'].lower() == game_process_name.lower():
+                    logger.info(f"Found existing game process: PID {proc.info['pid']}")
+                    # 可以選擇是否將發現的進程註冊到狀態管理器
+                    # 但由於我們無法控制已存在的進程，這裡只返回True
+                    return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+        
+        return False
+
 
     def _start_game_managed(self):
-        global game_process_instance
+        """使用線程安全包裝器啟動遊戲進程"""
         game_exe_path = self.config_data.get("GAME_WINDOW_CONFIG", {}).get("GAME_EXECUTABLE_PATH")
         game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
 
@@ -995,91 +1178,44 @@ class WolfChatSetup(tk.Tk):
             messagebox.showerror("Config Error", "Game executable path is not set in Game Settings.")
             return False
 
+        # 檢查是否已經運行（使用增強的檢測）
         if self._is_game_running_managed():
             logger.info(f"Game ({game_process_name}) is already running.")
-            # Try to get a Popen object if we don't have one
-            if not self.game_process_instance:
-                 existing_proc = self._find_process_by_name(game_process_name)
-                 if existing_proc:
-                     # We can't directly create a Popen object for an existing process this way easily.
-                     # For now, we'll just acknowledge it's running.
-                     # For full control, it's best if this script starts it.
-                     logger.info(f"Found existing game process PID: {existing_proc.pid}. Monitoring without direct Popen control.")
             return True
+
+        # 準備啟動命令
+        game_command = [game_exe_path]
         
-        try:
-            logger.info(f"Starting game: {game_exe_path}")
-            # Use shell=False and pass arguments as a list if possible, but for .exe, shell=True is often more reliable on Windows
-            # For better process control, avoid shell=True if not strictly necessary.
-            # However, if GAME_EXE_PATH can contain spaces or needs shell interpretation, shell=True might be needed.
-            # For now, let's assume GAME_EXE_PATH is a direct path to an executable.
-            self.game_process_instance = subprocess.Popen(game_exe_path, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            game_process_instance = self.game_process_instance # Update global if used by other parts from wolf_control
+        # 使用線程安全的進程管理器啟動遊戲
+        if self.process_manager.start_game_process(game_command):
+            logger.info(f"Game process started successfully via thread-safe manager")
             
-            # Wait a bit for the process to appear in psutil
-            time.sleep(2) 
-            if self._is_game_running_managed():
-                logger.info(f"Game ({game_process_name}) started successfully with PID {self.game_process_instance.pid}.")
-                return True
-            else:
-                logger.warning(f"Game ({game_process_name}) did not appear to start correctly after Popen call.")
-                self.game_process_instance = None # Clear if it failed
-                game_process_instance = None
-                return False
-        except Exception as e:
-            logger.exception(f"Error starting game: {e}")
-            self.game_process_instance = None
-            game_process_instance = None
+            # 更新全局變量以保持相容性
+            global game_process_instance
+            game_process_instance = self.state_manager.get_process_instance(ProcessType.GAME)
+            
+            return True
+        else:
+            logger.error("Failed to start game process via thread-safe manager")
             return False
 
-    def _stop_game_managed(self):
-        global game_process_instance
-        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
-        stopped = False
-        if self.game_process_instance and self.game_process_instance.poll() is None:
-            logger.info(f"Stopping game process (PID: {self.game_process_instance.pid}) started by this manager...")
-            try:
-                self.game_process_instance.terminate()
-                self.game_process_instance.wait(timeout=5) # Wait for termination
-                logger.info("Game process terminated.")
-                stopped = True
-            except subprocess.TimeoutExpired:
-                logger.warning("Game process did not terminate in time, killing...")
-                self.game_process_instance.kill()
-                self.game_process_instance.wait(timeout=5)
-                logger.info("Game process killed.")
-                stopped = True
-            except Exception as e:
-                logger.error(f"Error terminating/killing own game process: {e}")
-            self.game_process_instance = None
-            game_process_instance = None
 
-        # If not stopped or no instance, try to find and kill by name
-        if not stopped:
-            proc_to_kill = self._find_process_by_name(game_process_name)
-            if proc_to_kill:
-                logger.info(f"Found game process '{game_process_name}' (PID: {proc_to_kill.pid}). Attempting to terminate...")
-                try:
-                    proc_to_kill.terminate()
-                    proc_to_kill.wait(timeout=5) # psutil's wait
-                    logger.info(f"Game process '{game_process_name}' terminated.")
-                    stopped = True
-                except psutil.TimeoutExpired:
-                    logger.warning(f"Game process '{game_process_name}' did not terminate, killing...")
-                    proc_to_kill.kill()
-                    proc_to_kill.wait(timeout=5)
-                    logger.info(f"Game process '{game_process_name}' killed.")
-                    stopped = True
-                except Exception as e:
-                    logger.error(f"Error terminating/killing game process by name '{game_process_name}': {e}")
-            else:
-                logger.info(f"Game process '{game_process_name}' not found running.")
-                stopped = True # Considered stopped if not found
+    def _stop_game_managed(self):
+        """使用線程安全包裝器停止遊戲進程"""
         
-        if self.game_process_instance: # Clear Popen object if it exists
-             self.game_process_instance = None
-             game_process_instance = None
-        return stopped
+        # 使用線程安全的進程管理器停止遊戲
+        if self.process_manager.stop_game_process():
+            logger.info("Game process stopped successfully via thread-safe manager")
+            
+            # 更新全局變量以保持相容性
+            global game_process_instance
+            game_process_instance = None
+            
+            return True
+        else:
+            logger.error("Failed to stop game process via thread-safe manager")
+            return False
+
 
     def _is_bot_running_managed(self):
         bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
@@ -1224,17 +1360,51 @@ class WolfChatSetup(tk.Tk):
         return stopped
 
     def _restart_game_managed(self):
-        logger.info("Restarting game (managed)...")
-        # If GameMonitor (from game_manager) exists and is running, use it to restart
-        if self.game_monitor and self.game_monitor.running:
-            logger.info("Using game_manager's GameMonitor to restart game.")
-            return self.game_monitor.restart_now()
-        else:
-            # Fallback to the original method if game_monitor is not active
-            logger.info("game_manager's GameMonitor not active, using default method to restart game.")
-            self._stop_game_managed()
-            time.sleep(2) # Give it time to fully stop
-            return self._start_game_managed()
+        """使用線程安全包裝器重啟遊戲進程"""
+        
+        game_exe_path = self.config_data.get("GAME_WINDOW_CONFIG", {}).get("GAME_EXECUTABLE_PATH")
+        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+        
+        if not game_exe_path:
+            logger.error("SCHEDULED RESTART: Game executable path not configured - cannot restart game")
+            return False
+        
+        logger.info(f"SCHEDULED RESTART: Initiating game restart - Process: {game_process_name}, Path: {game_exe_path}")
+        
+        # 準備重啟命令
+        game_command = [game_exe_path]
+        
+        # 先嘗試停止現有的遊戲進程
+        try:
+            logger.info("SCHEDULED RESTART: Phase 1 - Stopping existing game processes...")
+            # 使用線程安全包裝器的增強停止功能
+            stop_success = self.process_manager.stop_game_process()
+            logger.info(f"SCHEDULED RESTART: Phase 1 completed - Stop result: {stop_success}")
+            
+            # 等待一點時間確保進程完全停止
+            logger.info("SCHEDULED RESTART: Waiting 2 seconds for process cleanup...")
+            time.sleep(2.0)
+            
+            # 啟動新的遊戲進程
+            logger.info("SCHEDULED RESTART: Phase 2 - Starting new game process...")
+            if self.process_manager.start_game_process(game_command):
+                logger.info("SCHEDULED RESTART: SUCCESS - Game process restarted successfully")
+                
+                # 更新全局變量以保持相容性
+                global game_process_instance
+                game_process_instance = self.state_manager.get_process_instance(ProcessType.GAME)
+                
+                return True
+            else:
+                logger.error("SCHEDULED RESTART: FAILED - Could not start new game process")
+                return False
+                
+        except Exception as e:
+            logger.error(f"SCHEDULED RESTART: EXCEPTION during restart process: {e}")
+            import traceback
+            logger.error(f"SCHEDULED RESTART: Full traceback: {traceback.format_exc()}")
+            return False
+
 
     def _restart_bot_managed(self):
         logger.info("Restarting bot (managed)...")
@@ -1270,9 +1440,97 @@ class WolfChatSetup(tk.Tk):
             logger.info("Monitor thread already running.")
             return
 
-        self.monitor_thread_instance = threading.Thread(target=self._monitoring_loop, daemon=True)
-        self.monitor_thread_instance.start()
+                # Use thread-safe monitor (Modified by refactoring)
+        self.monitor.start_monitoring(interval=5.0)
+        
+        # Register monitor callbacks
+        self.monitor.add_callback('process_died', self._handle_process_died)
+        self.monitor.add_callback('process_timeout', self._handle_process_timeout)
+        
+        # Legacy thread instance for compatibility
+        self.monitor_thread_instance = self.state_manager.get_thread_instance("process_monitor")
+        
+        logger.info("Thread-safe monitoring started")
+        
+        # Original threading logic (commented out - replaced by thread-safe monitor)
+        #         # Use thread-safe monitor (Modified by refactoring)
+        self.monitor.start_monitoring(interval=5.0)
+        
+        # Register monitor callbacks
+        self.monitor.add_callback('process_died', self._handle_process_died)
+        self.monitor.add_callback('process_timeout', self._handle_process_timeout)
+        
+        # Legacy thread instance for compatibility
+        self.monitor_thread_instance = self.state_manager.get_thread_instance("process_monitor")
+        
+        logger.info("Thread-safe monitoring started")
+        
+        # Original threading logic (commented out - replaced by thread-safe monitor)
+        #         # Use thread-safe monitor (Modified by refactoring)
+        self.monitor.start_monitoring(interval=5.0)
+        
+        # Register monitor callbacks
+        self.monitor.add_callback('process_died', self._handle_process_died)
+        self.monitor.add_callback('process_timeout', self._handle_process_timeout)
+        
+        # Legacy thread instance for compatibility
+        self.monitor_thread_instance = self.state_manager.get_thread_instance("process_monitor")
+        
+        logger.info("Thread-safe monitoring started")
+        
+        # Original threading logic (commented out - replaced by thread-safe monitor)
+        # self.monitor_thread_instance = threading.Thread(target=self._monitoring_loop, daemon=True)
+        # self.monitor_thread_instance.start()  # This is now handled by thread-safe monitor
         logger.info("Started monitoring thread.")
+
+
+
+    def _handle_process_died(self, data):
+        """處理進程意外終止"""
+        process_type = data['process_type']
+        logger.warning(f"Process {process_type.value} died unexpectedly")
+        
+        # 根據實際狀態觸發 UI 更新
+        self.after(0, self._update_buttons_based_on_state)
+        
+        # 可以添加自動重啟邏輯
+        if hasattr(self, 'auto_restart_enabled') and self.auto_restart_enabled:
+            if process_type == ProcessType.BOT:
+                self.after(5000, self._restart_bot_managed)  # 5秒後重啟
+            elif process_type == ProcessType.GAME:
+                self.after(5000, self._restart_game_managed)
+    
+    def _handle_process_timeout(self, data):
+        """處理進程狀態超時"""
+        process_type = data['process_type']
+        stuck_state = data['stuck_state']
+        logger.error(f"Process {process_type.value} stuck in {stuck_state.value} state")
+        
+        # 根據實際狀態觸發 UI 更新
+        self.after(0, self._update_buttons_based_on_state)
+        
+        # 可以嘗試強制重置狀態
+        self.state_manager.set_process_state(process_type, ProcessState.ERROR)
+
+    def _update_buttons_based_on_state(self):
+        """根據實際系統狀態更新按鈕狀態"""
+        try:
+            # 檢查遊戲和Bot是否都在運行
+            game_running = self._is_game_running_managed()
+            bot_running = self._is_bot_running_managed()
+            
+            # 如果遊戲和Bot都在運行，則 session 是活躍的
+            session_active = game_running and bot_running
+            
+            # 更新按鈕狀態：session 活躍時，start按鈕禁用，stop按鈕啟用
+            self.update_management_buttons_state(not session_active)
+            
+            logger.info(f"Button state updated: game_running={game_running}, bot_running={bot_running}, start_enabled={not session_active}")
+            
+        except Exception as e:
+            logger.error(f"Error updating button state: {e}")
+            # 發生錯誤時，啟用 start 按鈕作為安全預設
+            self.update_management_buttons_state(True)
 
     def _monitoring_loop(self):
         logger.info("Monitoring loop started.")
