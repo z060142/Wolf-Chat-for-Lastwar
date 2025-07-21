@@ -35,6 +35,10 @@ import chroma_client
 import subprocess # Import subprocess module
 import signal
 import platform
+# Import position tool server for MCP integration
+import position_tool_server
+import json  # For file communication with MCP server
+import time   # For heartbeat timestamps
 # Conditionally import Windows-specific modules
 if platform.system() == "Windows":
     try:
@@ -64,6 +68,8 @@ conversation_history = collections.deque(maxlen=50) # Store last 50 messages (us
 # --- Use standard thread-safe queues ---
 trigger_queue: ThreadSafeQueue = ThreadSafeQueue() # UI Thread -> Main Loop
 command_queue: ThreadSafeQueue = ThreadSafeQueue() # Main Loop -> UI Thread
+# MCP position tool result queue
+position_result_queue: ThreadSafeQueue = ThreadSafeQueue() # UI Thread -> MCP Tool
 # --- End Change ---
 ui_monitor_task: asyncio.Task | None = None # To track the UI monitor task
 
@@ -72,6 +78,64 @@ script_paused = False
 shutdown_requested = False
 main_loop = None # To store the main event loop for threadsafe calls
 # --- End Keyboard Shortcut State ---
+
+# --- Chat Context Management Functions ---
+def save_chat_context(bubble_region, bubble_snapshot, search_area):
+    """
+    保存聊天上下文數據到文件，供MCP工具使用
+    注意：不保存實際的bubble_snapshot數據，直接從全域變數讀取
+    """
+    try:
+        context_data = {
+            "timestamp": time.time(),
+            "bubble_region": bubble_region,
+            "search_area": search_area,
+            "status": "active",
+            "note": "bubble_snapshot_from_globals"  # 提示數據來源
+        }
+        
+        with open(CHAT_CONTEXT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(context_data, f, ensure_ascii=False)
+        
+        print(f"Chat Context: Saved to {CHAT_CONTEXT_FILE}")
+    except Exception as e:
+        print(f"Error saving chat context: {e}")
+
+def load_chat_context():
+    """
+    讀取聊天上下文數據，供MCP工具使用
+    返回: (bubble_region, has_snapshot, search_area, age_seconds) 或 None
+    """
+    try:
+        if not os.path.exists(CHAT_CONTEXT_FILE):
+            return None
+        
+        with open(CHAT_CONTEXT_FILE, 'r', encoding='utf-8') as f:
+            context_data = json.load(f)
+        
+        # 檢查數據時效性（5分鐘內）
+        age_seconds = time.time() - context_data.get("timestamp", 0)
+        if age_seconds > 300:  # 5分鐘
+            print(f"Chat Context: Data too old ({age_seconds:.1f}s), ignoring")
+            return None
+        
+        bubble_region = context_data.get("bubble_region")
+        search_area = context_data.get("search_area")
+        
+        print(f"Chat Context: Loaded data from {age_seconds:.1f}s ago (snapshot from globals)")
+        return bubble_region, search_area, age_seconds
+    
+    except Exception as e:
+        print(f"Error loading chat context: {e}")
+        return None
+# --- End Chat Context Management ---
+
+# --- MCP File Communication Constants ---
+COMMAND_FILE = "position_command.json"
+RESULT_FILE = "position_result.json" 
+HEARTBEAT_FILE = "main_heartbeat.json"
+CHAT_CONTEXT_FILE = "chat_context.json"  # 聊天上下文狀態文件
+# --- End MCP File Communication ---
 
 
 # --- Keyboard Shortcut Handlers ---
@@ -248,12 +312,303 @@ if platform.system() == "Windows" and win32api and win32con:
 
 
 # --- Cleanup Function ---
+# --- MCP Position Tool Integration ---
+async def execute_position_removal_with_feedback(action_type: str, user_context: str = "") -> dict:
+    """
+    為MCP tool提供的回調函數，執行職位移除並返回結果
+    
+    Args:
+        action_type: 操作類型，應為 "remove_position_with_feedback"
+        user_context: 用戶上下文信息
+    
+    Returns:
+        執行結果字典
+    """
+    print(f"MCP Callback: Received request for {action_type} with context: {user_context}")
+    
+    if action_type == "remove_position_with_feedback":
+        # 檢查是否有必要的全域變數（現有的bubble相關數據）
+        # 這些變數在main loop中會被設定
+        if 'bubble_region' in globals() and bubble_region:
+            print(f"MCP Callback: Using bubble_region: {bubble_region}")
+            
+            # 構造命令，重用現有的UI操作邏輯
+            command_to_send = {
+                'action': 'remove_position_with_feedback',  # 新的action type
+                'trigger_bubble_region': bubble_region,
+                'bubble_snapshot': bubble_snapshot if 'bubble_snapshot' in globals() else None,
+                'search_area': search_area if 'search_area' in globals() else None,
+                'user_context': user_context,
+                'mcp_request': True  # 標記這是來自MCP的請求
+            }
+            
+            print("MCP Callback: Sending command to UI thread...")
+            # 使用現有的command_queue機制
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, command_queue.put, command_to_send)
+                print("MCP Callback: Command sent to UI thread, waiting for result...")
+                
+                # 等待UI處理結果
+                result = await wait_for_ui_result(timeout=15)  # 給UI操作更長的超時時間
+                print(f"MCP Callback: Received result: {result}")
+                return result
+                
+            except Exception as e:
+                error_result = {
+                    "status": "error",
+                    "message": f"發送命令到UI線程失敗: {str(e)}",
+                    "user_context": user_context,
+                    "execution_time": datetime.datetime.now().isoformat()
+                }
+                print(f"MCP Callback Error: {error_result}")
+                return error_result
+        else:
+            error_result = {
+                "status": "error", 
+                "message": "無法獲取用戶聊天區域信息，請確保在聊天觸發後使用此功能",
+                "user_context": user_context,
+                "execution_time": datetime.datetime.now().isoformat()
+            }
+            print(f"MCP Callback: No bubble_region available: {error_result}")
+            return error_result
+    else:
+        error_result = {
+            "status": "error",
+            "message": f"不支援的操作類型: {action_type}",
+            "user_context": user_context,
+            "execution_time": datetime.datetime.now().isoformat()
+        }
+        print(f"MCP Callback: Unsupported action type: {error_result}")
+        return error_result
+
+async def wait_for_ui_result(timeout: float = 10.0) -> dict:
+    """
+    等待UI線程返回的結果
+    
+    Args:
+        timeout: 超時時間（秒）
+    
+    Returns:
+        UI操作結果字典
+    """
+    start_time = asyncio.get_event_loop().time()
+    
+    while True:
+        current_time = asyncio.get_event_loop().time()
+        if current_time - start_time > timeout:
+            return {
+                "status": "error",
+                "message": f"UI操作超時（{timeout}秒），可能是UI識別失敗",
+                "execution_time": datetime.datetime.now().isoformat()
+            }
+        
+        try:
+            # 非阻塞式檢查result queue
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, position_result_queue.get, False  # False = non-blocking
+            )
+            return result
+        except QueueEmpty:
+            # 沒有結果，短暫等待後重試
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"等待UI結果時發生錯誤: {str(e)}",
+                "execution_time": datetime.datetime.now().isoformat()
+            }
+
+# --- End MCP Position Tool Integration ---
+
+# --- MCP File Communication Functions ---
+async def monitor_mcp_commands():
+    """監控MCP命令文件並處理跨進程通訊"""
+    print("MCP File Monitor: Starting command file monitoring...")
+    
+    while not shutdown_requested:
+        try:
+            # 更新心跳文件
+            try:
+                heartbeat_data = {
+                    "timestamp": time.time(),
+                    "status": "running",
+                    "script_paused": script_paused
+                }
+                with open(HEARTBEAT_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(heartbeat_data, f, ensure_ascii=False)
+            except Exception as hb_error:
+                print(f"MCP Monitor: Error updating heartbeat: {hb_error}")
+            
+            # 檢查命令文件
+            if os.path.exists(COMMAND_FILE):
+                try:
+                    with open(COMMAND_FILE, 'r', encoding='utf-8') as f:
+                        command = json.load(f)
+                    
+                    print(f"MCP Monitor: Received command: {command}")
+                    
+                    # 處理命令
+                    await process_mcp_command(command)
+                    
+                    # 清理命令文件
+                    try:
+                        os.remove(COMMAND_FILE)
+                        print("MCP Monitor: Command file cleaned")
+                    except:
+                        print("MCP Monitor: Warning - Could not remove command file")
+                        
+                except json.JSONDecodeError as json_err:
+                    print(f"MCP Monitor: Invalid JSON in command file: {json_err}")
+                    try:
+                        os.remove(COMMAND_FILE)  # 清理無效文件
+                    except:
+                        pass
+                except Exception as cmd_error:
+                    print(f"MCP Monitor: Error processing command file: {cmd_error}")
+                
+        except Exception as monitor_error:
+            print(f"MCP Monitor: Unexpected error in monitoring loop: {monitor_error}")
+        
+        await asyncio.sleep(0.5)  # 500ms檢查一次
+    
+    print("MCP File Monitor: Shutdown requested, stopping command monitoring")
+
+async def process_mcp_command(command):
+    """處理來自MCP server的命令"""
+    action = command.get("action")
+    request_id = command.get("request_id")
+    attempt = command.get("attempt", 1)
+    
+    print(f"MCP Processor: Processing action '{action}' for request {request_id} (attempt {attempt})")
+    
+    if action == "remove_position_with_feedback":
+        # 優先從聊天上下文文件讀取數據，如果沒有則使用全域變數
+        context_data = load_chat_context()
+        bubble_region_to_use = None
+        search_area_to_use = None
+        has_snapshot = False
+        data_source = "none"
+        
+        if context_data:
+            bubble_region_to_use, search_area_to_use, age = context_data
+            data_source = f"context_file_({age:.1f}s_old)"
+            print(f"MCP Processor: Using chat context data ({age:.1f}s old)")
+            print(f"MCP Processor: Bubble region from context: {bubble_region_to_use}")
+        elif 'bubble_region' in globals() and bubble_region is not None:
+            # Fallback：使用全域變數
+            bubble_region_to_use = bubble_region
+            search_area_to_use = search_area if 'search_area' in globals() else None
+            data_source = "global_variables"
+            print(f"MCP Processor: Using global variables as fallback")
+            print(f"MCP Processor: Bubble region from globals: {bubble_region_to_use}")
+        
+        if bubble_region_to_use:
+            
+            print(f"MCP Processor: Proceeding with data from {data_source}")
+            
+            # 優先使用全域變數中的原始 bubble_snapshot（不論數據來源）
+            original_snapshot = None
+            if 'bubble_snapshot' in globals() and bubble_snapshot is not None:
+                original_snapshot = bubble_snapshot
+                print(f"MCP Processor: Found original bubble_snapshot in globals")
+            else:
+                print(f"MCP Processor: No original bubble_snapshot available in globals")
+            
+            try:
+                # 構造UI命令，使用原始的bubble_snapshot
+                command_to_send = {
+                    'action': 'remove_position_with_feedback',
+                    'trigger_bubble_region': bubble_region_to_use,
+                    'bubble_snapshot': original_snapshot,  # 直接使用全域變數中的原始數據
+                    'search_area': search_area_to_use,
+                    'mcp_request': True,
+                    'request_id': request_id,
+                    'data_source': data_source,  # 記錄數據來源
+                    'has_original_snapshot': original_snapshot is not None
+                }
+                
+                print("MCP Processor: Sending command to UI thread...")
+                await asyncio.get_event_loop().run_in_executor(None, command_queue.put, command_to_send)
+                
+                # 等待UI處理完成（UI thread會直接寫入result文件）
+                print("MCP Processor: Command sent to UI thread, UI will handle result file creation")
+                
+            except Exception as ui_error:
+                print(f"MCP Processor: Error sending to UI thread: {ui_error}")
+                
+                error_result = {
+                    "status": "error",
+                    "message": f"無法發送命令到UI線程: {str(ui_error)}",
+                    "request_id": request_id,
+                    "execution_time": datetime.datetime.now().isoformat()
+                }
+                
+                await write_result_file(error_result)
+        else:
+            print("MCP Processor: No bubble region available from any source")
+            
+            # 檢查是否有全域 bubble_snapshot 但缺少 bubble_region
+            has_global_snapshot = 'bubble_snapshot' in globals() and bubble_snapshot is not None
+            
+            if has_global_snapshot:
+                error_message = "有截圖數據但缺少泡泡位置信息，請在新的聊天觸發後再嘗試"
+                suggestion = "請等待新的聊天消息觸發，系統將重新獲取完整的上下文數據"
+            else:
+                error_message = "無法獲取聊天區域信息和截圖數據，請在聊天觸發後使用此功能"
+                suggestion = "請等待遊戲中有人發言，系統會自動捕獲聊天上下文數據"
+            
+            error_result = {
+                "status": "error",
+                "message": error_message,
+                "suggestion": suggestion,
+                "request_id": request_id,
+                "debug_info": {
+                    "has_global_snapshot": has_global_snapshot,
+                    "checked_sources": ["chat_context_file", "global_variables"]
+                },
+                "execution_time": datetime.datetime.now().isoformat(),
+                "suggestion": "請確保在遊戲聊天觸發後再嘗試移除職位"
+            }
+            
+            await write_result_file(error_result)
+    else:
+        print(f"MCP Processor: Unknown action: {action}")
+        
+        error_result = {
+            "status": "error",
+            "message": f"不支援的操作類型: {action}",
+            "request_id": request_id,
+            "execution_time": datetime.datetime.now().isoformat()
+        }
+        
+        await write_result_file(error_result)
+
+async def write_result_file(result):
+    """寫入結果文件"""
+    try:
+        with open(RESULT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        print(f"MCP Processor: Result written for request {result.get('request_id')}: {result.get('status')}")
+    except Exception as write_error:
+        print(f"MCP Processor: Error writing result file: {write_error}")
+
+# --- End MCP File Communication Functions ---
+
 async def shutdown():
     """Gracefully closes connections and stops monitoring tasks/processes."""
     global wolfhart_persona_details, ui_monitor_task, shutdown_requested
     # Ensure shutdown is requested if called externally (e.g., Ctrl+C)
     if not shutdown_requested:
         print("Shutdown initiated externally (e.g., Ctrl+C).")
+    
+    # Clean up MCP communication files
+    try:
+        for file_path in [COMMAND_FILE, RESULT_FILE, HEARTBEAT_FILE, CHAT_CONTEXT_FILE]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Cleaned up MCP file: {file_path}")
+    except Exception as cleanup_error:
+        print(f"Warning: Error cleaning MCP files: {cleanup_error}")
         shutdown_requested = True # Ensure listener thread stops
 
     print(f"\nInitiating shutdown procedure...")
@@ -533,6 +888,15 @@ async def run_main_with_exit_stack():
         print(f"Available tools: {len(all_discovered_mcp_tools)}")
         if wolfhart_persona_details: print("Persona data loaded.")
         else: print("Warning: Failed to load Persona data.")
+        
+        # 啟動MCP文件通訊監控（替代舊的回調機制）
+        try:
+            monitor_task = asyncio.create_task(monitor_mcp_commands())
+            print("MCP File Communication monitor started successfully.")
+        except Exception as e:
+            print(f"Warning: Failed to start MCP file communication monitor: {e}")
+            monitor_task = None
+        
         print("F7: Clear History, F8: Pause/Resume, F9: Quit.")
 
         while True:
@@ -582,6 +946,11 @@ async def run_main_with_exit_stack():
             bubble_region = trigger_data.get('bubble_region') # <-- Extract bubble_region
             bubble_snapshot = trigger_data.get('bubble_snapshot') # <-- Extract snapshot
             search_area = trigger_data.get('search_area') # <-- Extract search_area
+            
+            # 保存聊天上下文數據供MCP工具使用
+            if bubble_region:
+                save_chat_context(bubble_region, bubble_snapshot, search_area)
+            
             print(f"\n--- Received trigger from UI ---")
             print(f"   Sender: {sender_name}")
             print(f"   Content: {bubble_text[:100]}...")
@@ -657,7 +1026,15 @@ async def run_main_with_exit_stack():
 
             print(f"\n{config.PERSONA_NAME} is thinking...")
             try:
-                # Get LLM response, passing preloaded memory data
+                # 準備 UI 上下文數據（bubble_snapshot 等）
+                ui_context = {
+                    'bubble_snapshot': bubble_snapshot,
+                    'bubble_region': bubble_region,
+                    'search_area': search_area
+                }
+                print(f"Main: Prepared UI context - snapshot: {bubble_snapshot is not None}, region: {bubble_region}, search_area: {search_area is not None}")
+                
+                # Get LLM response, passing preloaded memory data and UI context
                 bot_response_data = await llm_interaction.get_llm_response(
                     current_sender_name=sender_name,
                     history=list(conversation_history),
@@ -666,7 +1043,8 @@ async def run_main_with_exit_stack():
                     persona_details=wolfhart_persona_details,
                     user_profile=user_profile,                # Added: Pass user profile
                     related_memories=related_memories,        # Added: Pass related memories
-                    bot_knowledge=bot_knowledge               # Added: Pass bot knowledge
+                    bot_knowledge=bot_knowledge,              # Added: Pass bot knowledge
+                    ui_context=ui_context                     # Added: Pass UI context
                 )
 
                 # Extract dialogue content
@@ -686,7 +1064,8 @@ async def run_main_with_exit_stack():
                         cmd_params = cmd.get("parameters", {}) # Parameters might be empty for remove_position
 
 # --- Command Processing ---
-                        if cmd_type == "remove_position":
+                        # DEPRECATED: Legacy command method - use MCP remove_user_position() tool instead
+                        if cmd_type == "remove_position":  # Legacy method
                             if bubble_region: # Check if we have the context
                                 # Debug info - print what we have
                                 print(f"Processing remove_position command with:")
@@ -732,7 +1111,7 @@ async def run_main_with_exit_stack():
                                     except Exception as q_err:
                                         print(f"Error putting remove_position command in queue: {q_err}")
                         else:
-                            print("Error: Cannot process 'remove_position' command without bubble_region context.")
+                            print("Error: Cannot process 'remove_position' command without bubble_region context. Consider using MCP remove_user_position() tool instead.")
                         # Add other command handling here if needed
                         # elif cmd_type == "some_other_command":
                         #    # Handle other commands
@@ -743,7 +1122,7 @@ async def run_main_with_exit_stack():
                         # else:
                         #     # 2025-04-19: Commented out - MCP tools like web_search are now handled
                         #     # internally by llm_interaction.py's tool calling loop.
-                        #     # main.py only needs to handle UI-specific commands like remove_position.
+                        #     # main.py handles MCP file communication for remove_position_with_feedback via MCP tools.
                         #     print(f"Ignoring command type from LLM JSON (already handled internally): {cmd_type}, parameters: {cmd_params}")
                         # --- End Command Processing ---
 

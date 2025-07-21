@@ -67,8 +67,8 @@
         {
       "name": "cookie",
       "is_bot": false,
-      "hsv_lower": [9, 195, 218],
-      "hsv_upper": [19, 225, 248],
+      "hsv_lower": [5, 144, 183],
+      "hsv_upper": [17, 255, 255],
       "min_area": 2500,
       "max_area": 300000
     }

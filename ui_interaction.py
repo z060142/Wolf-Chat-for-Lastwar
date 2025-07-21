@@ -18,6 +18,7 @@ import queue
 from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
 import math # Added for distance calculation in dual method
+import datetime # Added for MCP result timestamps
 import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
 from simple_bubble_dedup import SimpleBubbleDeduplication
@@ -1677,12 +1678,20 @@ def remove_user_position(detector: DetectionModule,
                          interactor: InteractionModule,
                          trigger_bubble_region: Tuple[int, int, int, int], # Original region, might be outdated
                          bubble_snapshot: Any, # PIL Image object for re-location
-                         search_area: Optional[Tuple[int, int, int, int]]) -> bool: # Area to search snapshot in
+                         search_area: Optional[Tuple[int, int, int, int]]) -> dict: # Area to search snapshot in
     """
     Performs the sequence of UI actions to remove a user's position based on the triggering chat bubble.
     Includes re-location using the provided snapshot before proceeding.
-    Returns True if successful, False otherwise.
+    Returns dict with status, error_type, and message.
     """
+    
+    def _return_result(status: str, error_type: str = None, message: str = "") -> dict:
+        """Helper function to return consistent result format"""
+        return {
+            "status": status,
+            "error_type": error_type,
+            "message": message
+        }
     print(f"\n--- Starting Position Removal Process (Initial Trigger Region: {trigger_bubble_region}) ---")
 
     # --- Re-locate Bubble First ---
@@ -1697,7 +1706,7 @@ def remove_user_position(detector: DetectionModule,
                 
                 if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
                     print(f"Warning: Invalid bubble region {bubble_region_tuple} for taking new snapshot.")
-                    return False
+                    return _return_result("failed", "ui_operation_failed", "Invalid bubble region for snapshot creation")
                 
                 print(f"Taking new screenshot of region: {bubble_region_tuple}")
                 bubble_snapshot = pyautogui.screenshot(region=bubble_region_tuple)
@@ -1705,13 +1714,13 @@ def remove_user_position(detector: DetectionModule,
                     print("Successfully created new bubble snapshot.")
                 else:
                     print("Failed to create new bubble snapshot.")
-                    return False
+                    return _return_result("failed", "ui_operation_failed", "Failed to create bubble snapshot")
             else:
                 print("Invalid trigger_bubble_region format, cannot create snapshot.")
-                return False
+                return _return_result("failed", "ui_operation_failed", "Invalid trigger bubble region format")
         except Exception as e:
             print(f"Error creating new bubble snapshot: {e}")
-            return False
+            return _return_result("failed", "ui_operation_failed", f"Exception creating bubble snapshot: {str(e)}")
     if search_area is None:
         print("Warning: Search area for snapshot is missing. Creating a default search area.")
         # Create a default search area centered around the original trigger region
@@ -1826,7 +1835,7 @@ def remove_user_position(detector: DetectionModule,
             print("Created fallback bubble box from original coordinates.")
         else:
             print("Error: No original trigger region available for fallback. Aborting position removal.")
-            return False
+            return _return_result("failed", "ui_operation_failed", "No original trigger region available for fallback")
 
     # Use the NEW coordinates for all subsequent calculations
     bubble_x, bubble_y = new_bubble_box.left, new_bubble_box.top
@@ -1847,7 +1856,7 @@ def remove_user_position(detector: DetectionModule,
     # Ensure region has positive width and height
     if search_region_width <= 0 or search_region_height <= 0:
         print(f"Error: Invalid search region calculated for position icons: width={search_region_width}, height={search_region_height}")
-        return False
+        return _return_result("failed", "ui_operation_failed", "Invalid search region calculated for position icons")
         
     search_region = (search_region_x_start, search_region_y_start, search_region_width, search_region_height)
     print(f"Searching for position icons in region: {search_region}")
@@ -1866,7 +1875,7 @@ def remove_user_position(detector: DetectionModule,
 
     if not found_positions:
         print("Error: No position icons found near the trigger bubble.")
-        return False
+        return _return_result("failed", "no_position_found", "User does not have any position assigned")
 
     # Find the closest one to the bubble's top-center
     bubble_top_center_x = bubble_x + bubble_w // 2
@@ -1890,14 +1899,14 @@ def remove_user_position(detector: DetectionModule,
     if not detector._find_template('profile_page', confidence=detector.state_confidence):
         print("Error: Failed to verify Profile Page after clicking avatar.")
         perform_state_cleanup(detector, interactor) # Attempt cleanup
-        return False
+        return _return_result("failed", "ui_operation_failed", "Failed to verify Profile Page after clicking avatar")
     print("Profile page verified.")
 
     capitol_button_locs = detector._find_template('capitol_button', confidence=0.8)
     if not capitol_button_locs:
         print("Error: Capitol button (#11) not found on profile page.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", "Capitol button not found on profile page")
     interactor.click_at(capitol_button_locs[0][0], capitol_button_locs[0][1])
     print("Clicked Capitol button.")
     time.sleep(0.15) # Wait for capitol page
@@ -1906,7 +1915,7 @@ def remove_user_position(detector: DetectionModule,
     if not detector._find_template('president_title', confidence=detector.state_confidence):
         print("Error: Failed to verify Capitol Page (President Title not found).")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", "Failed to verify Capitol Page - President Title not found")
     print("Capitol page verified.")
 
     # 5. Find and Click Corresponding Position Button
@@ -1918,13 +1927,13 @@ def remove_user_position(detector: DetectionModule,
     if not target_button_key:
         print(f"Error: Internal error - unknown position name '{target_position_name}'")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", f"Internal error - unknown position name: {target_position_name}")
 
     pos_button_locs = detector._find_template(target_button_key, confidence=0.8)
     if not pos_button_locs:
         print(f"Error: Position button for '{target_position_name}' not found on Capitol page.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", f"Position button for '{target_position_name}' not found on Capitol page")
     interactor.click_at(pos_button_locs[0][0], pos_button_locs[0][1])
     print(f"Clicked '{target_position_name}' position button.")
     time.sleep(0.15) # Wait for position page
@@ -1938,12 +1947,12 @@ def remove_user_position(detector: DetectionModule,
     if not target_page_key:
          print(f"Error: Internal error - unknown position name '{target_position_name}' for page verification")
          perform_state_cleanup(detector, interactor)
-         return False
+         return _return_result("failed", "ui_operation_failed", f"Internal error - unknown position name for page verification: {target_position_name}")
 
     if not detector._find_template(target_page_key, confidence=detector.state_confidence):
         print(f"Error: Failed to verify correct position page for '{target_position_name}'.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", f"Failed to verify correct position page for '{target_position_name}'")
     print(f"Verified '{target_position_name}' position page.")
 
     # 7. Find and Click Dismiss Button
@@ -1951,7 +1960,7 @@ def remove_user_position(detector: DetectionModule,
     if not dismiss_locs:
         print("Error: Dismiss button not found on position page.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", "Dismiss button not found on position page")
     interactor.click_at(dismiss_locs[0][0], dismiss_locs[0][1])
     print("Clicked Dismiss button.")
     time.sleep(0.1) # Wait for confirmation
@@ -1961,7 +1970,7 @@ def remove_user_position(detector: DetectionModule,
     if not confirm_locs:
         print("Error: Confirm button not found after clicking dismiss.")
         # Don't cleanup here, might be stuck in confirmation state
-        return False # Indicate failure, but let main loop decide next step
+        return _return_result("failed", "ui_operation_failed", "Confirm button not found after clicking dismiss")
     interactor.click_at(confirm_locs[0][0], confirm_locs[0][1])
     print("Clicked Confirm button. Position should be dismissed.")
     time.sleep(0.05) # Wait for action to complete (Reduced from 0.1)
@@ -1991,10 +2000,10 @@ def remove_user_position(detector: DetectionModule,
 
     if cleanup_success:
         print("--- Position Removal Process Completed Successfully ---")
-        return True
+        return _return_result("success", None, "Position removal completed successfully")
     else:
         print("--- Position Removal Process Completed, but failed to confirm return to chat room ---")
-        return False # Technically removed, but UI state uncertain
+        return _return_result("failed", "ui_operation_failed", "Position removal completed but failed to confirm return to chat room")
 
 
 # ==============================================================================
@@ -2158,19 +2167,101 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     print(f"UI Thread: Processing command to send reply: '{text_to_send[:50]}...'")
                     interactor.send_chat_message(text_to_send)
 
-                elif action == 'remove_position':
-                    # region = command_data.get('trigger_bubble_region') # This is the old region, keep for reference?
+                elif action == 'remove_position_with_feedback':
+                    # 新增：帶結果回傳的職位移除（用於MCP tool）
                     snapshot = command_data.get('bubble_snapshot')
                     area = command_data.get('search_area')
-                    # Pass all necessary data to the function, including the original region if needed for context
-                    # but the function should primarily use the snapshot for re-location.
+                    original_region = command_data.get('trigger_bubble_region')
+                    user_context = command_data.get('user_context', '')
+                    is_mcp_request = command_data.get('mcp_request', False)
+                    request_id = command_data.get('request_id')  # 新增：獲取request_id
+                    
+                    print(f"UI Thread: Processing remove_position_with_feedback (MCP: {is_mcp_request}, Request ID: {request_id})")
+                    print(f"UI Thread: User context: {user_context}")
+                    
+                    if snapshot:
+                        print(f"UI Thread: Snapshot available, attempting position removal...")
+                        removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+                        
+                        # Process detailed result information
+                        if removal_result["status"] == "success":
+                            result = {
+                                "status": "success",
+                                "message": "Position removal completed successfully",
+                                "position_name": "Unknown Position",  # Can be improved with UI recognition in future
+                                "user_name": user_context if user_context else "Unknown User",
+                                "execution_time": datetime.datetime.now().isoformat(),
+                                "request_id": request_id
+                            }
+                            print(f"UI Thread: Position removal successful: {result}")
+                        else:
+                            # Handle different failure types
+                            error_type = removal_result.get("error_type", "unknown")
+                            base_message = removal_result.get("message", "Unknown error occurred")
+                            
+                            if error_type == "no_position_found":
+                                user_message = "Target user does not have any position assigned"
+                            elif error_type == "ui_operation_failed":
+                                user_message = f"UI operation failed: {base_message}"
+                            else:
+                                user_message = f"Operation failed: {base_message}"
+                            
+                            result = {
+                                "status": "failed",
+                                "error_type": error_type,
+                                "message": user_message,
+                                "user_name": user_context if user_context else "Unknown User", 
+                                "execution_time": datetime.datetime.now().isoformat(),
+                                "request_id": request_id
+                            }
+                            print(f"UI Thread: Position removal failed ({error_type}): {result}")
+                    else:
+                        result = {
+                            "status": "error",
+                            "message": "Missing essential UI positioning data (bubble snapshot)",
+                            "user_name": user_context if user_context else "Unknown User",
+                            "execution_time": datetime.datetime.now().isoformat(),
+                            "request_id": request_id
+                        }
+                        print(f"UI Thread: Missing snapshot data: {result}")
+                    
+                    # 改進：優先使用文件系統回傳結果（MCP通訊）
+                    if is_mcp_request and request_id:
+                        try:
+                            # 直接寫入結果文件
+                            with open("position_result.json", 'w', encoding='utf-8') as f:
+                                json.dump(result, f, ensure_ascii=False, indent=2)
+                            print(f"UI Thread: Result written to file for MCP request {request_id}")
+                        except Exception as file_error:
+                            print(f"UI Thread: Error writing result file: {file_error}")
+                            # 備用：嘗試使用舊的queue方式
+                            try:
+                                import main
+                                main.position_result_queue.put(result)
+                                print("UI Thread: Fallback - Result sent via queue")
+                            except Exception as queue_error:
+                                print(f"UI Thread: Both file and queue methods failed: {queue_error}")
+                    else:
+                        # 非MCP請求或無request_id，使用舊方式
+                        try:
+                            import main
+                            main.position_result_queue.put(result)
+                            print("UI Thread: Result sent back via legacy queue method")
+                        except Exception as e:
+                            print(f"UI Thread: Error with legacy queue method: {e}")
+
+                elif action == 'remove_position':
+                    # Legacy branch maintained (backward compatibility)
+                    snapshot = command_data.get('bubble_snapshot')
+                    area = command_data.get('search_area')
                     original_region = command_data.get('trigger_bubble_region')
                     if snapshot: # Check for snapshot presence
-                        print(f"UI Thread: Processing command to remove position (Snapshot provided: {'Yes' if snapshot else 'No'})")
-                        success = remove_user_position(detector, interactor, original_region, snapshot, area)
-                        print(f"UI Thread: Position removal attempt finished. Success: {success}")
+                        print(f"UI Thread: Processing legacy remove_position command (Snapshot provided: {'Yes' if snapshot else 'No'})")
+                        removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+                        success = removal_result["status"] == "success"
+                        print(f"UI Thread: Legacy position removal attempt finished. Success: {success}, Type: {removal_result.get('error_type', 'N/A')}")
                     else:
-                        print("UI Thread: Received remove_position command without necessary snapshot data.")
+                        print("UI Thread: Received legacy remove_position command without necessary snapshot data.")
 
 
                 elif action == 'pause':

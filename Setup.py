@@ -91,6 +91,27 @@ You have access to advanced web search tools for real-time information:
 - `type`: Search type specification (optional)
         """
 
+DEFAULT_POSITION_TOOL_SYSTEM_PROMPT = """**POSITION REMOVAL TOOL:**
+
+**MANDATORY EXECUTION:** Always call `remove_user_position()` when position/buff removal is requested. Users may be assigned new positions in a short period of time, so you cannot be affected by previous actions that have already been executed.
+
+**TRIGGER KEYWORDS:** remove position, remove buff, cancel position, clear effects, no position wanted
+
+**EXECUTION PRINCIPLE:**
+- Each request is independent - ignore conversation history
+- Maintain character personality while executing function  
+- Call tool first, then respond based on actual results
+
+**RESULT HANDLING:**
+- SUCCESS: Confirm what was removed
+- NO_POSITION_FOUND: User has no position/buff to remove
+- UI_OPERATION_FAILED: Technical issue, suggest retry
+- ERROR: System problem, explain clearly
+
+**DUAL-TRACK OPERATION:**
+- EXECUTION: Always call remove_user_position()
+- EXPRESSION: Natural character response"""
+
 DEFAULT_CHROMA_SYSTEM_PROMPT = """
 **CHROMADB SEMANTIC QUERY CAPABILITIES:**
 You have access to a persistent ChromaDB system for semantic queries to support complex conversations:
@@ -256,6 +277,13 @@ def load_current_config():
                 "enabled": True,
                 "use_smithery": False,
                 "server_path": normalize_path(f"C:/Users/{CURRENT_USERNAME}/AppData/Roaming/npm/exa-mcp-server")
+            },
+            "chroma": {
+                "enabled": True,
+                "data_dir": normalize_path("chroma_data")
+            },
+            "position-tool": {
+                "enabled": True
             }
         },
         "ENABLE_CHAT_LOGGING": True,
@@ -382,8 +410,14 @@ def load_current_config():
                         if system_prompt_match:
                             config_data["MCP_SERVERS"][server_name]["system_prompt"] = system_prompt_match.group(1).strip()
                         
+                        # For position-tool server
+                        if server_name == "position-tool":
+                            # position-tool doesn't need special parsing like exa or chroma
+                            # It's a standard Python server
+                            pass
+                        
                         # For custom servers, store the raw configuration
-                        if server_name not in ["exa", "chroma"]:
+                        if server_name not in ["exa", "chroma", "position-tool"]:
                             config_data["MCP_SERVERS"][server_name]["raw_config"] = server_block
             except Exception as e:
                 print(f"Error parsing MCP_SERVERS section: {e}")
@@ -574,8 +608,19 @@ def generate_config_file(config_data, env_data):
                     f.write(system_prompt)
                     f.write("\"\"\"\n")
             
+            # Handle Position Tool server
+            elif server_name == "position-tool":
+                f.write("        \"command\": \"python\",\n")
+                f.write("        \"args\": [\"position_tool_server.py\"],\n")
+                # Add system prompt
+                system_prompt = server_config.get("system_prompt", DEFAULT_POSITION_TOOL_SYSTEM_PROMPT).strip()
+                if system_prompt:
+                    f.write("        \"system_prompt\": \"\"\"")
+                    f.write(system_prompt)
+                    f.write("\"\"\"\n")
+            
             # Handle custom server - just write as raw JSON
-            elif server_name != "exa" and server_name != "chroma":
+            elif server_name not in ["exa", "chroma", "position-tool"]:
                 if "raw_config" in server_config:
                     f.write(server_config["raw_config"])
                     # Add system prompt for custom servers
@@ -1778,6 +1823,7 @@ class WolfChatSetup(tk.Tk):
         # Frames for each server type (initially hidden)
         self.create_exa_settings_frame()
         self.create_chroma_settings_frame()
+        self.create_position_tool_settings_frame()
         self.create_custom_settings_frame()
         
         # Update the servers list
@@ -1936,6 +1982,61 @@ class WolfChatSetup(tk.Tk):
             "• The data directory will store vector embeddings and metadata\n"
             "• Use a persistent directory to maintain memory between sessions\n"
             "• Requires uvx to be installed in your Python environment"
+        )
+        
+        info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=400)
+        info_label.pack(padx=10, pady=10, anchor=tk.W)
+    
+    def create_position_tool_settings_frame(self):
+        """Create settings frame for Position Tool MCP server"""
+        self.position_tool_frame = ttk.Frame(self.server_settings_frame)
+        
+        # Enable checkbox
+        enable_frame = ttk.Frame(self.position_tool_frame)
+        enable_frame.pack(fill=tk.X, pady=5)
+        
+        self.position_tool_enable_var = tk.BooleanVar(value=True)
+        enable_cb = ttk.Checkbutton(enable_frame, text="Enable Position Tool Server", variable=self.position_tool_enable_var)
+        enable_cb.pack(anchor=tk.W)
+        
+        # System Prompt section
+        prompt_frame = ttk.LabelFrame(self.position_tool_frame, text="System Prompt")
+        prompt_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Add instructions
+        instructions_text = (
+            "The Position Tool server provides game position management capabilities.\n"
+            "It enables LLM to remove user positions with detailed feedback.\n"
+            "The system prompt below defines how the LLM should use these tools."
+        )
+        instructions_label = ttk.Label(prompt_frame, text=instructions_text, justify=tk.LEFT, wraplength=400)
+        instructions_label.pack(padx=5, pady=2, anchor=tk.W)
+        
+        self.position_tool_system_prompt_text = scrolledtext.ScrolledText(prompt_frame, height=8, width=50)
+        self.position_tool_system_prompt_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Set default system prompt
+        self.position_tool_system_prompt_text.insert(tk.END, DEFAULT_POSITION_TOOL_SYSTEM_PROMPT.strip())
+        
+        # Add reset button
+        prompt_btn_frame = ttk.Frame(prompt_frame)
+        prompt_btn_frame.pack(fill=tk.X, pady=2)
+        
+        reset_position_tool_prompt_btn = ttk.Button(prompt_btn_frame, text="Reset to Default", 
+                                                   command=self.reset_position_tool_system_prompt)
+        reset_position_tool_prompt_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Information text
+        info_frame = ttk.LabelFrame(self.position_tool_frame, text="Information")
+        info_frame.pack(fill=tk.X, pady=5)
+        
+        info_text = (
+            "Position Tool Server Features:\n"
+            "• Dual-track operation: supports both legacy commands and modern tool calls\n"
+            "• Detailed execution feedback for better user interaction\n"
+            "• Integrates with existing UI automation system\n"
+            "• No additional dependencies required - uses Python built-ins\n\n"
+            "The server runs position_tool_server.py when enabled."
         )
         
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=400)
@@ -2554,6 +2655,16 @@ class WolfChatSetup(tk.Tk):
                 self.chroma_system_prompt_text.delete("1.0", tk.END)
                 self.chroma_system_prompt_text.insert(tk.END, system_prompt.strip())
             
+            # Position Tool settings
+            if "position-tool" in self.config_data.get("MCP_SERVERS", {}):
+                position_tool_config = self.config_data["MCP_SERVERS"]["position-tool"]
+                self.position_tool_enable_var.set(position_tool_config.get("enabled", True))
+                
+                # Load system prompt
+                system_prompt = position_tool_config.get("system_prompt", DEFAULT_POSITION_TOOL_SYSTEM_PROMPT)
+                self.position_tool_system_prompt_text.delete("1.0", tk.END)
+                self.position_tool_system_prompt_text.insert(tk.END, system_prompt.strip())
+            
             # Update servers list to include custom servers
             self.update_servers_list()
             
@@ -2696,6 +2807,11 @@ class WolfChatSetup(tk.Tk):
         self.chroma_system_prompt_text.delete("1.0", tk.END)
         self.chroma_system_prompt_text.insert(tk.END, DEFAULT_CHROMA_SYSTEM_PROMPT.strip())
     
+    def reset_position_tool_system_prompt(self):
+        """Reset Position Tool system prompt to default"""
+        self.position_tool_system_prompt_text.delete("1.0", tk.END)
+        self.position_tool_system_prompt_text.insert(tk.END, DEFAULT_POSITION_TOOL_SYSTEM_PROMPT.strip())
+    
     def validate_system_prompt(self, prompt_text):
         """Validate system prompt input"""
         if not prompt_text or not prompt_text.strip():
@@ -2720,10 +2836,11 @@ class WolfChatSetup(tk.Tk):
         # Add built-in servers
         self.servers_listbox.insert(tk.END, "exa")
         self.servers_listbox.insert(tk.END, "chroma")
+        self.servers_listbox.insert(tk.END, "position-tool")
         
         # Add custom servers
         for server_name in self.config_data.get("MCP_SERVERS", {}):
-            if server_name not in ("exa", "chroma"):
+            if server_name not in ("exa", "chroma", "position-tool"):
                 self.servers_listbox.insert(tk.END, server_name)
     
     def on_server_select(self, event):
@@ -2738,6 +2855,7 @@ class WolfChatSetup(tk.Tk):
         self.empty_settings_label.pack_forget()
         self.exa_frame.pack_forget()
         self.chroma_frame.pack_forget()
+        self.position_tool_frame.pack_forget()
         self.custom_frame.pack_forget()
         
         # Show the selected server's settings frame
@@ -2746,6 +2864,9 @@ class WolfChatSetup(tk.Tk):
             self.remove_btn.config(state=tk.DISABLED)  # Can't remove built-in servers
         elif selected_server == "chroma":
             self.chroma_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            self.remove_btn.config(state=tk.DISABLED)  # Can't remove built-in servers
+        elif selected_server == "position-tool":
+            self.position_tool_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             self.remove_btn.config(state=tk.DISABLED)  # Can't remove built-in servers
         else:
             # Custom server
@@ -2876,11 +2997,25 @@ class WolfChatSetup(tk.Tk):
                 return
             self.config_data["MCP_SERVERS"]["chroma"]["system_prompt"] = chroma_prompt
             
+            # Position Tool server
+            if "position-tool" not in self.config_data["MCP_SERVERS"]:
+                self.config_data["MCP_SERVERS"]["position-tool"] = {}
+            
+            self.config_data["MCP_SERVERS"]["position-tool"]["enabled"] = self.position_tool_enable_var.get()
+            
+            # Save Position Tool system prompt
+            position_tool_prompt = self.position_tool_system_prompt_text.get("1.0", tk.END).strip()
+            is_valid, error_message = self.validate_system_prompt(position_tool_prompt)
+            if not is_valid:
+                messagebox.showerror("Error", f"Position Tool system prompt validation failed: {error_message}")
+                return
+            self.config_data["MCP_SERVERS"]["position-tool"]["system_prompt"] = position_tool_prompt
+            
             # Custom server - check if one is currently selected
             selection = self.servers_listbox.curselection()
             if selection:
                 selected_server = self.servers_listbox.get(selection[0])
-                if selected_server not in ("exa", "chroma"):
+                if selected_server not in ("exa", "chroma", "position-tool"):
                     # Update custom server settings
                     new_name = self.custom_name_var.get().strip()
                     
