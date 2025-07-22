@@ -382,6 +382,7 @@ SCREENSHOT_REGION = (70, 50, 800, 1365) # Updated region
 CONFIDENCE_THRESHOLD = 0.9 # Increased threshold for corner matching
 STATE_CONFIDENCE_THRESHOLD = 0.9
 AVATAR_OFFSET_X = -50 # Original offset, used for non-reply interactions like position removal
+AVATAR_OFFSET_Y = 15  # Vertical offset for non-reply interactions, as requested
 # AVATAR_OFFSET_X_RELOCATED = -50 # Replaced by specific reply offsets
 AVATAR_OFFSET_X_REPLY = -45 # Horizontal offset for avatar click after re-location (for reply context)
 AVATAR_OFFSET_Y_REPLY = 10  # Vertical offset for avatar click after re-location (for reply context)
@@ -2015,9 +2016,9 @@ def remove_user_position(detector: DetectionModule,
 
     # 2. Click user avatar (offset from *compensated* bubble coordinates for accurate clicking)
     # --- MODIFIED: Use compensated coordinates for avatar clicks ---
-    avatar_click_x = compensated_x + AVATAR_OFFSET_X_REPLY # Use -45 offset from compensated coordinates
-    avatar_click_y = compensated_y + AVATAR_OFFSET_Y_REPLY # Use +10 offset
-    print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X_REPLY}, {AVATAR_OFFSET_Y_REPLY}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
+    avatar_click_x = compensated_x + AVATAR_OFFSET_X # Use non-reply offset for position removal
+    avatar_click_y = compensated_y + AVATAR_OFFSET_Y # Use non-reply offset for position removal
+    print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X}, {AVATAR_OFFSET_Y}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
     # --- END MODIFICATION ---
     interactor.click_at(avatar_click_x, avatar_click_y)
     time.sleep(0.15) # Wait for profile page
@@ -2798,37 +2799,18 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     # print("[DEBUG] UI Loop: Retrieving sender name...") # DEBUG REMOVED
                     sender_name = None
                     try:
-                        # --- Bubble Re-location Logic ---
-                        print("Attempting to re-locate bubble before getting sender name...")
-                        if bubble_snapshot is None:
-                             print("Error: Bubble snapshot missing for re-location. Skipping this bubble.")
-                             continue
-
-                        # Try locating with decreasing confidence
-                        new_bubble_box = None
-                        confidences_to_try = [BUBBLE_RELOCATE_CONFIDENCE, BUBBLE_RELOCATE_FALLBACK_CONFIDENCE, 0.4]
-                        for conf in confidences_to_try:
-                            print(f"Attempting location with confidence {conf}...")
-                            try:
-                                temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
-                                                                        region=search_area,
-                                                                        confidence=conf)
-                                if temp_bubble_box:
-                                    compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
-                                    new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
-                                    print(f"Successfully located with confidence {conf} (compensated).")
-                                else:
-                                    new_bubble_box = None
-                                    break # Found it
-                            except Exception as e:
-                                print(f"Exception during location attempt with confidence {conf}: {e}")
-                        # --- End Confidence Loop ---
-
+                        # --- Reuse Text Copy Bubble Box (OPTIMIZATION) ---
+                        print("Reusing bubble box from successful text copy operation...")
+                        # Use the same bubble_box that was successfully used for text copying
+                        # This ensures perfect consistency between text copy and avatar click operations
+                        new_bubble_box = new_bubble_box_for_copy
+                        print(f"Reusing bubble box from text copy: {new_bubble_box}")
+                        
                         if new_bubble_box:
                             new_tl_x, new_tl_y = new_bubble_box.left, new_bubble_box.top
-                            print(f"Successfully re-located bubble snapshot at: ({new_tl_x}, {new_tl_y})")
+                            print(f"Using text-copy bubble position at: ({new_tl_x}, {new_tl_y})")
                             new_avatar_coords = (new_tl_x + AVATAR_OFFSET_X_REPLY, new_tl_y + AVATAR_OFFSET_Y_REPLY)
-                            print(f"Calculated new avatar coordinates for reply context: {new_avatar_coords}")
+                            print(f"Calculated avatar coordinates using text-copy bubble: {new_avatar_coords}")
                             sender_name = interactor.retrieve_sender_name_interaction(
                                 initial_avatar_coords=new_avatar_coords,
                                 bubble_snapshot=bubble_snapshot,
