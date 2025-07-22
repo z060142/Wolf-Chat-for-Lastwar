@@ -385,6 +385,7 @@ AVATAR_OFFSET_X = -45 # Original offset, used for non-reply interactions like po
 # AVATAR_OFFSET_X_RELOCATED = -50 # Replaced by specific reply offsets
 AVATAR_OFFSET_X_REPLY = -45 # Horizontal offset for avatar click after re-location (for reply context)
 AVATAR_OFFSET_Y_REPLY = 10  # Vertical offset for avatar click after re-location (for reply context)
+AVATAR_EXTENSION_PX = 120  # Extended pixels to the left for avatar inclusion in screenshots
 BUBBLE_RELOCATE_CONFIDENCE = 0.8 # Reduced confidence for finding the bubble snapshot (was 0.9)
 BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6 # Lower confidence for fallback attempts
 BBOX_SIMILARITY_TOLERANCE = 10
@@ -397,6 +398,17 @@ MATCH_DISTANCE_THRESHOLD = 10  # Threshold for considering detections as overlap
 DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.85 # Confidence threshold for individual methods in dual mode
 DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD = 0.85 # Threshold for accepting single method result directly
 DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD = 0.8 # Threshold for accepting single method result in fallback
+
+# --- Helper Functions for Extended Screenshot ---
+def capture_extended_bubble_screenshot(bubble_region_tuple, extension_left=AVATAR_EXTENSION_PX):
+    """擴展泡泡截圖範圍，向左擴展指定像素以包含頭像"""
+    x, y, w, h = bubble_region_tuple
+    extended_region = (max(0, x - extension_left), y, w + extension_left, h)
+    return pyautogui.screenshot(region=extended_region), extension_left
+
+def compensate_coordinates_for_extended_screenshot(bubble_box, extension_px=AVATAR_EXTENSION_PX):
+    """將擴展截圖中的座標轉換為螢幕絕對座標"""
+    return (bubble_box.left + extension_px, bubble_box.top, bubble_box.width, bubble_box.height)
 
 # --- Helper Function (Module Level) ---
 def are_bboxes_similar(bbox1: Optional[Tuple[int, int, int, int]],
@@ -1709,9 +1721,9 @@ def remove_user_position(detector: DetectionModule,
                     return _return_result("failed", "ui_operation_failed", "Invalid bubble region for snapshot creation")
                 
                 print(f"Taking new screenshot of region: {bubble_region_tuple}")
-                bubble_snapshot = pyautogui.screenshot(region=bubble_region_tuple)
+                bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
                 if bubble_snapshot:
-                    print("Successfully created new bubble snapshot.")
+                    print(f"Successfully created extended bubble snapshot with {extension_used}px left extension.")
                 else:
                     print("Failed to create new bubble snapshot.")
                     return _return_result("failed", "ui_operation_failed", "Failed to create bubble snapshot")
@@ -1749,9 +1761,14 @@ def remove_user_position(detector: DetectionModule,
     # First attempt with standard confidence
     print(f"First attempt with confidence {BUBBLE_RELOCATE_CONFIDENCE}...")
     try:
-        new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+        temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                 region=region_to_search,
                                                 confidence=BUBBLE_RELOCATE_CONFIDENCE)
+        if temp_bubble_box:
+            compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+            new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+        else:
+            new_bubble_box = None
     except Exception as e:
         print(f"Exception during initial bubble location attempt: {e}")
 
@@ -1760,9 +1777,14 @@ def remove_user_position(detector: DetectionModule,
         print(f"First attempt failed. Trying with lower confidence {BUBBLE_RELOCATE_FALLBACK_CONFIDENCE}...")
         try:
             # Try with a lower confidence threshold
-            new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                     region=region_to_search,
                                                     confidence=BUBBLE_RELOCATE_FALLBACK_CONFIDENCE)
+            if temp_bubble_box:
+                compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+            else:
+                new_bubble_box = None
         except Exception as e:
             print(f"Exception during fallback bubble location attempt: {e}")
 
@@ -1771,9 +1793,14 @@ def remove_user_position(detector: DetectionModule,
         print("Second attempt failed. Trying with even lower confidence 0.4...")
         try:
             # Last resort with very low confidence
-            new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                    region=region_to_search,
                                                    confidence=0.4)
+            if temp_bubble_box:
+                compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+            else:
+                new_bubble_box = None
         except Exception as e:
             print(f"Exception during last resort bubble location attempt: {e}")
 
@@ -2500,9 +2527,9 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
                             print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping this bubble.")
                             continue # Skip to next bubble in the loop
-                        bubble_snapshot = pyautogui.screenshot(region=bubble_region_tuple)
+                        bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
                         if bubble_snapshot is None:
-                             print("Warning: Failed to capture bubble snapshot. Skipping this bubble.")
+                             print("Warning: Failed to capture extended bubble snapshot. Skipping this bubble.")
                              continue # Skip to next bubble
 
                         # --- New: Image deduplication check ---
@@ -2534,9 +2561,14 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     if bubble_snapshot:
                         try:
                             # Use standard confidence for this initial critical step
-                            new_bubble_box_for_copy = pyautogui.locateOnScreen(bubble_snapshot,
+                            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                                              region=search_area,
                                                                              confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                            if temp_bubble_box:
+                                compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                                new_bubble_box_for_copy = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                            else:
+                                new_bubble_box_for_copy = None
                         except Exception as e:
                             print(f"Exception during bubble location before copy: {e}")
 
@@ -2594,11 +2626,15 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         for conf in confidences_to_try:
                             print(f"Attempting location with confidence {conf}...")
                             try:
-                                new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+                                temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                                         region=search_area,
                                                                         confidence=conf)
-                                if new_bubble_box:
-                                    print(f"Successfully located with confidence {conf}.")
+                                if temp_bubble_box:
+                                    compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                                    new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                                    print(f"Successfully located with confidence {conf} (compensated).")
+                                else:
+                                    new_bubble_box = None
                                     break # Found it
                             except Exception as e:
                                 print(f"Exception during location attempt with confidence {conf}: {e}")
@@ -2691,7 +2727,12 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                              final_bubble_box_for_reply = None
                         else:
                              print(f"Attempting final re-location for reply context using search_area: {search_area}")
-                             final_bubble_box_for_reply = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                             temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                             if temp_bubble_box:
+                                 compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                                 final_bubble_box_for_reply = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                             else:
+                                 final_bubble_box_for_reply = None
 
                         if final_bubble_box_for_reply:
                             print(f"Final re-location successful at: {final_bubble_box_for_reply}")
