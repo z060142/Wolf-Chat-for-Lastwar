@@ -2188,8 +2188,8 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     # --- 初始化氣泡圖像去重系統（新增） ---
     bubble_deduplicator = SimpleBubbleDeduplication(
         storage_file="simple_bubble_dedup.json",
-        max_bubbles=4,    # 保留最近5個氣泡
-        threshold=7,      # 哈希差異閾值（值越小越嚴格）
+        max_bubbles=12,  # 增加記憶數量以覆蓋整個螢幕的泡泡
+        threshold=8,      # 哈希差異閾值（值越小越嚴格）
         hash_size=16      # 哈希大小
     )
     # --- 初始化氣泡圖像去重系統結束 ---
@@ -2624,6 +2624,45 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                 # Ensure bubble_region uses standard ints
                 bubble_region = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
 
+                # --- 流程開始：截圖與第一層視覺去重 ---
+                try:
+                    # 確保 bubble_region_tuple 使用最新的 bbox 尺寸
+                    bubble_region_tuple = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
+                    if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
+                        print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping this bubble.")
+                        continue
+
+                    # 1. 截取包含頭像的擴展快照
+                    extended_bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
+                    if extended_bubble_snapshot is None:
+                        print("Warning: Failed to capture extended bubble snapshot. Skipping this bubble.")
+                        continue
+
+                    # 2. 【第一層防護】執行視覺去重檢查
+                    #    is_duplicate 方法會對包含頭像的圖片進行哈希計算，從而區分不同用戶
+                    if bubble_deduplicator.is_duplicate(extended_bubble_snapshot, bubble_region_tuple):
+                        print("--- VISUAL DUPLICATE DETECTED (L1). Skipping. ---")
+                        continue  # 如果視覺重複，直接跳過，成本極低
+
+                    # 3. 將 `bubble_snapshot` 變數指向擴展快照，供後續所有重新定位邏輯使用
+                    bubble_snapshot = extended_bubble_snapshot
+
+                    # --- 保存除錯快照 ---
+                    try:
+                        screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
+                        screenshot_filename = f"debug_relocation_snapshot_{screenshot_index}.png"
+                        screenshot_path = os.path.join(DEBUG_SCREENSHOT_DIR, screenshot_filename)
+                        bubble_snapshot.save(screenshot_path)
+                        screenshot_counter += 1
+                    except Exception as save_err:
+                        print(f"Error saving debug snapshot: {repr(save_err)}")
+
+                except Exception as snapshot_err:
+                     print(f"Error during snapshot/L1 deduplication phase: {repr(snapshot_err)}")
+                     continue
+
+                # --- 視覺去重通過，開始執行高成本操作 ---
+
                 # 3. Enhanced Keyword Detection in Bubble with verification
                 # print(f"[DEBUG] UI Loop: Enhanced keyword detection in region {bubble_region}...") # DEBUG REMOVED
                 result = detector.enhanced_keyword_detection(bubble_region) # Enhanced method with verification
@@ -2683,12 +2722,6 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                              print("Warning: Failed to capture extended bubble snapshot. Skipping this bubble.")
                              continue # Skip to next bubble
 
-                        # --- New: Image deduplication check ---
-                        if bubble_deduplicator.is_duplicate(bubble_snapshot, bubble_region_tuple):
-                            print("Detected duplicate bubble, skipping processing")
-                            perform_state_cleanup(detector, interactor)
-                            continue  # Skip processing this bubble
-                        # --- End of image deduplication check ---
 
                         # --- Save Snapshot for Debugging ---
                         try:
@@ -2838,35 +2871,20 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         print("Error: Failed to return to chat screen after getting name. Skipping this bubble.")
                         continue # Skip to next bubble
 
-                    if not sender_name:
-                        print("Error: Could not get sender name for this bubble, skipping.")
-                        continue # Skip to next bubble
-
-                    # --- Deduplication Check ---
-                    # This is the new central point for deduplication and recent_texts logic
-                    if sender_name and bubble_text: # Ensure both are valid before deduplication
-                        if deduplicator.is_duplicate(sender_name, bubble_text):
-                            print(f"UI Thread: Message blocked by robust deduplication: {sender_name} - {bubble_text[:30]}...")
-                            # Cleanup UI state as interaction might have occurred during sender_name retrieval
-                            perform_state_cleanup(detector, interactor)
-                            continue  # Skip this bubble
-
-                        # If not a duplicate by deduplicator, then check recent_texts (original safeguard)
-                        # if bubble_text in recent_texts:
-                        #     print(f"UI Thread: Content '{bubble_text[:30]}...' in recent_texts history, skipping.")
-                        #     perform_state_cleanup(detector, interactor) # Cleanup as we are skipping
-                        #     continue
-
-                        # If not a duplicate by any means, add to recent_texts and proceed
-                        print(">>> New trigger event (passed deduplication) <<<")
-                        # recent_texts.append(bubble_text) # No longer needed with image deduplication
-                    else:
-                        # This case implies sender_name or bubble_text was None/empty,
-                        # which should have been caught by earlier checks.
-                        # If somehow reached, log and skip.
-                        print(f"Warning: sender_name ('{sender_name}') or bubble_text ('{bubble_text[:30]}...') is invalid before deduplication check. Skipping.")
+                    if not sender_name or not bubble_text:
+                        print("Error: Could not get sender name or bubble text, skipping.")
                         perform_state_cleanup(detector, interactor)
                         continue
+
+                    # --- 【第二層防護】執行文字內容去重 ---
+                    if deduplicator.is_duplicate(sender_name, bubble_text):
+                        print(f"--- TEXT DUPLICATE DETECTED (L2). User: {sender_name}, Text: {bubble_text[:30]}... Skipping. ---")
+                        # 因為已經執行了UI互動(獲取名稱)，所以這裡需要清理狀態
+                        perform_state_cleanup(detector, interactor)
+                        continue
+
+                    # --- 所有檢查通過，這是一個全新的有效觸發 ---
+                    print(">>> New trigger event (passed BOTH visual and text deduplication) <<<")
 
                     # --- Attempt to activate reply context ---
                     # print("[DEBUG] UI Loop: Attempting to activate reply context...") # DEBUG REMOVED
