@@ -381,7 +381,7 @@ CHAT_INPUT_CENTER_Y = 1280
 SCREENSHOT_REGION = (70, 50, 800, 1365) # Updated region
 CONFIDENCE_THRESHOLD = 0.9 # Increased threshold for corner matching
 STATE_CONFIDENCE_THRESHOLD = 0.9
-AVATAR_OFFSET_X = -45 # Original offset, used for non-reply interactions like position removal
+AVATAR_OFFSET_X = -50 # Original offset, used for non-reply interactions like position removal
 # AVATAR_OFFSET_X_RELOCATED = -50 # Replaced by specific reply offsets
 AVATAR_OFFSET_X_REPLY = -45 # Horizontal offset for avatar click after re-location (for reply context)
 AVATAR_OFFSET_Y_REPLY = 10  # Vertical offset for avatar click after re-location (for reply context)
@@ -409,6 +409,82 @@ def capture_extended_bubble_screenshot(bubble_region_tuple, extension_left=AVATA
 def compensate_coordinates_for_extended_screenshot(bubble_box, extension_px=AVATAR_EXTENSION_PX):
     """將擴展截圖中的座標轉換為螢幕絕對座標"""
     return (bubble_box.left + extension_px, bubble_box.top, bubble_box.width, bubble_box.height)
+
+# Global DPI scale cache to avoid repeated detection
+_cached_dpi_scale = None
+
+def get_windows_dpi_scale():
+    """獲取Windows DPI縮放因子，處理125%等UI显示縮放（帶緩存）"""
+    global _cached_dpi_scale
+    
+    if _cached_dpi_scale is not None:
+        return _cached_dpi_scale
+        
+    try:
+        import ctypes
+        from ctypes import wintypes
+        
+        # 讓程序感知DPI（只設定一次）
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        
+        # 獲取螢幕DPI
+        dc = user32.GetDC(0)
+        gdi32 = ctypes.windll.gdi32
+        dpi = gdi32.GetDeviceCaps(dc, 88)  # LOGPIXELSX
+        user32.ReleaseDC(0, dc)
+        
+        # 標準DPI是96，計算縮放因子
+        scale_factor = dpi / 96.0
+        _cached_dpi_scale = scale_factor
+        print(f"Windows DPI detected: {dpi}, Scale factor: {scale_factor:.2f} ({scale_factor*100:.0f}%)")
+        return scale_factor
+    except Exception as e:
+        print(f"Warning: Could not detect DPI scaling, assuming 100%: {e}")
+        _cached_dpi_scale = 1.0
+        return 1.0
+
+def calculate_safe_click_region():
+    """計算安全點擊區域，考慮DPI縮放並基於config中的遊戲視窗設定，內縮5px作為安全區域"""
+    # 獲取DPI縮放因子
+    scale_factor = get_windows_dpi_scale()
+    
+    # 從 config 讀取遊戲視窗設定（100%基準）
+    window_x = config.GAME_WINDOW_X
+    window_y = config.GAME_WINDOW_Y 
+    window_width = config.GAME_WINDOW_WIDTH
+    window_height = config.GAME_WINDOW_HEIGHT
+    
+    # 檢查是否需要DPI調整（預設啟用）
+    apply_dpi_scaling = getattr(config, 'APPLY_DPI_SCALING', True)
+    
+    if apply_dpi_scaling and scale_factor != 1.0:
+        # 應用DPI縮放調整（config是按100%記錄）
+        actual_x = int(window_x * scale_factor)
+        actual_y = int(window_y * scale_factor) 
+        actual_width = int(window_width * scale_factor)
+        actual_height = int(window_height * scale_factor)
+        safe_margin = int(5 * scale_factor)
+    else:
+        # 不應用DPI調整或縮放為100%
+        actual_x = window_x
+        actual_y = window_y
+        actual_width = window_width
+        actual_height = window_height
+        safe_margin = 5
+    
+    # 計算安全區域
+    safe_x_min = actual_x + safe_margin
+    safe_y_min = actual_y + safe_margin
+    safe_x_max = actual_x + actual_width - safe_margin
+    safe_y_max = actual_y + actual_height - safe_margin
+    
+    return (safe_x_min, safe_y_min, safe_x_max, safe_y_max)
+
+def is_click_position_safe(x: int, y: int) -> bool:
+    """檢查點擊位置是否在安全區域內"""
+    safe_x_min, safe_y_min, safe_x_max, safe_y_max = calculate_safe_click_region()
+    return safe_x_min <= x <= safe_x_max and safe_y_min <= y <= safe_y_max
 
 # --- Helper Function (Module Level) ---
 def are_bboxes_similar(bbox1: Optional[Tuple[int, int, int, int]],
@@ -606,7 +682,7 @@ class DetectionModule:
         regular_tl_keys = ['corner_tl', 'corner_tl_type2', 'corner_tl_type3', 'corner_tl_type4'] # Added type4
         regular_br_keys = ['corner_br', 'corner_br_type2', 'corner_br_type3', 'corner_br_type4'] # Added type4
 
-        bubble_detection_region = (150, 330, 600, 880) # Define the specific region for bubbles
+        bubble_detection_region = (200, 330, 680, 1200) # Define the specific region for bubbles
         print(f"DEBUG: Using specific region for bubble corner detection: {bubble_detection_region}")
 
         all_regular_tl_boxes = []
@@ -704,7 +780,7 @@ class DetectionModule:
         all_bubbles_info = []
 
         # Define the specific region for bubble detection (same as template matching)
-        bubble_detection_region = (150, 330, 600, 880)
+        bubble_detection_region = (200, 270, 680, 1200)
         print(f"Using bubble color detection region: {bubble_detection_region}")
 
         try:
@@ -1437,14 +1513,31 @@ class InteractionModule:
         print("InteractionModule initialized.")
 
     def click_at(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1, duration: float = 0.1):
-        """Safely click at specific coordinates."""
+        """Safely click at specific coordinates with safety boundary check."""
+        # 安全區域檢查
+        if not is_click_position_safe(x, y):
+            safe_x_min, safe_y_min, safe_x_max, safe_y_max = calculate_safe_click_region()
+            scale_factor = get_windows_dpi_scale()
+            scale_factor = get_windows_dpi_scale()
+            print(f"\n⚠️  SAFETY VIOLATION: Click position ({x}, {y}) is outside safe game window boundary!")
+            print(f"Safe area: ({safe_x_min}, {safe_y_min}) to ({safe_x_max}, {safe_y_max})")
+            print(f"Config window (100%): ({config.GAME_WINDOW_X}, {config.GAME_WINDOW_Y}) size ({config.GAME_WINDOW_WIDTH}x{config.GAME_WINDOW_HEIGHT})")
+            print(f"DPI scale factor: {scale_factor:.2f} ({scale_factor*100:.0f}%)")
+            print(f"DPI scaling: {'ENABLED' if getattr(config, 'APPLY_DPI_SCALING', True) else 'DISABLED'}")
+            print(f"Click operation BLOCKED for safety.")
+            return False  # 禁止點擊並返回false
+        
         try:
-            print(f"Moving to and clicking at: ({x}, {y}), button: {button}, clicks: {clicks}")
+            scale_factor = get_windows_dpi_scale()
+            scaling_info = f" [DPI {scale_factor:.2f}]" if scale_factor != 1.0 else ""
+            print(f"Moving to and clicking at: ({x}, {y}) [SAFE]{scaling_info}, button: {button}, clicks: {clicks}")
             pyautogui.moveTo(x, y, duration=duration)
             pyautogui.click(button=button, clicks=clicks, interval=interval)
             time.sleep(0.1)
+            return True  # 成功點擊
         except Exception as e:
             print(f"Error clicking at coordinates ({x}, {y}): {e}")
+            return False  # 點擊失敗
 
     def press_key(self, key: str, presses: int = 1, interval: float = 0.1):
         """Press a specific key."""
@@ -1864,10 +1957,17 @@ def remove_user_position(detector: DetectionModule,
             print("Error: No original trigger region available for fallback. Aborting position removal.")
             return _return_result("failed", "ui_operation_failed", "No original trigger region available for fallback")
 
-    # Use the NEW coordinates for all subsequent calculations
-    bubble_x, bubble_y = new_bubble_box.left, new_bubble_box.top
+    # Use compensated coordinates for screen clicks, but original coordinates for template search
+    # Store both compensated (for clicks) and original (for template search) coordinates
+    compensated_x, compensated_y = new_bubble_box.left, new_bubble_box.top
     bubble_w, bubble_h = new_bubble_box.width, new_bubble_box.height
-    print(f"Successfully re-located bubble at: ({bubble_x}, {bubble_y}, {bubble_w}, {bubble_h})")
+    
+    # For position detection, we need the original bubble coordinates (subtract extension offset)
+    bubble_x = compensated_x - AVATAR_EXTENSION_PX  # Remove the 120px extension for search region
+    bubble_y = compensated_y  # Y coordinate is not affected by left extension
+    
+    print(f"Successfully re-located bubble - Compensated: ({compensated_x}, {compensated_y}), Search base: ({bubble_x}, {bubble_y})")
+    print(f"Using search base coordinates for position detection, compensated coordinates for avatar clicks")
     # --- End Re-location ---
 
 
@@ -1913,11 +2013,11 @@ def remove_user_position(detector: DetectionModule,
     target_position_name = closest_position['name']
     print(f"Found pending position: |{target_position_name}| at {closest_position['coords']}")
 
-    # 2. Click user avatar (offset from *re-located* bubble top-left)
-    # --- MODIFIED: Use specific offsets for remove_position command as requested ---
-    avatar_click_x = bubble_x + AVATAR_OFFSET_X_REPLY # Use -45 offset
-    avatar_click_y = bubble_y + AVATAR_OFFSET_Y_REPLY # Use +10 offset
-    print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X_REPLY}, {AVATAR_OFFSET_Y_REPLY}) from re-located bubble top-left ({bubble_x}, {bubble_y})")
+    # 2. Click user avatar (offset from *compensated* bubble coordinates for accurate clicking)
+    # --- MODIFIED: Use compensated coordinates for avatar clicks ---
+    avatar_click_x = compensated_x + AVATAR_OFFSET_X_REPLY # Use -45 offset from compensated coordinates
+    avatar_click_y = compensated_y + AVATAR_OFFSET_Y_REPLY # Use +10 offset
+    print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X_REPLY}, {AVATAR_OFFSET_Y_REPLY}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
     # --- END MODIFICATION ---
     interactor.click_at(avatar_click_x, avatar_click_y)
     time.sleep(0.15) # Wait for profile page
@@ -2195,6 +2295,24 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     interactor.send_chat_message(text_to_send)
 
                 elif action == 'remove_position_with_feedback':
+                    # Check position removal lock first (DISABLED)
+                    # if main.position_removal_used:
+                    #     print(f"UI Thread: Position removal already used in this conversation, blocking request")
+                    #     result = {
+                    #         "status": "blocked",
+                    #         "message": "Position removal function has already been used in this conversation. Only one usage per conversation is allowed.",
+                    #         "user_name": command_data.get('user_context', 'Unknown User'),
+                    #         "execution_time": datetime.datetime.now().isoformat(),
+                    #         "request_id": command_data.get('request_id')
+                    #     }
+                    #     if command_data.get('mcp_request', False):
+                    #         main.position_result_queue.put(result)
+                    #     continue
+                    
+                    # Set the lock before processing (DISABLED)
+                    # main.position_removal_used = True
+                    # print(f"UI Thread: Position removal lock activated for this conversation")
+                    
                     # 新增：帶結果回傳的職位移除（用於MCP tool）
                     snapshot = command_data.get('bubble_snapshot')
                     area = command_data.get('search_area')
@@ -2226,6 +2344,11 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                             error_type = removal_result.get("error_type", "unknown")
                             base_message = removal_result.get("message", "Unknown error occurred")
                             
+                            # Reset lock for certain failure types that allow retry (DISABLED)
+                            # if error_type in ["ui_operation_failed", "unknown"]:
+                            #     main.position_removal_used = False
+                            #     print(f"UI Thread: Position removal lock reset due to technical failure ({error_type})")
+                            
                             if error_type == "no_position_found":
                                 user_message = "Target user does not have any position assigned"
                             elif error_type == "ui_operation_failed":
@@ -2243,6 +2366,10 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                             }
                             print(f"UI Thread: Position removal failed ({error_type}): {result}")
                     else:
+                        # Reset lock for missing snapshot (technical issue) (DISABLED)
+                        # main.position_removal_used = False
+                        # print(f"UI Thread: Position removal lock reset due to missing snapshot data")
+                        
                         result = {
                             "status": "error",
                             "message": "Missing essential UI positioning data (bubble snapshot)",
@@ -2278,6 +2405,15 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                             print(f"UI Thread: Error with legacy queue method: {e}")
 
                 elif action == 'remove_position':
+                    # Check position removal lock first (DISABLED)
+                    # if main.position_removal_used:
+                    #     print(f"UI Thread: Position removal already used in this conversation, blocking legacy request")
+                    #     continue
+                    
+                    # Set the lock before processing (DISABLED)
+                    # main.position_removal_used = True
+                    # print(f"UI Thread: Position removal lock activated for this conversation (legacy)")
+                    
                     # Legacy branch maintained (backward compatibility)
                     snapshot = command_data.get('bubble_snapshot')
                     area = command_data.get('search_area')
@@ -2286,8 +2422,19 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         print(f"UI Thread: Processing legacy remove_position command (Snapshot provided: {'Yes' if snapshot else 'No'})")
                         removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
                         success = removal_result["status"] == "success"
+                        
+                        # Reset lock for technical failures in legacy mode (DISABLED)
+                        # if not success:
+                        #     error_type = removal_result.get("error_type", "unknown")
+                        #     if error_type in ["ui_operation_failed", "unknown"]:
+                        #         main.position_removal_used = False
+                        #         print(f"UI Thread: Position removal lock reset due to technical failure in legacy mode ({error_type})")
+                        
                         print(f"UI Thread: Legacy position removal attempt finished. Success: {success}, Type: {removal_result.get('error_type', 'N/A')}")
                     else:
+                        # Reset lock for missing snapshot (technical issue) (DISABLED)
+                        # main.position_removal_used = False
+                        # print(f"UI Thread: Position removal lock reset due to missing snapshot data (legacy)")
                         print("UI Thread: Received legacy remove_position command without necessary snapshot data.")
 
 
@@ -2324,6 +2471,10 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     print("UI Thread: Processing clear_history command.")
                     recent_texts.clear()
                     deduplicator.clear_all() # Simultaneously clear deduplication records
+                    
+                    # Reset position removal lock (DISABLED)
+                    # main.position_removal_used = False
+                    # print("UI Thread: Position removal lock reset.")
                     
                     # --- 新增：清理氣泡去重記錄 ---
                     if 'bubble_deduplicator' in locals():
