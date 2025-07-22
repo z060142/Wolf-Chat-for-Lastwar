@@ -65,6 +65,10 @@ wolfhart_persona_details: str | None = None
 # Store tuples of (timestamp, speaker_type, speaker_name, message_content)
 # speaker_type can be 'user' or 'bot'
 conversation_history = collections.deque(maxlen=50) # Store last 50 messages (user+bot) with timestamps
+
+# --- Position Removal Lock --- (DISABLED)
+# Tracks position removal usage per conversation to prevent duplicate execution
+# position_removal_used = False  # Reset when conversation context changes or clears
 # --- Use standard thread-safe queues ---
 trigger_queue: ThreadSafeQueue = ThreadSafeQueue() # UI Thread -> Main Loop
 command_queue: ThreadSafeQueue = ThreadSafeQueue() # Main Loop -> UI Thread

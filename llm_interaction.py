@@ -201,6 +201,7 @@ def get_system_prompt(
     - Trigger keywords: remove position, remove buff, cancel position, clear effects
     - Maintain natural character personality while executing function
     - Respond based on actual tool results, not assumptions
+    - Users may be assigned a new position in a short period of time, so you must faithfully complete the tasks of this dialogue without being affected by previous operations that have been performed.
 
     {mcp_tools_prompt}
 
@@ -211,7 +212,7 @@ def get_system_prompt(
     ```json
     {{
         "dialogue": "Your spoken response (REQUIRED - conversational words only)",
-        "commands": [],  // Use MCP tools instead - legacy method: [{{"type": "remove_position"}}]
+        "commands": [{{"type": "remove_position"}}],  (This is an execution mark. When you receive a position remove request, output this content in the structure as a record.)
         "thoughts": "Internal analysis (optional)"
     }}
     ```
