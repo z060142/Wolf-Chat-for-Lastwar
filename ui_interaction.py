@@ -2647,6 +2647,8 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
 
                     # 3. 將 `bubble_snapshot` 變數指向擴展快照，供後續所有重新定位邏輯使用
                     bubble_snapshot = extended_bubble_snapshot
+                    # 保存L1去重時的正確模板，供頭像點擊使用
+                    l1_bubble_snapshot = extended_bubble_snapshot
 
                     # --- 保存除錯快照 ---
                     try:
@@ -2813,7 +2815,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                             print(f"Calculated avatar coordinates using text-copy bubble: {new_avatar_coords}")
                             sender_name = interactor.retrieve_sender_name_interaction(
                                 initial_avatar_coords=new_avatar_coords,
-                                bubble_snapshot=bubble_snapshot,
+                                bubble_snapshot=l1_bubble_snapshot,  # 使用L1去重時的正確模板
                                 search_area=search_area
                             )
                         else:
@@ -2826,7 +2828,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                 print(f"Using fallback avatar coordinates from original detection: {fallback_avatar_coords}")
                                 sender_name = interactor.retrieve_sender_name_interaction(
                                     initial_avatar_coords=fallback_avatar_coords,
-                                    bubble_snapshot=bubble_snapshot,
+                                    bubble_snapshot=l1_bubble_snapshot,  # 使用L1去重時的正確模板
                                     search_area=search_area
                                 )
                                 if not sender_name:
