@@ -556,6 +556,14 @@ class DetectionModule:
             if not self.bubble_colors:
                  print("Warning: Color detection enabled, but failed to load any color configurations. Color detection might not work.")
 
+        # 經濟模式相關變數
+        self.eco_mode_enabled = False
+        self.no_new_bubbles_count = 0  # 連續無新泡泡的循環次數
+        self.eco_mode_threshold = 2    # 觸發經濟模式的閾值
+        self.eco_mode_interval = 1.5   # 經濟模式的檢測間隔（秒）
+        self.eco_mode_region = (90, 550, 610, 200)  # 固定監控區域 (x, y, width, height)
+        self.last_eco_screenshot = None  # 上次經濟模式截圖的numpy array
+        
         print(f"DetectionModule initialized. Color Detection: {'Enabled' if self.use_color_detection else 'Disabled'}. Dual Keyword Method: {'Enabled' if self.use_dual_method else 'Disabled'}")
 
     def _apply_clahe(self, image):
@@ -1471,6 +1479,53 @@ class DetectionModule:
         return self.verify_detection_result(
             lambda r: self.find_keyword_dual_method(r), region
         )
+    
+    def eco_mode_check_region_change(self) -> bool:
+        """
+        經濟模式：檢測固定區域是否有變化
+        使用腳本原有的cv2和numpy方法
+        返回True表示檢測到變化，應該退出經濟模式
+        """
+        try:
+            # 只在聊天室狀態下執行
+            if not self._find_template('chat_room', confidence=self.state_confidence):
+                print("經濟模式：不在聊天室狀態，跳過檢測")
+                return False
+            
+            # 截取固定區域並轉換為numpy array
+            current_screenshot = pyautogui.screenshot(region=self.eco_mode_region)
+            current_img = np.array(current_screenshot)
+            current_img = cv2.cvtColor(current_img, cv2.COLOR_RGB2BGR)
+            
+            # 轉換為灰度圖像以提高比較效率
+            current_gray = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
+            
+            if self.last_eco_screenshot is None:
+                self.last_eco_screenshot = current_gray
+                print("經濟模式：初始化基準截圖")
+                return False
+            
+            # 計算結構相似性指數(SSIM)或直接使用像素差異
+            # 使用簡單的像素差異比較（與腳本風格一致）
+            diff = cv2.absdiff(self.last_eco_screenshot, current_gray)
+            non_zero_count = cv2.countNonZero(diff)
+            total_pixels = diff.shape[0] * diff.shape[1]
+            change_percentage = (non_zero_count / total_pixels) * 100
+            
+            # 設定變化閾值（可調整）
+            change_threshold = 2.0  # 2%的像素變化
+            
+            if change_percentage > change_threshold:
+                print(f"經濟模式：檢測到顯著變化 {change_percentage:.2f}%，退出經濟模式")
+                self.last_eco_screenshot = current_gray  # 更新基準
+                return True
+            
+            print(f"經濟模式：無顯著變化 {change_percentage:.2f}%，繼續監控")
+            return False
+            
+        except Exception as e:
+            print(f"經濟模式檢測錯誤: {e}")
+            return False
 
     def calculate_avatar_coords(self, bubble_tl_coords: Tuple[int, int], offset_x: int = AVATAR_OFFSET_X) -> Tuple[int, int]:
         """
@@ -2189,7 +2244,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     # --- 初始化氣泡圖像去重系統（新增） ---
     bubble_deduplicator = SimpleBubbleDeduplication(
         storage_file="simple_bubble_dedup.json",
-        max_bubbles=12,  # 增加記憶數量以覆蓋整個螢幕的泡泡
+        max_bubbles=8,  # 增加記憶數量以覆蓋整個螢幕的泡泡
         threshold=8,      # 哈希差異閾值（值越小越嚴格）
         hash_size=16      # 哈希大小
     )
@@ -2267,6 +2322,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     
     while True:
         loop_counter += 1
+        found_new_bubble_this_cycle = False  # 追蹤本循環是否有新泡泡被處理
         
         # 每100次循環檢查一次對象狀態
         if loop_counter % 100 == 0:
@@ -2493,6 +2549,11 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     # --- 新增：清理氣泡去重記錄 ---
                     if 'bubble_deduplicator' in locals():
                         bubble_deduplicator.clear_all()
+                    
+                    # --- 重置經濟模式狀態 ---
+                    detector.eco_mode_enabled = False
+                    detector.no_new_bubbles_count = 0
+                    detector.last_eco_screenshot = None
                     # --- 清理氣泡去重記錄結束 ---
                     
                     print("UI Thread: recent_texts, last_processed_bubble_info, and deduplicator records reset.")
@@ -2597,6 +2658,20 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
              # Decide how to handle error - maybe pause and retry? For now, continue cautiously.
              time.sleep(1)
 
+
+        # --- 經濟模式檢查 ---
+        if detector.eco_mode_enabled:
+            # 在經濟模式下，檢查固定區域是否有變化
+            if detector.eco_mode_check_region_change():
+                # 檢測到變化，退出經濟模式
+                detector.eco_mode_enabled = False
+                detector.no_new_bubbles_count = 0
+                detector.last_eco_screenshot = None
+                print("退出經濟模式，恢復正常泡泡檢測")
+            else:
+                # 無變化，繼續經濟模式
+                time.sleep(detector.eco_mode_interval)
+                continue
 
         # --- Then Perform UI Monitoring (Enhanced Bubble Detection) ---
         # print("[DEBUG] UI Loop: Starting enhanced bubble detection...") # DEBUG REMOVED
@@ -2949,6 +3024,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                             'search_area': search_area
                         }
                         trigger_queue.put(data_to_send)
+                        found_new_bubble_this_cycle = True  # 標記找到新泡泡
                         print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
                         
                         # --- 新增：更新氣泡去重記錄中的發送者信息 ---
@@ -2978,6 +3054,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                 'search_area': search_area
                             }
                             trigger_queue.put(minimal_data)
+                            found_new_bubble_this_cycle = True  # 標記找到新泡泡（即便是fallback）
                             print("Minimal fallback data placed in Queue after error.")
                         except Exception as min_q_err:
                             print(f"Critical failure: Could not place any data in queue: {min_q_err}")
@@ -2992,6 +3069,17 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
             # If it broke, the sleep still happens here before the next cycle.
             # print("[DEBUG] UI Loop: Finished bubble iteration or broke early. Sleeping...") # DEBUG REMOVED
             time.sleep(1.5) # Polling interval after checking all bubbles or processing one
+            
+            # --- 經濟模式邏輯：在循環結束時檢查是否有新泡泡被處理 ---
+            if not found_new_bubble_this_cycle:
+                detector.no_new_bubbles_count += 1
+                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
+                    detector.eco_mode_enabled = True
+                    detector.no_new_bubbles_count = 0
+                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
+            else:
+                # 有新泡泡被處理，重置計數
+                detector.no_new_bubbles_count = 0
 
         except KeyboardInterrupt:
             print("\nMonitoring interrupted.")
