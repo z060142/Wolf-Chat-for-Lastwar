@@ -2244,7 +2244,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     # --- 初始化氣泡圖像去重系統（新增） ---
     bubble_deduplicator = SimpleBubbleDeduplication(
         storage_file="simple_bubble_dedup.json",
-        max_bubbles=8,  # 增加記憶數量以覆蓋整個螢幕的泡泡
+        max_bubbles=4,  # 增加記憶數量以覆蓋整個螢幕的泡泡
         threshold=8,      # 哈希差異閾值（值越小越嚴格）
         hash_size=16      # 哈希大小
     )
@@ -2680,12 +2680,24 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
             all_bubbles_data = detector.enhanced_bubble_detection() # Returns list of dicts with verification
             if not all_bubbles_data:
                 # print("[DEBUG] UI Loop: No bubbles detected.") # DEBUG REMOVED
+                # --- 經濟模式邏輯：無泡泡情況 ---
+                detector.no_new_bubbles_count += 1
+                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
+                    detector.eco_mode_enabled = True
+                    detector.no_new_bubbles_count = 0
+                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
                 time.sleep(2); continue
 
             # Filter out bot bubbles
             other_bubbles_data = [b_info for b_info in all_bubbles_data if not b_info['is_bot']]
             if not other_bubbles_data:
                 # print("[DEBUG] UI Loop: No non-bot bubbles detected.") # DEBUG REMOVED
+                # --- 經濟模式邏輯：只有bot泡泡情況 ---
+                detector.no_new_bubbles_count += 1
+                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
+                    detector.eco_mode_enabled = True
+                    detector.no_new_bubbles_count = 0
+                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡（只有bot泡泡），進入經濟模式")
                 time.sleep(0.2); continue
 
             # print(f"[DEBUG] UI Loop: Found {len(other_bubbles_data)} non-bot bubbles. Sorting...") # DEBUG REMOVED
@@ -2716,7 +2728,9 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
 
                     # 2. 【第一層防護】執行視覺去重檢查
                     #    is_duplicate 方法會對包含頭像的圖片進行哈希計算，從而區分不同用戶
-                    if bubble_deduplicator.is_duplicate(extended_bubble_snapshot, bubble_region_tuple):
+                    #    新版本：只檢查不立即添加，返回確認數據供後續使用
+                    is_visual_duplicate, bubble_confirmation_data = bubble_deduplicator.is_duplicate(extended_bubble_snapshot, bubble_region_tuple)
+                    if is_visual_duplicate:
                         print("--- VISUAL DUPLICATE DETECTED (L1). Skipping. ---")
                         continue  # 如果視覺重複，直接跳過，成本極低
 
@@ -2944,6 +2958,15 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
 
                     # --- 所有檢查通過，這是一個全新的有效觸發 ---
                     print(">>> New trigger event (passed BOTH visual and text deduplication) <<<")
+                    
+                    # --- 【確認階段】將通過兩階段驗證的泡泡添加到視覺去重記錄中 ---
+                    if bubble_confirmation_data:
+                        # 更新發送者信息到確認數據中
+                        bubble_confirmation_data['sender'] = sender_name
+                        # 確認添加到視覺去重記錄
+                        bubble_deduplicator.confirm_add_bubble(bubble_confirmation_data)
+                    else:
+                        print("Warning: No bubble confirmation data available for final confirmation")
 
                     # --- Attempt to activate reply context ---
                     # print("[DEBUG] UI Loop: Attempting to activate reply context...") # DEBUG REMOVED
@@ -3027,15 +3050,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         found_new_bubble_this_cycle = True  # 標記找到新泡泡
                         print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
                         
-                        # --- 新增：更新氣泡去重記錄中的發送者信息 ---
-                        # 注意：我們在前面已經添加了氣泡到去重系統，但當時還沒獲取發送者名稱
-                        # 這裡我們嘗試再次更新發送者信息（如果實現允許的話）
-                        if 'bubble_deduplicator' in locals() and bubble_snapshot and sender_name:
-                            bubble_id = bubble_deduplicator.generate_bubble_id(bubble_region_tuple)
-                            if bubble_id in bubble_deduplicator.recent_bubbles:
-                                bubble_deduplicator.recent_bubbles[bubble_id]['sender'] = sender_name
-                                bubble_deduplicator._save_storage()
-                        # --- 更新發送者信息結束 ---
+                        # --- 發送者信息已在確認階段統一處理，此處不再需要更新 ---
 
                         # --- CRITICAL: Break loop after successfully processing one trigger ---
                         print("--- Single bubble processing complete. Breaking scan cycle. ---")
