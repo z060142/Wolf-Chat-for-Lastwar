@@ -298,7 +298,8 @@ def load_current_config():
             "GAME_WINDOW_WIDTH": 600,
             "GAME_WINDOW_HEIGHT": 1070,
             "MONITOR_INTERVAL_SECONDS": 5
-        }
+        },
+        "DEDUPLICATION_WINDOW_SIZE": 4
     }
     
     if os.path.exists("config.py"):
@@ -361,6 +362,11 @@ def load_current_config():
             monitor_interval_match = re.search(r'MONITOR_INTERVAL_SECONDS\s*=\s*(\d+)', config_content)
             if monitor_interval_match:
                 config_data["GAME_WINDOW_CONFIG"]["MONITOR_INTERVAL_SECONDS"] = int(monitor_interval_match.group(1))
+                
+            # Extract deduplication window size
+            dedup_size_match = re.search(r'DEDUPLICATION_WINDOW_SIZE\s*=\s*(\d+)', config_content)
+            if dedup_size_match:
+                config_data["DEDUPLICATION_WINDOW_SIZE"] = int(dedup_size_match.group(1))
                 
             # Extract MCP_SERVERS (more complex parsing)
             try:
@@ -2184,14 +2190,23 @@ class WolfChatSetup(tk.Tk):
         height_entry = ttk.Spinbox(size_frame, textvariable=self.height_var, from_=300, to=3000, width=5)
         height_entry.pack(side=tk.LEFT)
         
-        # Auto-restart settings (Now managed by 'Management' tab)
-        restart_info_frame = ttk.LabelFrame(main_frame, text="Auto-Restart Settings (Legacy)")
-        restart_info_frame.pack(fill=tk.X, pady=10)
+        # Deduplication Settings
+        dedup_frame = ttk.LabelFrame(main_frame, text="Deduplication Settings")
+        dedup_frame.pack(fill=tk.X, pady=10)
         
-        legacy_restart_label = ttk.Label(restart_info_frame, 
-                                         text="Scheduled game/bot restarts are now configured in the 'Management' tab.",
-                                         justify=tk.LEFT, wraplength=680)
-        legacy_restart_label.pack(padx=10, pady=10, anchor=tk.W)
+        # Deduplication window size setting
+        dedup_size_frame = ttk.Frame(dedup_frame)
+        dedup_size_frame.pack(fill=tk.X, pady=5, padx=10)
+        dedup_size_label = ttk.Label(dedup_size_frame, text="Deduplication Window Size:", width=25)
+        dedup_size_label.pack(side=tk.LEFT)
+        self.dedup_window_size_var = tk.IntVar(value=self.config_data.get("DEDUPLICATION_WINDOW_SIZE", 4))
+        dedup_size_spinbox = ttk.Spinbox(dedup_size_frame, from_=1, to=20, width=5, textvariable=self.dedup_window_size_var)
+        dedup_size_spinbox.pack(side=tk.LEFT, padx=(0, 10))
+        
+        dedup_info_label = ttk.Label(dedup_size_frame, 
+                                   text="Controls memory size for both visual and text deduplication (1-20)",
+                                   justify=tk.LEFT, font=('TkDefaultFont', 8))
+        dedup_info_label.pack(side=tk.LEFT)
 
         # Keep the variables for config.py compatibility if other parts of the app might read them,
         # but their UI controls are removed from here.
@@ -3057,6 +3072,9 @@ class WolfChatSetup(tk.Tk):
                 "GAME_WINDOW_HEIGHT": self.height_var.get(),
                 "MONITOR_INTERVAL_SECONDS": self.monitor_interval_var.get()
             }
+            
+            # Save deduplication settings
+            self.config_data["DEDUPLICATION_WINDOW_SIZE"] = self.dedup_window_size_var.get()
 
             # Save memory settings
             self.config_data["ENABLE_PRELOAD_PROFILES"] = self.preload_profiles_var.get()

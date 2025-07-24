@@ -78,6 +78,11 @@ GAME_WINDOW_HEIGHT = ${GAME_WINDOW_HEIGHT}
 MONITOR_INTERVAL_SECONDS = ${MONITOR_INTERVAL_SECONDS}
 
 # =============================================================================
+# Game Settings - Deduplication Configuration
+# =============================================================================
+DEDUPLICATION_WINDOW_SIZE = ${DEDUPLICATION_WINDOW_SIZE}  # 統一控制圖片去重和文字去重的滾動視窗大小
+
+# =============================================================================
 # ChromaDB Memory Configuration
 # =============================================================================
 ENABLE_PRELOAD_PROFILES = ${ENABLE_PRELOAD_PROFILES}

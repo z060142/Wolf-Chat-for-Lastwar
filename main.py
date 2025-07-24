@@ -847,8 +847,8 @@ async def run_main_with_exit_stack():
         def initialize_robust_deduplication():
             """初始化強化版去重系統"""
             deduplicator_instance = RobustMessageDeduplication(
-                storage_file="wolf_chat_dedup.json",
-                expiry_seconds=3600  # 1小時過期
+                storage_file="wolf_chat_dedup.json"
+                # max_messages 使用預設值（統一的 DEDUPLICATION_WINDOW_SIZE）
             )
             state_monitor_instance = StateResetDetector("wolf_chat_state_resets.log")
             return deduplicator_instance, state_monitor_instance

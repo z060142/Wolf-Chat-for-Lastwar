@@ -28,18 +28,18 @@ import json # Already imported, but good to note for RobustMessageDeduplication
 
 # 替換現有的 MessageDeduplication 類
 class RobustMessageDeduplication:
-    def __init__(self, storage_file="persistent_dedup.json", expiry_seconds=3600):
+    def __init__(self, storage_file="wolf_chat_dedup.json", max_messages=None):
         self.storage_file = storage_file
-        self.expiry_seconds = expiry_seconds
-        self.processed_messages = {}
+        # 從config獲取DEDUPLICATION_WINDOW_SIZE，如果不存在則使用預設值4
+        if max_messages is None:
+            max_messages = getattr(config, 'DEDUPLICATION_WINDOW_SIZE', 4)
+        self.max_messages = max_messages  # 最大記錄數量（滾動視窗）
+        self.processed_messages = collections.OrderedDict()  # 使用OrderedDict保持順序
         self.last_save_time = 0
         self.save_interval = 10  # 每10秒保存一次
         
         # 啟動時加載持久化數據
         self._load_from_storage()
-        
-        # 清理過期記錄
-        self._cleanup_expired()
         
         print(f"RobustDeduplication initialized with {len(self.processed_messages)} existing records")
     
@@ -49,11 +49,22 @@ class RobustMessageDeduplication:
             if os.path.exists(self.storage_file):
                 with open(self.storage_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.processed_messages = data.get('messages', {})
+                    messages_data = data.get('messages', {})
+                    
+                    # 轉換為OrderedDict並限制數量
+                    self.processed_messages = collections.OrderedDict()
+                    loaded_count = 0
+                    # 加載最近的記錄（假設JSON中的順序就是時間順序）
+                    for key, timestamp in messages_data.items():
+                        if loaded_count >= self.max_messages:
+                            break
+                        self.processed_messages[key] = timestamp
+                        loaded_count += 1
+                    
                     print(f"Loaded {len(self.processed_messages)} dedup records from storage")
         except Exception as e:
             print(f"Warning: Could not load dedup storage: {e}")
-            self.processed_messages = {}
+            self.processed_messages = collections.OrderedDict()
     
     def _save_to_storage(self, force=False):
         """保存去重記錄到持久化文件"""
@@ -62,39 +73,23 @@ class RobustMessageDeduplication:
             return
         
         try:
-            # 只保存未過期的記錄
-            valid_records = {}
-            for key, timestamp in self.processed_messages.items():
-                if current_time - timestamp < self.expiry_seconds:
-                    valid_records[key] = timestamp
+            # 將OrderedDict轉換為普通dict以供JSON保存
+            messages_dict = dict(self.processed_messages)
             
             data = {
-                'messages': valid_records,
+                'messages': messages_dict,
                 'last_updated': current_time
             }
             
             with open(self.storage_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
             
-            self.processed_messages = valid_records
             self.last_save_time = current_time
+            print(f"Saved {len(messages_dict)} dedup records to storage")
             
         except Exception as e:
             print(f"Error saving dedup storage: {e}")
     
-    def _cleanup_expired(self):
-        """清理過期記錄"""
-        current_time = time.time()
-        before_count = len(self.processed_messages)
-        
-        self.processed_messages = {
-            key: timestamp for key, timestamp in self.processed_messages.items()
-            if current_time - timestamp < self.expiry_seconds
-        }
-        
-        after_count = len(self.processed_messages)
-        if before_count > after_count:
-            print(f"Cleaned up {before_count - after_count} expired dedup records")
     
     def _create_message_key(self, sender, content):
         """創建標準化的消息鍵"""
@@ -104,48 +99,41 @@ class RobustMessageDeduplication:
         return f"{clean_sender}:{clean_content}"
     
     def is_duplicate(self, sender, content):
-        """強化的重複檢查"""
+        """滾動視窗的重複檢查（無過期機制）"""
         if not sender or not content:
             print("Deduplication: Missing sender or content, treating as new")
             return False
         
         current_time = time.time()
         
-        # 定期清理（每5分鐘）
-        if hasattr(self, '_last_cleanup'):
-            if current_time - self._last_cleanup > 300:
-                self._cleanup_expired()
-                self._last_cleanup = current_time
-        else:
-            self._last_cleanup = current_time
-        
         # 創建消息鍵
         message_key = self._create_message_key(sender, content)
         
         # 精確匹配檢查
         if message_key in self.processed_messages:
-            age = current_time - self.processed_messages[message_key]
-            if age < self.expiry_seconds:
-                print(f"DUPLICATE EXACT: {sender} - {content[:40]}... (age: {age:.1f}s)")
-                return True
-            else:
-                # 過期了，移除
-                del self.processed_messages[message_key]
+            print(f"DUPLICATE EXACT: {sender} - {content[:40]}...")
+            # 更新時間戳（移動到最新位置）
+            del self.processed_messages[message_key]
+            self.processed_messages[message_key] = current_time
+            return True
         
-        # 相似性檢查（更嚴格）
+        # 相似性檢查
         clean_content = ' '.join(content.strip().split())
         for existing_key, timestamp in list(self.processed_messages.items()):
-            age = current_time - timestamp
-            if age >= self.expiry_seconds:
-                continue
-                
             try:
                 stored_sender, stored_content = existing_key.split(":", 1)
                 if sender.lower().strip() == stored_sender:
                     # 計算相似度
                     similarity = difflib.SequenceMatcher(None, clean_content, stored_content).ratio()
-                    if similarity >= 0.95:  # 95%相似度
-                        print(f"DUPLICATE SIMILAR: {sender} - {content[:40]}... (similarity: {similarity:.3f}, age: {age:.1f}s)")
+                    if similarity >= 0.98:  # 98%相似度
+                        print(f"DUPLICATE SIMILAR: {sender} - {content[:40]}... (similarity: {similarity:.3f})")
+                        # 更新為新的消息（覆蓋相似的舊消息）
+                        del self.processed_messages[existing_key]
+                        self.processed_messages[message_key] = current_time
+                        # 維持滾動視窗大小
+                        while len(self.processed_messages) > self.max_messages:
+                            self.processed_messages.popitem(last=False)  # 移除最舊的
+                        self._save_to_storage()
                         return True
             except ValueError:
                 continue
@@ -154,7 +142,11 @@ class RobustMessageDeduplication:
         self.processed_messages[message_key] = current_time
         print(f"NEW MESSAGE RECORDED: {sender} - {content[:40]}...")
         
-        # 異步保存（不阻塞主流程）
+        # 維持滾動視窗大小
+        while len(self.processed_messages) > self.max_messages:
+            self.processed_messages.popitem(last=False)  # 移除最舊的
+        
+        # 保存到文件
         self._save_to_storage()
         
         return False
@@ -168,13 +160,12 @@ class RobustMessageDeduplication:
     def get_stats(self):
         """獲取統計信息"""
         current_time = time.time()
-        active_count = sum(1 for timestamp in self.processed_messages.values() 
-                          if current_time - timestamp < self.expiry_seconds)
         
         return {
             'total_records': len(self.processed_messages),
-            'active_records': active_count,
-            'oldest_record_age': min([current_time - t for t in self.processed_messages.values()]) if self.processed_messages else 0
+            'active_records': len(self.processed_messages),  # 滾動視窗中的都是活躍記錄
+            'oldest_record_age': min([current_time - t for t in self.processed_messages.values()]) if self.processed_messages else 0,
+            'max_messages': self.max_messages
         }
 
 # 診斷工具：狀態重置檢測器
@@ -391,6 +382,7 @@ BUBBLE_RELOCATE_CONFIDENCE = 0.8 # Reduced confidence for finding the bubble sna
 BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6 # Lower confidence for fallback attempts
 BBOX_SIMILARITY_TOLERANCE = 10
 RECENT_TEXT_HISTORY_MAXLEN = 5 # This state likely belongs in the coordinator
+DEDUPLICATION_WINDOW_SIZE = 4 # 統一控制圖片去重和文字去重的滾動視窗大小
 
 # --- New Constants for Dual Method ---
 CLAHE_CLIP_LIMIT = 2.0  # CLAHE enhancement parameter
@@ -563,6 +555,8 @@ class DetectionModule:
         self.eco_mode_interval = 1.5   # 經濟模式的檢測間隔（秒）
         self.eco_mode_region = (90, 550, 610, 200)  # 固定監控區域 (x, y, width, height)
         self.last_eco_screenshot = None  # 上次經濟模式截圖的numpy array
+        self.eco_mode_start_time = None  # 經濟模式開始時間
+        self.eco_mode_wakeup_interval = 300  # 5分鐘強制喚醒間隔（秒）
         
         print(f"DetectionModule initialized. Color Detection: {'Enabled' if self.use_color_detection else 'Disabled'}. Dual Keyword Method: {'Enabled' if self.use_dual_method else 'Disabled'}")
 
@@ -1485,8 +1479,16 @@ class DetectionModule:
         經濟模式：檢測固定區域是否有變化
         使用腳本原有的cv2和numpy方法
         返回True表示檢測到變化，應該退出經濟模式
+        包含5分鐘強制喚醒機制
         """
         try:
+            # 檢查5分鐘強制喚醒機制
+            if self.eco_mode_start_time is not None:
+                elapsed_time = time.time() - self.eco_mode_start_time
+                if elapsed_time >= self.eco_mode_wakeup_interval:
+                    print(f"經濟模式：已運行{elapsed_time:.1f}秒，觸發5分鐘強制喚醒機制")
+                    return True
+            
             # 只在聊天室狀態下執行
             if not self._find_template('chat_room', confidence=self.state_confidence):
                 print("經濟模式：不在聊天室狀態，跳過檢測")
@@ -2244,7 +2246,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     # --- 初始化氣泡圖像去重系統（新增） ---
     bubble_deduplicator = SimpleBubbleDeduplication(
         storage_file="simple_bubble_dedup.json",
-        max_bubbles=4,  # 增加記憶數量以覆蓋整個螢幕的泡泡
+        max_bubbles=DEDUPLICATION_WINDOW_SIZE,  # 使用統一的滾動視窗大小
         threshold=8,      # 哈希差異閾值（值越小越嚴格）
         hash_size=16      # 哈希大小
     )
@@ -2552,6 +2554,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     
                     # --- 重置經濟模式狀態 ---
                     detector.eco_mode_enabled = False
+                    detector.eco_mode_start_time = None  # 重置經濟模式開始時間
                     detector.no_new_bubbles_count = 0
                     detector.last_eco_screenshot = None
                     # --- 清理氣泡去重記錄結束 ---
@@ -2665,6 +2668,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
             if detector.eco_mode_check_region_change():
                 # 檢測到變化，退出經濟模式
                 detector.eco_mode_enabled = False
+                detector.eco_mode_start_time = None  # 重置經濟模式開始時間
                 detector.no_new_bubbles_count = 0
                 detector.last_eco_screenshot = None
                 print("退出經濟模式，恢復正常泡泡檢測")
@@ -2684,6 +2688,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                 detector.no_new_bubbles_count += 1
                 if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
                     detector.eco_mode_enabled = True
+                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
                     detector.no_new_bubbles_count = 0
                     print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
                 time.sleep(2); continue
@@ -2696,6 +2701,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                 detector.no_new_bubbles_count += 1
                 if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
                     detector.eco_mode_enabled = True
+                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
                     detector.no_new_bubbles_count = 0
                     print(f"連續{detector.eco_mode_threshold}次循環無新泡泡（只有bot泡泡），進入經濟模式")
                 time.sleep(0.2); continue
@@ -3090,6 +3096,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                 detector.no_new_bubbles_count += 1
                 if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
                     detector.eco_mode_enabled = True
+                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
                     detector.no_new_bubbles_count = 0
                     print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
             else:
