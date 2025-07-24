@@ -226,8 +226,9 @@ def main():
     """主函數"""
     print("=== Last War Manual ChromaDB 導入工具 ===\n")
     
-    # 設置路徑
-    json_path = "Z:/coding/dandan2_test/lastwar_manual_chunks.json"
+    # 自動檢測路徑
+    current_dir = Path(__file__).parent.parent
+    json_path = current_dir / "lastwar_manual_chunks.json"
     collection_name = "lastwar_manual"
     
     # 檢查JSON文件是否存在

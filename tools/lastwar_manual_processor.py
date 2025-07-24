@@ -208,7 +208,12 @@ class LastWarManualProcessor:
 
 def main():
     """主函數"""
-    processor = LastWarManualProcessor("Z:/coding/dandan2_test/Last War manual.md")
+    # 自動檢測工作目錄
+    current_dir = Path(__file__).parent.parent
+    manual_path = current_dir / "Last War manual.md"
+    output_path = current_dir / "lastwar_manual_chunks.json"
+    
+    processor = LastWarManualProcessor(str(manual_path))
     
     print("開始處理Last War手冊...")
     processor.load_document()
@@ -217,8 +222,7 @@ def main():
     print(f"處理完成，共生成 {len(chunks)} 個chunks")
     
     # 保存到JSON
-    output_path = "Z:/coding/dandan2_test/lastwar_manual_chunks.json"
-    processor.save_chunks_to_json(output_path)
+    processor.save_chunks_to_json(str(output_path))
     
     # 顯示統計信息
     stats = processor.get_statistics()

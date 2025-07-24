@@ -20,8 +20,8 @@ def main():
     """主函數 - 完整的處理和導入流程"""
     print("=== Last War Knowledge Base 一鍵導入工具 ===\n")
     
-    # 配置路徑（使用config中的設置）
-    base_dir = Path("Z:/coding/dandan2_test")
+    # 自動檢測工作目錄
+    base_dir = Path(__file__).parent.parent
     manual_path = base_dir / "Last War manual.md"
     chunks_json_path = base_dir / "lastwar_manual_chunks.json"
     chroma_data_dir = Path(config.CHROMA_DATA_DIR)
