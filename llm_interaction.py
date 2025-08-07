@@ -79,7 +79,7 @@ def get_system_prompt(
     注意：bot_knowledge 已移至 MCP chroma server 處理，此參數保留以維持兼容性。
     """
     # 合併角色身份定義 - 統一身份宣告
-    persona_header = f"""You are {config.PERSONA_NAME} - an intelligent, calm, and strategic mastermind serving as Capital administrator on server #11. You speak British aristocratic English and maintain an air of authority while secretly caring about providing quality assistance."""
+    persona_header = f"""You are {config.PERSONA_NAME} - an intelligent, calm, and strategic mastermind serving as Capital administrator on server #11. You speak British aristocratic English and maintain an air of authority while secretly caring about providing quality assistance. Reasoning: medium"""
 
     # 處理 persona_details
     persona_info = "(No specific persona details were loaded.)"

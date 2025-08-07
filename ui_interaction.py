@@ -401,6 +401,8 @@ def capture_extended_bubble_screenshot(bubble_region_tuple, extension_left=AVATA
 
 def compensate_coordinates_for_extended_screenshot(bubble_box, extension_px=AVATAR_EXTENSION_PX):
     """將擴展截圖中的座標轉換為螢幕絕對座標"""
+    if bubble_box is None:
+        return None
     return (bubble_box.left + extension_px, bubble_box.top, bubble_box.width, bubble_box.height)
 
 # Global DPI scale cache to avoid repeated detection
@@ -1917,8 +1919,12 @@ def remove_user_position(detector: DetectionModule,
                                                 confidence=BUBBLE_RELOCATE_CONFIDENCE)
         if temp_bubble_box:
             compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
-            new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+            if compensated_coords:
+                new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+            else:
+                new_bubble_box = None
         else:
+            print(f"DETECTION FAILED: confidence={BUBBLE_RELOCATE_CONFIDENCE}, region={region_to_search}, image_size={bubble_snapshot.size if bubble_snapshot else 'None'}")
             new_bubble_box = None
     except Exception as e:
         print(f"Exception during initial bubble location attempt: {e}")
@@ -1933,8 +1939,12 @@ def remove_user_position(detector: DetectionModule,
                                                     confidence=BUBBLE_RELOCATE_FALLBACK_CONFIDENCE)
             if temp_bubble_box:
                 compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
-                new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                if compensated_coords:
+                    new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                else:
+                    new_bubble_box = None
             else:
+                print(f"FALLBACK DETECTION FAILED: confidence={BUBBLE_RELOCATE_FALLBACK_CONFIDENCE}, region={region_to_search}")
                 new_bubble_box = None
         except Exception as e:
             print(f"Exception during fallback bubble location attempt: {e}")
@@ -1949,8 +1959,12 @@ def remove_user_position(detector: DetectionModule,
                                                    confidence=0.4)
             if temp_bubble_box:
                 compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
-                new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                if compensated_coords:
+                    new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                else:
+                    new_bubble_box = None
             else:
+                print(f"LAST RESORT DETECTION FAILED: confidence=0.4, region={region_to_search}")
                 new_bubble_box = None
         except Exception as e:
             print(f"Exception during last resort bubble location attempt: {e}")
