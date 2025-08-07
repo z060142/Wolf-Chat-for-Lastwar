@@ -1296,28 +1296,41 @@ class WolfChatSetup(tk.Tk):
 
     def _is_bot_running_managed(self):
         bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        
+        # 檢查我們管理的進程實例
         if self.bot_process_instance and self.bot_process_instance.poll() is None:
-            # Verify it's the correct script, in case of PID reuse
             try:
                 p = psutil.Process(self.bot_process_instance.pid)
                 if sys.executable in p.cmdline() and any(bot_script_name in arg for arg in p.cmdline()):
                     return True
-            except psutil.NoSuchProcess:
-                self.bot_process_instance = None # Stale process object
-                return False
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # 不要立即清空，改為標記需要重新檢測
+                logger.warning(f"Cannot verify bot process {self.bot_process_instance.pid}, will double-check")
+                pass
         
-        # Fallback: Check for any python process running the bot script
+        # 系統級檢查（作為雙重驗證）
+        running_processes = 0
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
                 cmdline = proc.cmdline()
                 if cmdline and sys.executable in cmdline[0] and any(bot_script_name in arg for arg in cmdline):
-                    # If we find one, and don't have an instance, we can't control it directly with Popen
-                    # but we know it's running.
+                    running_processes += 1
                     if not self.bot_process_instance:
-                        logger.info(f"Found external bot process (PID: {proc.pid}). Monitoring without direct Popen control.")
-                    return True
+                        logger.info(f"Found external bot process (PID: {proc.pid})")
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
-                continue # Ignore processes that died or we can't access, or have empty cmdline
+                continue
+        
+        # 如果找到進程，但我們的實例無效，清空實例但返回 True
+        if running_processes > 0:
+            if self.bot_process_instance and self.bot_process_instance.poll() is not None:
+                logger.info("Bot process instance stale but bot is still running - clearing stale instance")
+                self.bot_process_instance = None
+            return True
+        
+        # 真的沒有找到任何進程，清空實例並返回 False
+        if self.bot_process_instance:
+            logger.info("No bot processes found - clearing instance")
+            self.bot_process_instance = None
         return False
 
     def _start_bot_managed(self):
@@ -1590,11 +1603,21 @@ class WolfChatSetup(tk.Tk):
         self.state_manager.set_process_state(process_type, ProcessState.ERROR)
 
     def _update_buttons_based_on_state(self):
-        """根據實際系統狀態更新按鈕狀態"""
+        """根據實際系統狀態更新按鈕狀態，增加穩定性檢查"""
         try:
-            # 檢查遊戲和Bot是否都在運行
-            game_running = self._is_game_running_managed()
-            bot_running = self._is_bot_running_managed()
+            # 連續檢查3次，防止瞬態錯誤
+            game_checks = []
+            bot_checks = []
+            
+            for i in range(3):
+                game_checks.append(self._is_game_running_managed())
+                bot_checks.append(self._is_bot_running_managed())
+                if i < 2:  # 最後一次不需要等待
+                    time.sleep(0.5)  # 短暫等待
+            
+            # 取大多數結果
+            game_running = sum(game_checks) >= 2
+            bot_running = sum(bot_checks) >= 2
             
             # 如果遊戲和Bot都在運行，則 session 是活躍的
             session_active = game_running and bot_running
@@ -1602,7 +1625,7 @@ class WolfChatSetup(tk.Tk):
             # 更新按鈕狀態：session 活躍時，start按鈕禁用，stop按鈕啟用
             self.update_management_buttons_state(not session_active)
             
-            logger.info(f"Button state updated: game_running={game_running}, bot_running={bot_running}, start_enabled={not session_active}")
+            logger.info(f"Button state updated (3x check): game={game_checks}→{game_running}, bot={bot_checks}→{bot_running}")
             
         except Exception as e:
             logger.error(f"Error updating button state: {e}")
