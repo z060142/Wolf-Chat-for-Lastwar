@@ -71,21 +71,20 @@ CURRENT_USERNAME = os.getenv("USERNAME", "user")
 DEFAULT_EXA_SYSTEM_PROMPT = """
 **WEB SEARCH CAPABILITIES:**
 You have access to advanced web search tools for real-time information:
-- `web_search`: General web search with customizable parameters
-- `research_paper_search`: Academic and research paper searches
-- `twitter_search`: Social media content search
+- `web_search_exa`: General web search with customizable parameters
+- `linkedin_search`: Search Linked, simply include company names, person names, or specific LinkedIn URLs in your query
 - `company_research`: Corporate information and analysis
-- `crawling`: Deep web content extraction
-- `competitor_finder`: Market analysis and competitor research
+- `crawling`: Deep web content extraction, extracts content from specific URLs
 
 **USAGE GUIDELINES:**
 - Use these tools when users ask for current information, facts, or research
 - Search results should be naturally integrated into your responses
 - Always maintain your character's personality when presenting search results
 - Prefer recent and authoritative sources when available
+- Apply the process of viewing search results also to the output of your "thought"
 
 **SEARCH PARAMETERS:**
-- `query`: Search terms (required)
+- `query`: Search terms (required) Write a 1–2 sentence natural-language query stating the subject/entity, task/purpose (e.g., explain, compare, list, find docs), and time window/scope; optionally include format/source type and language/region. For higher precision, add 1–2 defining terms or synonyms. Output one primary query and, if helpful, one short alternate phrasing.
 - `numResults`: Number of results to return (default: 5)
 - `category`: Content category filter (optional)
 - `type`: Search type specification (optional)
