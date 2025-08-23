@@ -869,7 +869,7 @@ async def run_main_with_exit_stack():
         def periodic_robust_cleanup_and_stats():
             if not shutdown_requested: # Only run if not shutting down
                 print("Main Thread: Running periodic robust deduplicator cleanup and stats logging...")
-                deduplicator._cleanup_expired() # Call internal cleanup
+                deduplicator._save_to_storage(force=True) # Force save current state
                 stats = deduplicator.get_stats()
                 print(f"Main Thread - Dedup Stats: {stats['active_records']} active records (total: {stats['total_records']})")
                 # Reschedule the timer

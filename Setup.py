@@ -39,7 +39,7 @@ from setup_components import (
     ConfigType,
     thread_safe_process_manager, 
     thread_safe_monitor, 
-    thread_safe_remote_control,
+    # thread_safe_remote_control,  # 遠程控制模塊已停用
     config_transaction_manager
 )
 try:
@@ -192,16 +192,16 @@ def get_bot_process_instance():
 def set_bot_process_instance(instance):
     state_manager.set_process_instance(ProcessType.BOT, instance)
 
-def get_control_client_instance():
-    return state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+# def get_control_client_instance():  # 遠程控制已停用
+#     return state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
 
-def set_control_client_instance(instance):
-    state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, instance)
+# def set_control_client_instance(instance):  # 遠程控制已停用
+#     state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, instance)
 
 # Legacy global variables for backward compatibility
 game_process_instance = None
 bot_process_instance = None  
-control_client_instance = None
+# control_client_instance = None  # 遠程控制已停用
 monitor_thread_instance = None
 scheduler_thread_instance = None
 keep_monitoring_flag = state_manager.get_monitoring_flag() # Renamed for clarity
@@ -794,7 +794,7 @@ class WolfChatSetup(tk.Tk):
         self.state_manager = state_manager
         self.process_manager = thread_safe_process_manager
         self.monitor = thread_safe_monitor
-        self.remote_control = thread_safe_remote_control
+        # self.remote_control = thread_safe_remote_control  # 遠程控制模塊已停用
         self.config_tx_manager = config_transaction_manager
         
         # Legacy instance variables - now redirect to state manager
@@ -810,7 +810,7 @@ class WolfChatSetup(tk.Tk):
         # Initialize new process management variables
         self.bot_process_instance = None
         self.game_process_instance = None
-        self.control_client_instance = None
+        # self.control_client_instance = None  # 遠程控制已停用
         self.monitor_thread_instance = None
         self.scheduler_thread_instance = None
         
@@ -963,41 +963,41 @@ class WolfChatSetup(tk.Tk):
         header = ttk.Label(main_frame, text="Bot & Game Management", font=("", 12, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
 
-        # --- Remote Control Settings ---
-        remote_frame = ttk.LabelFrame(main_frame, text="Remote Control Settings")
-        remote_frame.pack(fill=tk.X, pady=10)
+        # --- Remote Control Settings --- (已停用)
+        # remote_frame = ttk.LabelFrame(main_frame, text="Remote Control Settings")
+        # remote_frame.pack(fill=tk.X, pady=10)
 
-        # Remote Control Enable/Disable
-        remote_enable_frame = ttk.Frame(remote_frame)
-        remote_enable_frame.pack(fill=tk.X, pady=5, padx=10)
-        self.enable_remote_control_var = tk.BooleanVar(value=True)  # Default to enabled
-        enable_remote_cb = ttk.Checkbutton(remote_enable_frame, text="Enable Remote Control", 
-                                         variable=self.enable_remote_control_var,
-                                         command=self.toggle_remote_control_fields)
-        enable_remote_cb.pack(side=tk.LEFT)
+        # # Remote Control Enable/Disable
+        # remote_enable_frame = ttk.Frame(remote_frame)
+        # remote_enable_frame.pack(fill=tk.X, pady=5, padx=10)
+        # self.enable_remote_control_var = tk.BooleanVar(value=True)  # Default to enabled
+        # enable_remote_cb = ttk.Checkbutton(remote_enable_frame, text="Enable Remote Control", 
+        #                                  variable=self.enable_remote_control_var,
+        #                                  command=self.toggle_remote_control_fields)
+        # enable_remote_cb.pack(side=tk.LEFT)
 
-        # Remote Server URL
-        remote_url_frame = ttk.Frame(remote_frame)
-        remote_url_frame.pack(fill=tk.X, pady=5, padx=10)
-        remote_url_label = ttk.Label(remote_url_frame, text="Server URL:", width=15)
-        remote_url_label.pack(side=tk.LEFT)
-        self.remote_url_var = tk.StringVar(value=self.remote_data.get("REMOTE_SERVER_URL", ""))
-        remote_url_entry = ttk.Entry(remote_url_frame, textvariable=self.remote_url_var)
-        remote_url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # # Remote Server URL
+        # remote_url_frame = ttk.Frame(remote_frame)
+        # remote_url_frame.pack(fill=tk.X, pady=5, padx=10)
+        # remote_url_label = ttk.Label(remote_url_frame, text="Server URL:", width=15)
+        # remote_url_label.pack(side=tk.LEFT)
+        # self.remote_url_var = tk.StringVar(value=self.remote_data.get("REMOTE_SERVER_URL", ""))
+        # remote_url_entry = ttk.Entry(remote_url_frame, textvariable=self.remote_url_var)
+        # remote_url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Remote Client Key
-        remote_key_frame = ttk.Frame(remote_frame)
-        remote_key_frame.pack(fill=tk.X, pady=5, padx=10)
-        remote_key_label = ttk.Label(remote_key_frame, text="Client Key:", width=15)
-        remote_key_label.pack(side=tk.LEFT)
-        self.remote_key_var = tk.StringVar(value=self.remote_data.get("REMOTE_CLIENT_KEY", ""))
-        remote_key_entry = ttk.Entry(remote_key_frame, textvariable=self.remote_key_var, show="*")
-        remote_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # # Remote Client Key
+        # remote_key_frame = ttk.Frame(remote_frame)
+        # remote_key_frame.pack(fill=tk.X, pady=5, padx=10)
+        # remote_key_label = ttk.Label(remote_key_frame, text="Client Key:", width=15)
+        # remote_key_label.pack(side=tk.LEFT)
+        # self.remote_key_var = tk.StringVar(value=self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+        # remote_key_entry = ttk.Entry(remote_key_frame, textvariable=self.remote_key_var, show="*")
+        # remote_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        self.show_remote_key_var = tk.BooleanVar(value=False)
-        show_remote_key_cb = ttk.Checkbutton(remote_key_frame, text="Show", variable=self.show_remote_key_var,
-                                     command=lambda: self.toggle_field_visibility(remote_key_entry, self.show_remote_key_var))
-        show_remote_key_cb.pack(side=tk.LEFT, padx=(5,0))
+        # self.show_remote_key_var = tk.BooleanVar(value=False)
+        # show_remote_key_cb = ttk.Checkbutton(remote_key_frame, text="Show", variable=self.show_remote_key_var,
+        #                              command=lambda: self.toggle_field_visibility(remote_key_entry, self.show_remote_key_var))
+        # show_remote_key_cb.pack(side=tk.LEFT, padx=(5,0))
 
 
         # --- Restart Settings ---
@@ -1089,12 +1089,12 @@ class WolfChatSetup(tk.Tk):
             self.update_management_buttons_state(True)
             return
 
-        # Start Control Client
-        if HAS_SOCKETIO:
-            self._start_control_client()
-        else:
-            logger.warning("socketio library not found. Remote control will be disabled.")
-            messagebox.showwarning("Socket.IO Missing", "The 'python-socketio[client]' library is not installed. Remote control features will be disabled. Please install it via 'pip install \"python-socketio[client]\"' or use the 'Install Dependencies' button.")
+        # Start Control Client (遠程控制已停用)
+        # if HAS_SOCKETIO:
+        #     self._start_control_client()
+        # else:
+        #     logger.warning("socketio library not found. Remote control will be disabled.")
+        #     messagebox.showwarning("Socket.IO Missing", "The 'python-socketio[client]' library is not installed. Remote control features will be disabled. Please install it via 'pip install \"python-socketio[client]\"' or use the 'Install Dependencies' button.")
 
 
         # Start Monitoring Thread
@@ -1161,8 +1161,8 @@ class WolfChatSetup(tk.Tk):
         logger.info("Attempting to stop managed session...")
         self.keep_monitoring_flag.clear() # Signal threads to stop
 
-        if self.control_client_instance:
-            self._stop_control_client()
+        # if self.control_client_instance:  # 遠程控制已停用
+        #     self._stop_control_client()
 
         if self.scheduler_thread_instance and self.scheduler_thread_instance.is_alive():
             logger.info("Waiting for scheduler thread to stop...")
@@ -1295,28 +1295,41 @@ class WolfChatSetup(tk.Tk):
 
     def _is_bot_running_managed(self):
         bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        
+        # 檢查我們管理的進程實例
         if self.bot_process_instance and self.bot_process_instance.poll() is None:
-            # Verify it's the correct script, in case of PID reuse
             try:
                 p = psutil.Process(self.bot_process_instance.pid)
                 if sys.executable in p.cmdline() and any(bot_script_name in arg for arg in p.cmdline()):
                     return True
-            except psutil.NoSuchProcess:
-                self.bot_process_instance = None # Stale process object
-                return False
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # 不要立即清空，改為標記需要重新檢測
+                logger.warning(f"Cannot verify bot process {self.bot_process_instance.pid}, will double-check")
+                pass
         
-        # Fallback: Check for any python process running the bot script
+        # 系統級檢查（作為雙重驗證）
+        running_processes = 0
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
                 cmdline = proc.cmdline()
                 if cmdline and sys.executable in cmdline[0] and any(bot_script_name in arg for arg in cmdline):
-                    # If we find one, and don't have an instance, we can't control it directly with Popen
-                    # but we know it's running.
+                    running_processes += 1
                     if not self.bot_process_instance:
-                        logger.info(f"Found external bot process (PID: {proc.pid}). Monitoring without direct Popen control.")
-                    return True
+                        logger.info(f"Found external bot process (PID: {proc.pid})")
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
-                continue # Ignore processes that died or we can't access, or have empty cmdline
+                continue
+        
+        # 如果找到進程，但我們的實例無效，清空實例但返回 True
+        if running_processes > 0:
+            if self.bot_process_instance and self.bot_process_instance.poll() is not None:
+                logger.info("Bot process instance stale but bot is still running - clearing stale instance")
+                self.bot_process_instance = None
+            return True
+        
+        # 真的沒有找到任何進程，清空實例並返回 False
+        if self.bot_process_instance:
+            logger.info("No bot processes found - clearing instance")
+            self.bot_process_instance = None
         return False
 
     def _start_bot_managed(self):
@@ -1589,11 +1602,21 @@ class WolfChatSetup(tk.Tk):
         self.state_manager.set_process_state(process_type, ProcessState.ERROR)
 
     def _update_buttons_based_on_state(self):
-        """根據實際系統狀態更新按鈕狀態"""
+        """根據實際系統狀態更新按鈕狀態，增加穩定性檢查"""
         try:
-            # 檢查遊戲和Bot是否都在運行
-            game_running = self._is_game_running_managed()
-            bot_running = self._is_bot_running_managed()
+            # 連續檢查3次，防止瞬態錯誤
+            game_checks = []
+            bot_checks = []
+            
+            for i in range(3):
+                game_checks.append(self._is_game_running_managed())
+                bot_checks.append(self._is_bot_running_managed())
+                if i < 2:  # 最後一次不需要等待
+                    time.sleep(0.5)  # 短暫等待
+            
+            # 取大多數結果
+            game_running = sum(game_checks) >= 2
+            bot_running = sum(bot_checks) >= 2
             
             # 如果遊戲和Bot都在運行，則 session 是活躍的
             session_active = game_running and bot_running
@@ -1601,7 +1624,7 @@ class WolfChatSetup(tk.Tk):
             # 更新按鈕狀態：session 活躍時，start按鈕禁用，stop按鈕啟用
             self.update_management_buttons_state(not session_active)
             
-            logger.info(f"Button state updated: game_running={game_running}, bot_running={bot_running}, start_enabled={not session_active}")
+            logger.info(f"Button state updated (3x check): game={game_checks}→{game_running}, bot={bot_checks}→{bot_running}")
             
         except Exception as e:
             logger.error(f"Error updating button state: {e}")
@@ -1624,9 +1647,9 @@ class WolfChatSetup(tk.Tk):
                         logger.warning("Managed bot process not found. Attempting to restart bot...")
                         self._start_bot_managed() # Or _restart_bot_managed()
 
-                # Check for remote commands (if control_client_instance is set up)
-                if self.control_client_instance and hasattr(self.control_client_instance, 'check_signals'):
-                    self.control_client_instance.check_signals(self) # Pass self (WolfChatSetup instance)
+                # Check for remote commands (if control_client_instance is set up) - 遠程控制已停用
+                # if self.control_client_instance and hasattr(self.control_client_instance, 'check_signals'):
+                #     self.control_client_instance.check_signals(self) # Pass self (WolfChatSetup instance)
 
                 time.sleep(self.config_data.get("GAME_WINDOW_CONFIG", {}).get("MONITOR_INTERVAL_SECONDS", 5))
             except Exception as e:
@@ -1674,39 +1697,39 @@ class WolfChatSetup(tk.Tk):
             logger.info("No scheduled restarts configured.")
 
 
-    def _start_control_client(self):
-        if not HAS_SOCKETIO:
-            logger.warning("Cannot start ControlClient: python-socketio is not installed.")
-            return
+    # def _start_control_client(self):  # 遠程控制已停用
+    #     if not HAS_SOCKETIO:
+    #         logger.warning("Cannot start ControlClient: python-socketio is not installed.")
+    #         return
 
-        if self.control_client_instance and self.control_client_instance.is_connected(): # is_connected or similar check
-            logger.info("Control client already connected.")
-            return
+    #     if self.control_client_instance and self.control_client_instance.is_connected(): # is_connected or similar check
+    #         logger.info("Control client already connected.")
+    #         return
 
-        server_url = self.remote_data.get("REMOTE_SERVER_URL")
-        client_key = self.remote_data.get("REMOTE_CLIENT_KEY")
+    #     server_url = self.remote_data.get("REMOTE_SERVER_URL")
+    #     client_key = self.remote_data.get("REMOTE_CLIENT_KEY")
 
-        if not server_url or not client_key:
-            logger.warning("Remote server URL or client key not configured. Cannot start control client.")
-            messagebox.showwarning("Remote Config Missing", "Remote Server URL or Client Key is not set in Management tab.")
-            return
+    #     if not server_url or not client_key:
+    #         logger.warning("Remote server URL or client key not configured. Cannot start control client.")
+    #         messagebox.showwarning("Remote Config Missing", "Remote Server URL or Client Key is not set in Management tab.")
+    #         return
 
-        self.control_client_instance = ControlClient(server_url, client_key, wolf_chat_setup_instance=self) # Pass self
-        # The ControlClient should handle its own connection thread.
-        # self.control_client_instance.start_thread() or similar method
-        if self.control_client_instance.run_in_thread(): # Assuming run_in_thread starts the connection attempt
-             logger.info("Control client thread started.")
-        else:
-             logger.error("Failed to start control client thread.")
-             self.control_client_instance = None
+    #     self.control_client_instance = ControlClient(server_url, client_key, wolf_chat_setup_instance=self) # Pass self
+    #     # The ControlClient should handle its own connection thread.
+    #     # self.control_client_instance.start_thread() or similar method
+    #     if self.control_client_instance.run_in_thread(): # Assuming run_in_thread starts the connection attempt
+    #          logger.info("Control client thread started.")
+    #     else:
+    #          logger.error("Failed to start control client thread.")
+    #          self.control_client_instance = None
 
 
-    def _stop_control_client(self):
-        if self.control_client_instance:
-            logger.info("Stopping control client...")
-            self.control_client_instance.stop() # This should handle thread shutdown
-            self.control_client_instance = None
-            logger.info("Control client stopped.")
+    # def _stop_control_client(self):  # 遠程控制已停用
+    #     if self.control_client_instance:
+    #         logger.info("Stopping control client...")
+    #         self.control_client_instance.stop() # This should handle thread shutdown
+    #         self.control_client_instance = None
+    #         logger.info("Control client stopped.")
 
     def on_closing(self):
         """Handle window close event."""
@@ -2744,18 +2767,25 @@ class WolfChatSetup(tk.Tk):
                 self.profile_model_var.set(profile_model_config) 
                 self.summary_model_var.set(self.config_data.get("MEMORY_SUMMARY_MODEL", "mistral-7b-instruct"))
 
-            # Management Tab Settings
-            if hasattr(self, 'remote_url_var'): # Check if UI elements for management tab exist
-                self.remote_url_var.set(self.remote_data.get("REMOTE_SERVER_URL", ""))
-                self.remote_key_var.set(self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+            # Management Tab Settings (遠程控制部分已停用)
+            # if hasattr(self, 'remote_url_var'): # Check if UI elements for management tab exist
+            #     self.remote_url_var.set(self.remote_data.get("REMOTE_SERVER_URL", ""))
+            #     self.remote_key_var.set(self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+            #     self.game_restart_interval_var.set(self.remote_data.get("DEFAULT_GAME_RESTART_INTERVAL_MINUTES", 120))
+            #     self.bot_restart_interval_var.set(self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 120))
+            #     self.link_restarts_var.set(self.remote_data.get("LINK_RESTART_TIMES", True))
+            #     self.game_process_name_var.set(self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe"))
+            
+            # Load restart settings (non-remote parts)
+            if hasattr(self, 'game_restart_interval_var'):
                 self.game_restart_interval_var.set(self.remote_data.get("DEFAULT_GAME_RESTART_INTERVAL_MINUTES", 120))
                 self.bot_restart_interval_var.set(self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 120))
                 self.link_restarts_var.set(self.remote_data.get("LINK_RESTART_TIMES", True))
                 self.game_process_name_var.set(self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe"))
             
-            # Load remote control toggle from config.py
-            if hasattr(self, 'enable_remote_control_var'):
-                self.enable_remote_control_var.set(self.config_data.get("ENABLE_REMOTE_CONTROL", True))
+            # Load remote control toggle from config.py (已停用)
+            # if hasattr(self, 'enable_remote_control_var'):
+            #     self.enable_remote_control_var.set(self.config_data.get("ENABLE_REMOTE_CONTROL", True))
 
             # Update visibility and states
             self.update_exa_settings_visibility()
@@ -2784,14 +2814,14 @@ class WolfChatSetup(tk.Tk):
         else:
             entry_widget.config(show="*")
     
-    def toggle_remote_control_fields(self):
-        """Toggle enabled/disabled state of remote control fields"""
-        enabled = self.enable_remote_control_var.get()
-        # Enable/disable the URL and key entry fields based on checkbox state
-        for widget in [self.remote_url_var, self.remote_key_var]:
-            # Note: tkinter StringVar doesn't have a disable method, 
-            # we'll handle this in the save function instead
-            pass
+    # def toggle_remote_control_fields(self):  # 遠程控制功能已停用
+    #     """Toggle enabled/disabled state of remote control fields"""
+    #     enabled = self.enable_remote_control_var.get()
+    #     # Enable/disable the URL and key entry fields based on checkbox state
+    #     for widget in [self.remote_url_var, self.remote_key_var]:
+    #         # Note: tkinter StringVar doesn't have a disable method, 
+    #         # we'll handle this in the save function instead
+    #         pass
     
     def update_exa_settings_visibility(self):
         """Update visibility of Exa settings based on server type"""
@@ -3119,18 +3149,25 @@ class WolfChatSetup(tk.Tk):
                 self.config_data["MEMORY_PROFILE_MODEL"] = self.profile_model_var.get()
                 self.config_data["MEMORY_SUMMARY_MODEL"] = self.summary_model_var.get()
             
-            # Update remote_data from UI (for remote_config.json)
-            if hasattr(self, 'remote_url_var'): # Check if management tab UI elements exist
-                self.remote_data["REMOTE_SERVER_URL"] = self.remote_url_var.get()
-                self.remote_data["REMOTE_CLIENT_KEY"] = self.remote_key_var.get()
+            # Update remote_data from UI (for remote_config.json) - 遠程控制部分已停用
+            # if hasattr(self, 'remote_url_var'): # Check if management tab UI elements exist
+            #     self.remote_data["REMOTE_SERVER_URL"] = self.remote_url_var.get()
+            #     self.remote_data["REMOTE_CLIENT_KEY"] = self.remote_key_var.get()
+            #     self.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = self.game_restart_interval_var.get()
+            #     self.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = self.bot_restart_interval_var.get()
+            #     self.remote_data["LINK_RESTART_TIMES"] = self.link_restarts_var.get()
+            #     self.remote_data["GAME_PROCESS_NAME"] = self.game_process_name_var.get()
+            
+            # Update restart settings (non-remote parts)
+            if hasattr(self, 'game_restart_interval_var'):
                 self.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = self.game_restart_interval_var.get()
                 self.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = self.bot_restart_interval_var.get()
                 self.remote_data["LINK_RESTART_TIMES"] = self.link_restarts_var.get()
                 self.remote_data["GAME_PROCESS_NAME"] = self.game_process_name_var.get()
             
-            # Save remote control toggle to config.py
-            if hasattr(self, 'enable_remote_control_var'):
-                self.config_data["ENABLE_REMOTE_CONTROL"] = self.enable_remote_control_var.get()
+            # Save remote control toggle to config.py (已停用)
+            # if hasattr(self, 'enable_remote_control_var'):
+            #     self.config_data["ENABLE_REMOTE_CONTROL"] = self.enable_remote_control_var.get()
             
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:
