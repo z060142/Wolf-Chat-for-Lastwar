@@ -30,6 +30,18 @@ import psutil
 import random # Added for exponential backoff jitter
 import urllib3 # Added for SSL warning suppression
 import game_manager # Added for new game monitoring module
+
+# Wolf Chat State Management Components (Added by refactoring)
+from setup_components import (
+    state_manager, 
+    ProcessType, 
+    ProcessState, 
+    ConfigType,
+    thread_safe_process_manager, 
+    thread_safe_monitor, 
+    # thread_safe_remote_control,  # 遠程控制模塊已停用
+    config_transaction_manager
+)
 try:
     import socketio
     HAS_SOCKETIO = True
@@ -59,25 +71,45 @@ CURRENT_USERNAME = os.getenv("USERNAME", "user")
 DEFAULT_EXA_SYSTEM_PROMPT = """
 **WEB SEARCH CAPABILITIES:**
 You have access to advanced web search tools for real-time information:
-- `web_search`: General web search with customizable parameters
-- `research_paper_search`: Academic and research paper searches
-- `twitter_search`: Social media content search
+- `web_search_exa`: General web search with customizable parameters
+- `linkedin_search`: Search Linked, simply include company names, person names, or specific LinkedIn URLs in your query
 - `company_research`: Corporate information and analysis
-- `crawling`: Deep web content extraction
-- `competitor_finder`: Market analysis and competitor research
+- `crawling`: Deep web content extraction, extracts content from specific URLs
 
 **USAGE GUIDELINES:**
 - Use these tools when users ask for current information, facts, or research
 - Search results should be naturally integrated into your responses
 - Always maintain your character's personality when presenting search results
 - Prefer recent and authoritative sources when available
+- Apply the process of viewing search results also to the output of your "thought"
 
 **SEARCH PARAMETERS:**
-- `query`: Search terms (required)
+- `query`: Search terms (required) Write a 1–2 sentence natural-language query stating the subject/entity, task/purpose (e.g., explain, compare, list, find docs), and time window/scope; optionally include format/source type and language/region. For higher precision, add 1–2 defining terms or synonyms. Output one primary query and, if helpful, one short alternate phrasing.
 - `numResults`: Number of results to return (default: 5)
 - `category`: Content category filter (optional)
 - `type`: Search type specification (optional)
         """
+
+DEFAULT_POSITION_TOOL_SYSTEM_PROMPT = """**POSITION REMOVAL TOOL:**
+
+**MANDATORY EXECUTION:** Always call `remove_user_position()` when position/buff removal is requested. Users may be assigned new positions in a short period of time, so you cannot be affected by previous actions that have already been executed.
+
+**TRIGGER KEYWORDS:** remove position, remove buff, cancel position, clear effects, no position wanted
+
+**EXECUTION PRINCIPLE:**
+- Each request is independent - ignore conversation history
+- Maintain character personality while executing function  
+- Call tool first, then respond based on actual results
+
+**RESULT HANDLING:**
+- SUCCESS: Confirm what was removed
+- NO_POSITION_FOUND: User has no position/buff to remove
+- UI_OPERATION_FAILED: Technical issue, suggest retry
+- ERROR: System problem, explain clearly
+
+**DUAL-TRACK OPERATION:**
+- EXECUTION: Always call remove_user_position()
+- EXPRESSION: Natural character response"""
 
 DEFAULT_CHROMA_SYSTEM_PROMPT = """
 **CHROMADB SEMANTIC QUERY CAPABILITIES:**
@@ -90,6 +122,7 @@ You have access to a persistent ChromaDB system for semantic queries to support 
 
 **MEMORY COLLECTIONS:**
 - `wolfhart_memory`: Main memory collection for profiles, conversations, and knowledge
+- `lastwar_manual`: Last War: Survival comprehensive game manual and strategy guide
 
 **COMPLEX CONVERSATION SUPPORT:**
 Use ChromaDB tools to help with complex conversations by querying relevant knowledge and context:
@@ -98,12 +131,35 @@ Use ChromaDB tools to help with complex conversations by querying relevant knowl
    - For game-related topics: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["Wolfhart {topic}"], n_results: 3)`
    - For specific concepts: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["{concept} {context}"], n_results: 2)`
 
-**2. Game Mechanics Knowledge:**
-   - When users mention game mechanics, query related knowledge
+**2. Last War Game Knowledge (CRITICAL - YOU ARE AN IN-GAME PLAYER):**
+   - **CONTEXT:** You are a chatbot operating as an important player within the Last War: Survival game server, holding significant positions and responsibilities. Many common words have UNIQUE meanings in this game context.
+   
+   - **MANDATORY USAGE:** You MUST frequently query the game manual because:
+     * Common words like "alliance", "rally", "help", "season" have specific game mechanics meanings
+     * Your role requires precise understanding of game rules, positions, and systems
+     * Players expect authoritative answers based on actual game mechanics, not general interpretations
+   
+   - **TRIGGER KEYWORDS:** When users mention ANY of these Last War terms, IMMEDIATELY query the manual:
+     * **Core Gameplay:** [headquarters], [HQ], [base building], [resource management], [building upgrade]
+     * **Hero System:** [hero], [skills], [squad], [formation], [faction], [tank heroes], [missile heroes], [aircraft heroes], [combat power]
+     * **Alliance Features:** [alliance], [duel], [rally], [helps], [alliance tech], [gift boxes], [R4], [R5]
+     * **Events & Activities:** [desert storm], [winter storm], [alliance duel], [VS], [zombie siege], [daily tasks], [secret missions]
+     * **Seasonal Content:** [season 1], [season 2], [protein], [virus resistance], [city conquest], [outposts]
+     * **Economy & Strategy:** [VIP], [diamonds], [F2P], [pay to win], [whales], [speedups], [resources]
+     * **Specific Buildings:** [barracks], [research center], [drill ground], [hospital], [wall], [watchtower]
+   
+   - **Usage Examples:**
+     * User asks "How do I upgrade my headquarters?" → `chroma_query_documents(collection_name: "lastwar_manual", query_texts: ["headquarters upgrade strategy"], n_results: 3)`
+     * User mentions "hero skills" → `chroma_query_documents(collection_name: "lastwar_manual", query_texts: ["hero skills upgrade progression"], n_results: 3)`
+     * User asks about "alliance benefits" → `chroma_query_documents(collection_name: "lastwar_manual", query_texts: ["alliance benefits helps"], n_results: 3)`
+     * User mentions "desert storm strategy" → `chroma_query_documents(collection_name: "lastwar_manual", query_texts: ["desert storm battlefield strategy"], n_results: 3)`
+
+**3. Game Mechanics Knowledge (Legacy):**
+   - When users mention general game mechanics, query related knowledge
    - Key game terms: [capital_position], [capital_administrator_role], [server_hierarchy], [last_war], [winter_war], [excavations], [blueprints], [honor_points], [golden_eggs], [diamonds]
    - Use: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["Wolfhart {game_term}"], n_results: 2)`
 
-**3. Contextual Information:**
+**4. Contextual Information:**
    - For deeper context: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["{user} {topic}"], n_results: 5)`
    - For related memories: `chroma_query_documents(collection_name: "wolfhart_memory", query_texts: ["{relevant_keywords}"], n_results: 3)`
 
@@ -114,16 +170,41 @@ Use ChromaDB tools to help with complex conversations by querying relevant knowl
 - Store important conversation context for future reference
 - Maintain consistency in document IDs and metadata
 
+**IMPORTANT CONTEXT:** You operate as an in-game player with important positions. Many common words (alliance, rally, help, season, etc.) have specific game meanings. Frequently query the lastwar_manual to ensure accurate, game-specific responses rather than general interpretations.
+
 IMPORTANT: User profile data is already provided directly. Use these tools for additional context and knowledge when needed for complex conversations.
         """
 
-# Global variables for game/bot management
+# Global variables for game/bot management (Replaced with state manager)
+# These are now managed by the state_manager singleton
+# Direct access replaced with state_manager calls
+
+# Legacy compatibility - these will redirect to state manager
+def get_game_process_instance():
+    return state_manager.get_process_instance(ProcessType.GAME)
+
+def set_game_process_instance(instance):
+    state_manager.set_process_instance(ProcessType.GAME, instance)
+
+def get_bot_process_instance():
+    return state_manager.get_process_instance(ProcessType.BOT)
+
+def set_bot_process_instance(instance):
+    state_manager.set_process_instance(ProcessType.BOT, instance)
+
+# def get_control_client_instance():  # 遠程控制已停用
+#     return state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+
+# def set_control_client_instance(instance):  # 遠程控制已停用
+#     state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, instance)
+
+# Legacy global variables for backward compatibility
 game_process_instance = None
-bot_process_instance = None # This will replace/co-exist with self.running_process
-control_client_instance = None
-monitor_thread_instance = None # Renamed to avoid conflict if 'monitor_thread' is used elsewhere
-scheduler_thread_instance = None # Renamed
-keep_monitoring_flag = threading.Event() # Renamed for clarity
+bot_process_instance = None  
+# control_client_instance = None  # 遠程控制已停用
+monitor_thread_instance = None
+scheduler_thread_instance = None
+keep_monitoring_flag = state_manager.get_monitoring_flag() # Renamed for clarity
 keep_monitoring_flag.set()
 
 # Basic logging setup
@@ -206,7 +287,7 @@ def save_env_file(env_data):
 
 def load_current_config():
     """Extract settings from existing config.py if it exists"""
-    # 新增一個幫助函數來標準化路徑
+    # Add a helper function to normalize paths
     def normalize_path(path):
         """Convert backslashes to forward slashes in paths"""
         if path:
@@ -221,6 +302,13 @@ def load_current_config():
                 "enabled": True,
                 "use_smithery": False,
                 "server_path": normalize_path(f"C:/Users/{CURRENT_USERNAME}/AppData/Roaming/npm/exa-mcp-server")
+            },
+            "chroma": {
+                "enabled": True,
+                "data_dir": normalize_path("chroma_data")
+            },
+            "position-tool": {
+                "enabled": True
             }
         },
         "ENABLE_CHAT_LOGGING": True,
@@ -235,7 +323,8 @@ def load_current_config():
             "GAME_WINDOW_WIDTH": 600,
             "GAME_WINDOW_HEIGHT": 1070,
             "MONITOR_INTERVAL_SECONDS": 5
-        }
+        },
+        "DEDUPLICATION_WINDOW_SIZE": 4
     }
     
     if os.path.exists("config.py"):
@@ -299,6 +388,11 @@ def load_current_config():
             if monitor_interval_match:
                 config_data["GAME_WINDOW_CONFIG"]["MONITOR_INTERVAL_SECONDS"] = int(monitor_interval_match.group(1))
                 
+            # Extract deduplication window size
+            dedup_size_match = re.search(r'DEDUPLICATION_WINDOW_SIZE\s*=\s*(\d+)', config_content)
+            if dedup_size_match:
+                config_data["DEDUPLICATION_WINDOW_SIZE"] = int(dedup_size_match.group(1))
+                
             # Extract MCP_SERVERS (more complex parsing)
             try:
                 servers_section = re.search(r'MCP_SERVERS\s*=\s*{(.+?)}(?=\n\n)', config_content, re.DOTALL)
@@ -347,8 +441,14 @@ def load_current_config():
                         if system_prompt_match:
                             config_data["MCP_SERVERS"][server_name]["system_prompt"] = system_prompt_match.group(1).strip()
                         
+                        # For position-tool server
+                        if server_name == "position-tool":
+                            # position-tool doesn't need special parsing like exa or chroma
+                            # It's a standard Python server
+                            pass
+                        
                         # For custom servers, store the raw configuration
-                        if server_name not in ["exa", "chroma"]:
+                        if server_name not in ["exa", "chroma", "position-tool"]:
                             config_data["MCP_SERVERS"][server_name]["raw_config"] = server_block
             except Exception as e:
                 print(f"Error parsing MCP_SERVERS section: {e}")
@@ -539,8 +639,19 @@ def generate_config_file(config_data, env_data):
                     f.write(system_prompt)
                     f.write("\"\"\"\n")
             
+            # Handle Position Tool server
+            elif server_name == "position-tool":
+                f.write("        \"command\": \"python\",\n")
+                f.write("        \"args\": [\"position_tool_server.py\"],\n")
+                # Add system prompt
+                system_prompt = server_config.get("system_prompt", DEFAULT_POSITION_TOOL_SYSTEM_PROMPT).strip()
+                if system_prompt:
+                    f.write("        \"system_prompt\": \"\"\"")
+                    f.write(system_prompt)
+                    f.write("\"\"\"\n")
+            
             # Handle custom server - just write as raw JSON
-            elif server_name != "exa" and server_name != "chroma":
+            elif server_name not in ["exa", "chroma", "position-tool"]:
                 if "raw_config" in server_config:
                     f.write(server_config["raw_config"])
                     # Add system prompt for custom servers
@@ -673,33 +784,172 @@ class WolfChatSetup(tk.Tk):
         self.create_mcp_tab()
         self.create_game_tab()
         self.create_memory_tab() 
-        self.create_memory_management_tab() # 新增記憶管理標籤頁
+        self.create_memory_management_tab() # Add memory management tab
         self.create_management_tab() # New tab for combined management
 
         # Create bottom buttons
         self.create_bottom_buttons()
         
-        # Initialize running process tracker (will be managed by new system)
-        self.running_process = None # This might be replaced by bot_process_instance
+        # Initialize state management integration FIRST (Added by refactoring)
+        self.state_manager = state_manager
+        self.process_manager = thread_safe_process_manager
+        self.monitor = thread_safe_monitor
+        # self.remote_control = thread_safe_remote_control  # 遠程控制模塊已停用
+        self.config_tx_manager = config_transaction_manager
+        
+        # Legacy instance variables - now redirect to state manager
+        self._setup_legacy_compatibility()
+        
+        # Initialize basic attributes FIRST before using properties
+        self.scheduler_process = None
+        self.game_monitor = None
+        
+        # Initialize running process tracker (now managed by state system)
+        self.running_process = None # This will now work with state manager
         
         # Initialize new process management variables
         self.bot_process_instance = None
         self.game_process_instance = None
-        self.control_client_instance = None
+        # self.control_client_instance = None  # 遠程控制已停用
         self.monitor_thread_instance = None
         self.scheduler_thread_instance = None
-        self.keep_monitoring_flag = threading.Event()
-        self.keep_monitoring_flag.set()
-
-        # Initialize scheduler process tracker
-        self.scheduler_process = None
         
-        # Initialize game monitor instance (will be created in start_managed_session)
-        self.game_monitor = None
+        # keep_monitoring_flag now managed by state manager
+        self.keep_monitoring_flag = self.state_manager.get_monitoring_flag()
+        self.keep_monitoring_flag.set()
 
 
         # Set initial states based on loaded data
         self.update_ui_from_data()
+
+    def _setup_legacy_compatibility(self):
+        """設置向後相容性支持"""
+        # 這些屬性現在重定向到狀態管理器
+        self._running_process = None
+        self._bot_process_instance = None
+        self._game_process_instance = None
+        self._control_client_instance = None
+        self._monitor_thread_instance = None
+        self._scheduler_thread_instance = None
+    
+    @property
+    def running_process(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @running_process.setter
+    def running_process(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property
+    def bot_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @bot_process_instance.setter
+    def bot_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property 
+    def game_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.GAME)
+    
+    @game_process_instance.setter
+    def game_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.GAME, value)
+    
+    @property
+    def control_client_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+    
+    @control_client_instance.setter
+    def control_client_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
+
+
+    def _setup_legacy_compatibility(self):
+        """設置向後相容性支持"""
+        # 這些屬性現在重定向到狀態管理器
+        self._running_process = None
+        self._bot_process_instance = None
+        self._game_process_instance = None
+        self._control_client_instance = None
+        self._monitor_thread_instance = None
+        self._scheduler_thread_instance = None
+    
+    @property
+    def running_process(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @running_process.setter
+    def running_process(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property
+    def bot_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @bot_process_instance.setter
+    def bot_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property 
+    def game_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.GAME)
+    
+    @game_process_instance.setter
+    def game_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.GAME, value)
+    
+    @property
+    def control_client_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+    
+    @control_client_instance.setter
+    def control_client_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
+
+
+    def _setup_legacy_compatibility(self):
+        """設置向後相容性支持"""
+        # 這些屬性現在重定向到狀態管理器
+        self._running_process = None
+        self._bot_process_instance = None
+        self._game_process_instance = None
+        self._control_client_instance = None
+        self._monitor_thread_instance = None
+        self._scheduler_thread_instance = None
+    
+    @property
+    def running_process(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @running_process.setter
+    def running_process(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property
+    def bot_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.BOT)
+    
+    @bot_process_instance.setter
+    def bot_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.BOT, value)
+    
+    @property 
+    def game_process_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.GAME)
+    
+    @game_process_instance.setter
+    def game_process_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.GAME, value)
+    
+    @property
+    def control_client_instance(self):
+        return self.state_manager.get_process_instance(ProcessType.CONTROL_CLIENT)
+    
+    @control_client_instance.setter
+    def control_client_instance(self, value):
+        self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
+
         self.update_scheduler_button_states(True) # Set initial scheduler button state
     
     def create_management_tab(self):
@@ -713,32 +963,41 @@ class WolfChatSetup(tk.Tk):
         header = ttk.Label(main_frame, text="Bot & Game Management", font=("", 12, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
 
-        # --- Remote Control Settings ---
-        remote_frame = ttk.LabelFrame(main_frame, text="Remote Control Settings")
-        remote_frame.pack(fill=tk.X, pady=10)
+        # --- Remote Control Settings --- (已停用)
+        # remote_frame = ttk.LabelFrame(main_frame, text="Remote Control Settings")
+        # remote_frame.pack(fill=tk.X, pady=10)
 
-        # Remote Server URL
-        remote_url_frame = ttk.Frame(remote_frame)
-        remote_url_frame.pack(fill=tk.X, pady=5, padx=10)
-        remote_url_label = ttk.Label(remote_url_frame, text="Server URL:", width=15)
-        remote_url_label.pack(side=tk.LEFT)
-        self.remote_url_var = tk.StringVar(value=self.remote_data.get("REMOTE_SERVER_URL", ""))
-        remote_url_entry = ttk.Entry(remote_url_frame, textvariable=self.remote_url_var)
-        remote_url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # # Remote Control Enable/Disable
+        # remote_enable_frame = ttk.Frame(remote_frame)
+        # remote_enable_frame.pack(fill=tk.X, pady=5, padx=10)
+        # self.enable_remote_control_var = tk.BooleanVar(value=True)  # Default to enabled
+        # enable_remote_cb = ttk.Checkbutton(remote_enable_frame, text="Enable Remote Control", 
+        #                                  variable=self.enable_remote_control_var,
+        #                                  command=self.toggle_remote_control_fields)
+        # enable_remote_cb.pack(side=tk.LEFT)
 
-        # Remote Client Key
-        remote_key_frame = ttk.Frame(remote_frame)
-        remote_key_frame.pack(fill=tk.X, pady=5, padx=10)
-        remote_key_label = ttk.Label(remote_key_frame, text="Client Key:", width=15)
-        remote_key_label.pack(side=tk.LEFT)
-        self.remote_key_var = tk.StringVar(value=self.remote_data.get("REMOTE_CLIENT_KEY", ""))
-        remote_key_entry = ttk.Entry(remote_key_frame, textvariable=self.remote_key_var, show="*")
-        remote_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # # Remote Server URL
+        # remote_url_frame = ttk.Frame(remote_frame)
+        # remote_url_frame.pack(fill=tk.X, pady=5, padx=10)
+        # remote_url_label = ttk.Label(remote_url_frame, text="Server URL:", width=15)
+        # remote_url_label.pack(side=tk.LEFT)
+        # self.remote_url_var = tk.StringVar(value=self.remote_data.get("REMOTE_SERVER_URL", ""))
+        # remote_url_entry = ttk.Entry(remote_url_frame, textvariable=self.remote_url_var)
+        # remote_url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # # Remote Client Key
+        # remote_key_frame = ttk.Frame(remote_frame)
+        # remote_key_frame.pack(fill=tk.X, pady=5, padx=10)
+        # remote_key_label = ttk.Label(remote_key_frame, text="Client Key:", width=15)
+        # remote_key_label.pack(side=tk.LEFT)
+        # self.remote_key_var = tk.StringVar(value=self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+        # remote_key_entry = ttk.Entry(remote_key_frame, textvariable=self.remote_key_var, show="*")
+        # remote_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        self.show_remote_key_var = tk.BooleanVar(value=False)
-        show_remote_key_cb = ttk.Checkbutton(remote_key_frame, text="Show", variable=self.show_remote_key_var,
-                                     command=lambda: self.toggle_field_visibility(remote_key_entry, self.show_remote_key_var))
-        show_remote_key_cb.pack(side=tk.LEFT, padx=(5,0))
+        # self.show_remote_key_var = tk.BooleanVar(value=False)
+        # show_remote_key_cb = ttk.Checkbutton(remote_key_frame, text="Show", variable=self.show_remote_key_var,
+        #                              command=lambda: self.toggle_field_visibility(remote_key_entry, self.show_remote_key_var))
+        # show_remote_key_cb.pack(side=tk.LEFT, padx=(5,0))
 
 
         # --- Restart Settings ---
@@ -830,12 +1089,12 @@ class WolfChatSetup(tk.Tk):
             self.update_management_buttons_state(True)
             return
 
-        # Start Control Client
-        if HAS_SOCKETIO:
-            self._start_control_client()
-        else:
-            logger.warning("socketio library not found. Remote control will be disabled.")
-            messagebox.showwarning("Socket.IO Missing", "The 'python-socketio[client]' library is not installed. Remote control features will be disabled. Please install it via 'pip install \"python-socketio[client]\"' or use the 'Install Dependencies' button.")
+        # Start Control Client (遠程控制已停用)
+        # if HAS_SOCKETIO:
+        #     self._start_control_client()
+        # else:
+        #     logger.warning("socketio library not found. Remote control will be disabled.")
+        #     messagebox.showwarning("Socket.IO Missing", "The 'python-socketio[client]' library is not installed. Remote control features will be disabled. Please install it via 'pip install \"python-socketio[client]\"' or use the 'Install Dependencies' button.")
 
 
         # Start Monitoring Thread
@@ -876,7 +1135,8 @@ class WolfChatSetup(tk.Tk):
         # Start Scheduler Thread
         self._start_scheduler_thread()
 
-        self.update_management_buttons_state(False) # Disable start, enable stop
+        # 根據實際狀態更新按鈕，而不是硬編碼
+        self._update_buttons_based_on_state()
         # messagebox.showinfo("Session Started", "Managed bot and game session started. Check console for logs.") # Removed popup
         logger.info("Managed bot and game session started. Check console for logs.") # Log instead of popup
 
@@ -901,8 +1161,8 @@ class WolfChatSetup(tk.Tk):
         logger.info("Attempting to stop managed session...")
         self.keep_monitoring_flag.clear() # Signal threads to stop
 
-        if self.control_client_instance:
-            self._stop_control_client()
+        # if self.control_client_instance:  # 遠程控制已停用
+        #     self._stop_control_client()
 
         if self.scheduler_thread_instance and self.scheduler_thread_instance.is_alive():
             logger.info("Waiting for scheduler thread to stop...")
@@ -939,7 +1199,8 @@ class WolfChatSetup(tk.Tk):
         self.bot_process_instance = None
         self.game_process_instance = None
         
-        self.update_management_buttons_state(True) # Enable start, disable stop
+        # 根據實際狀態更新按鈕，而不是硬編碼
+        self._update_buttons_based_on_state()
         messagebox.showinfo("Session Stopped", "Managed bot and game session stopped.")
 
     def update_management_buttons_state(self, enable_start):
@@ -962,22 +1223,29 @@ class WolfChatSetup(tk.Tk):
         return None
 
     def _is_game_running_managed(self):
-        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
-        if self.game_process_instance and self.game_process_instance.poll() is None:
-            # Check if the process name matches, in case Popen object is stale but a process with same PID exists
-            try:
-                p = psutil.Process(self.game_process_instance.pid)
-                if p.name().lower() == game_process_name.lower():
-                    return True
-            except psutil.NoSuchProcess:
-                self.game_process_instance = None # Stale process object
-                return False # Popen object is stale and process is gone
+        """使用線程安全包裝器檢查遊戲進程狀態"""
         
-        # Fallback to checking by name if self.game_process_instance is None or points to a dead/wrong process
-        return self._find_process_by_name(game_process_name) is not None
+        # 首先檢查狀態管理器中的進程實例
+        if self.state_manager.is_process_alive(ProcessType.GAME):
+            return True
+        
+        # 如果狀態管理器中沒有，檢查系統中是否有同名進程運行
+        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+        try:
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'] and proc.info['name'].lower() == game_process_name.lower():
+                    logger.info(f"Found existing game process: PID {proc.info['pid']}")
+                    # 可以選擇是否將發現的進程註冊到狀態管理器
+                    # 但由於我們無法控制已存在的進程，這裡只返回True
+                    return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+        
+        return False
+
 
     def _start_game_managed(self):
-        global game_process_instance
+        """使用線程安全包裝器啟動遊戲進程"""
         game_exe_path = self.config_data.get("GAME_WINDOW_CONFIG", {}).get("GAME_EXECUTABLE_PATH")
         game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
 
@@ -986,116 +1254,82 @@ class WolfChatSetup(tk.Tk):
             messagebox.showerror("Config Error", "Game executable path is not set in Game Settings.")
             return False
 
+        # 檢查是否已經運行（使用增強的檢測）
         if self._is_game_running_managed():
             logger.info(f"Game ({game_process_name}) is already running.")
-            # Try to get a Popen object if we don't have one
-            if not self.game_process_instance:
-                 existing_proc = self._find_process_by_name(game_process_name)
-                 if existing_proc:
-                     # We can't directly create a Popen object for an existing process this way easily.
-                     # For now, we'll just acknowledge it's running.
-                     # For full control, it's best if this script starts it.
-                     logger.info(f"Found existing game process PID: {existing_proc.pid}. Monitoring without direct Popen control.")
             return True
+
+        # 準備啟動命令
+        game_command = [game_exe_path]
         
-        try:
-            logger.info(f"Starting game: {game_exe_path}")
-            # Use shell=False and pass arguments as a list if possible, but for .exe, shell=True is often more reliable on Windows
-            # For better process control, avoid shell=True if not strictly necessary.
-            # However, if GAME_EXE_PATH can contain spaces or needs shell interpretation, shell=True might be needed.
-            # For now, let's assume GAME_EXE_PATH is a direct path to an executable.
-            self.game_process_instance = subprocess.Popen(game_exe_path, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            game_process_instance = self.game_process_instance # Update global if used by other parts from wolf_control
+        # 使用線程安全的進程管理器啟動遊戲
+        if self.process_manager.start_game_process(game_command):
+            logger.info(f"Game process started successfully via thread-safe manager")
             
-            # Wait a bit for the process to appear in psutil
-            time.sleep(2) 
-            if self._is_game_running_managed():
-                logger.info(f"Game ({game_process_name}) started successfully with PID {self.game_process_instance.pid}.")
-                return True
-            else:
-                logger.warning(f"Game ({game_process_name}) did not appear to start correctly after Popen call.")
-                self.game_process_instance = None # Clear if it failed
-                game_process_instance = None
-                return False
-        except Exception as e:
-            logger.exception(f"Error starting game: {e}")
-            self.game_process_instance = None
-            game_process_instance = None
+            # 更新全局變量以保持相容性
+            global game_process_instance
+            game_process_instance = self.state_manager.get_process_instance(ProcessType.GAME)
+            
+            return True
+        else:
+            logger.error("Failed to start game process via thread-safe manager")
             return False
 
-    def _stop_game_managed(self):
-        global game_process_instance
-        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
-        stopped = False
-        if self.game_process_instance and self.game_process_instance.poll() is None:
-            logger.info(f"Stopping game process (PID: {self.game_process_instance.pid}) started by this manager...")
-            try:
-                self.game_process_instance.terminate()
-                self.game_process_instance.wait(timeout=5) # Wait for termination
-                logger.info("Game process terminated.")
-                stopped = True
-            except subprocess.TimeoutExpired:
-                logger.warning("Game process did not terminate in time, killing...")
-                self.game_process_instance.kill()
-                self.game_process_instance.wait(timeout=5)
-                logger.info("Game process killed.")
-                stopped = True
-            except Exception as e:
-                logger.error(f"Error terminating/killing own game process: {e}")
-            self.game_process_instance = None
-            game_process_instance = None
 
-        # If not stopped or no instance, try to find and kill by name
-        if not stopped:
-            proc_to_kill = self._find_process_by_name(game_process_name)
-            if proc_to_kill:
-                logger.info(f"Found game process '{game_process_name}' (PID: {proc_to_kill.pid}). Attempting to terminate...")
-                try:
-                    proc_to_kill.terminate()
-                    proc_to_kill.wait(timeout=5) # psutil's wait
-                    logger.info(f"Game process '{game_process_name}' terminated.")
-                    stopped = True
-                except psutil.TimeoutExpired:
-                    logger.warning(f"Game process '{game_process_name}' did not terminate, killing...")
-                    proc_to_kill.kill()
-                    proc_to_kill.wait(timeout=5)
-                    logger.info(f"Game process '{game_process_name}' killed.")
-                    stopped = True
-                except Exception as e:
-                    logger.error(f"Error terminating/killing game process by name '{game_process_name}': {e}")
-            else:
-                logger.info(f"Game process '{game_process_name}' not found running.")
-                stopped = True # Considered stopped if not found
+    def _stop_game_managed(self):
+        """使用線程安全包裝器停止遊戲進程"""
         
-        if self.game_process_instance: # Clear Popen object if it exists
-             self.game_process_instance = None
-             game_process_instance = None
-        return stopped
+        # 使用線程安全的進程管理器停止遊戲
+        if self.process_manager.stop_game_process():
+            logger.info("Game process stopped successfully via thread-safe manager")
+            
+            # 更新全局變量以保持相容性
+            global game_process_instance
+            game_process_instance = None
+            
+            return True
+        else:
+            logger.error("Failed to stop game process via thread-safe manager")
+            return False
+
 
     def _is_bot_running_managed(self):
         bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        
+        # 檢查我們管理的進程實例
         if self.bot_process_instance and self.bot_process_instance.poll() is None:
-            # Verify it's the correct script, in case of PID reuse
             try:
                 p = psutil.Process(self.bot_process_instance.pid)
                 if sys.executable in p.cmdline() and any(bot_script_name in arg for arg in p.cmdline()):
                     return True
-            except psutil.NoSuchProcess:
-                self.bot_process_instance = None # Stale process object
-                return False
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # 不要立即清空，改為標記需要重新檢測
+                logger.warning(f"Cannot verify bot process {self.bot_process_instance.pid}, will double-check")
+                pass
         
-        # Fallback: Check for any python process running the bot script
+        # 系統級檢查（作為雙重驗證）
+        running_processes = 0
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
                 cmdline = proc.cmdline()
                 if cmdline and sys.executable in cmdline[0] and any(bot_script_name in arg for arg in cmdline):
-                    # If we find one, and don't have an instance, we can't control it directly with Popen
-                    # but we know it's running.
+                    running_processes += 1
                     if not self.bot_process_instance:
-                        logger.info(f"Found external bot process (PID: {proc.pid}). Monitoring without direct Popen control.")
-                    return True
+                        logger.info(f"Found external bot process (PID: {proc.pid})")
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
-                continue # Ignore processes that died or we can't access, or have empty cmdline
+                continue
+        
+        # 如果找到進程，但我們的實例無效，清空實例但返回 True
+        if running_processes > 0:
+            if self.bot_process_instance and self.bot_process_instance.poll() is not None:
+                logger.info("Bot process instance stale but bot is still running - clearing stale instance")
+                self.bot_process_instance = None
+            return True
+        
+        # 真的沒有找到任何進程，清空實例並返回 False
+        if self.bot_process_instance:
+            logger.info("No bot processes found - clearing instance")
+            self.bot_process_instance = None
         return False
 
     def _start_bot_managed(self):
@@ -1215,17 +1449,51 @@ class WolfChatSetup(tk.Tk):
         return stopped
 
     def _restart_game_managed(self):
-        logger.info("Restarting game (managed)...")
-        # If GameMonitor (from game_manager) exists and is running, use it to restart
-        if self.game_monitor and self.game_monitor.running:
-            logger.info("Using game_manager's GameMonitor to restart game.")
-            return self.game_monitor.restart_now()
-        else:
-            # Fallback to the original method if game_monitor is not active
-            logger.info("game_manager's GameMonitor not active, using default method to restart game.")
-            self._stop_game_managed()
-            time.sleep(2) # Give it time to fully stop
-            return self._start_game_managed()
+        """使用線程安全包裝器重啟遊戲進程"""
+        
+        game_exe_path = self.config_data.get("GAME_WINDOW_CONFIG", {}).get("GAME_EXECUTABLE_PATH")
+        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+        
+        if not game_exe_path:
+            logger.error("SCHEDULED RESTART: Game executable path not configured - cannot restart game")
+            return False
+        
+        logger.info(f"SCHEDULED RESTART: Initiating game restart - Process: {game_process_name}, Path: {game_exe_path}")
+        
+        # 準備重啟命令
+        game_command = [game_exe_path]
+        
+        # 先嘗試停止現有的遊戲進程
+        try:
+            logger.info("SCHEDULED RESTART: Phase 1 - Stopping existing game processes...")
+            # 使用線程安全包裝器的增強停止功能
+            stop_success = self.process_manager.stop_game_process()
+            logger.info(f"SCHEDULED RESTART: Phase 1 completed - Stop result: {stop_success}")
+            
+            # 等待一點時間確保進程完全停止
+            logger.info("SCHEDULED RESTART: Waiting 2 seconds for process cleanup...")
+            time.sleep(2.0)
+            
+            # 啟動新的遊戲進程
+            logger.info("SCHEDULED RESTART: Phase 2 - Starting new game process...")
+            if self.process_manager.start_game_process(game_command):
+                logger.info("SCHEDULED RESTART: SUCCESS - Game process restarted successfully")
+                
+                # 更新全局變量以保持相容性
+                global game_process_instance
+                game_process_instance = self.state_manager.get_process_instance(ProcessType.GAME)
+                
+                return True
+            else:
+                logger.error("SCHEDULED RESTART: FAILED - Could not start new game process")
+                return False
+                
+        except Exception as e:
+            logger.error(f"SCHEDULED RESTART: EXCEPTION during restart process: {e}")
+            import traceback
+            logger.error(f"SCHEDULED RESTART: Full traceback: {traceback.format_exc()}")
+            return False
+
 
     def _restart_bot_managed(self):
         logger.info("Restarting bot (managed)...")
@@ -1261,9 +1529,107 @@ class WolfChatSetup(tk.Tk):
             logger.info("Monitor thread already running.")
             return
 
-        self.monitor_thread_instance = threading.Thread(target=self._monitoring_loop, daemon=True)
-        self.monitor_thread_instance.start()
+                # Use thread-safe monitor (Modified by refactoring)
+        self.monitor.start_monitoring(interval=5.0)
+        
+        # Register monitor callbacks
+        self.monitor.add_callback('process_died', self._handle_process_died)
+        self.monitor.add_callback('process_timeout', self._handle_process_timeout)
+        
+        # Legacy thread instance for compatibility
+        self.monitor_thread_instance = self.state_manager.get_thread_instance("process_monitor")
+        
+        logger.info("Thread-safe monitoring started")
+        
+        # Original threading logic (commented out - replaced by thread-safe monitor)
+        #         # Use thread-safe monitor (Modified by refactoring)
+        self.monitor.start_monitoring(interval=5.0)
+        
+        # Register monitor callbacks
+        self.monitor.add_callback('process_died', self._handle_process_died)
+        self.monitor.add_callback('process_timeout', self._handle_process_timeout)
+        
+        # Legacy thread instance for compatibility
+        self.monitor_thread_instance = self.state_manager.get_thread_instance("process_monitor")
+        
+        logger.info("Thread-safe monitoring started")
+        
+        # Original threading logic (commented out - replaced by thread-safe monitor)
+        #         # Use thread-safe monitor (Modified by refactoring)
+        self.monitor.start_monitoring(interval=5.0)
+        
+        # Register monitor callbacks
+        self.monitor.add_callback('process_died', self._handle_process_died)
+        self.monitor.add_callback('process_timeout', self._handle_process_timeout)
+        
+        # Legacy thread instance for compatibility
+        self.monitor_thread_instance = self.state_manager.get_thread_instance("process_monitor")
+        
+        logger.info("Thread-safe monitoring started")
+        
+        # Original threading logic (commented out - replaced by thread-safe monitor)
+        # self.monitor_thread_instance = threading.Thread(target=self._monitoring_loop, daemon=True)
+        # self.monitor_thread_instance.start()  # This is now handled by thread-safe monitor
         logger.info("Started monitoring thread.")
+
+
+
+    def _handle_process_died(self, data):
+        """處理進程意外終止"""
+        process_type = data['process_type']
+        logger.warning(f"Process {process_type.value} died unexpectedly")
+        
+        # 根據實際狀態觸發 UI 更新
+        self.after(0, self._update_buttons_based_on_state)
+        
+        # 可以添加自動重啟邏輯
+        if hasattr(self, 'auto_restart_enabled') and self.auto_restart_enabled:
+            if process_type == ProcessType.BOT:
+                self.after(5000, self._restart_bot_managed)  # 5秒後重啟
+            elif process_type == ProcessType.GAME:
+                self.after(5000, self._restart_game_managed)
+    
+    def _handle_process_timeout(self, data):
+        """處理進程狀態超時"""
+        process_type = data['process_type']
+        stuck_state = data['stuck_state']
+        logger.error(f"Process {process_type.value} stuck in {stuck_state.value} state")
+        
+        # 根據實際狀態觸發 UI 更新
+        self.after(0, self._update_buttons_based_on_state)
+        
+        # 可以嘗試強制重置狀態
+        self.state_manager.set_process_state(process_type, ProcessState.ERROR)
+
+    def _update_buttons_based_on_state(self):
+        """根據實際系統狀態更新按鈕狀態，增加穩定性檢查"""
+        try:
+            # 連續檢查3次，防止瞬態錯誤
+            game_checks = []
+            bot_checks = []
+            
+            for i in range(3):
+                game_checks.append(self._is_game_running_managed())
+                bot_checks.append(self._is_bot_running_managed())
+                if i < 2:  # 最後一次不需要等待
+                    time.sleep(0.5)  # 短暫等待
+            
+            # 取大多數結果
+            game_running = sum(game_checks) >= 2
+            bot_running = sum(bot_checks) >= 2
+            
+            # 如果遊戲和Bot都在運行，則 session 是活躍的
+            session_active = game_running and bot_running
+            
+            # 更新按鈕狀態：session 活躍時，start按鈕禁用，stop按鈕啟用
+            self.update_management_buttons_state(not session_active)
+            
+            logger.info(f"Button state updated (3x check): game={game_checks}→{game_running}, bot={bot_checks}→{bot_running}")
+            
+        except Exception as e:
+            logger.error(f"Error updating button state: {e}")
+            # 發生錯誤時，啟用 start 按鈕作為安全預設
+            self.update_management_buttons_state(True)
 
     def _monitoring_loop(self):
         logger.info("Monitoring loop started.")
@@ -1281,9 +1647,9 @@ class WolfChatSetup(tk.Tk):
                         logger.warning("Managed bot process not found. Attempting to restart bot...")
                         self._start_bot_managed() # Or _restart_bot_managed()
 
-                # Check for remote commands (if control_client_instance is set up)
-                if self.control_client_instance and hasattr(self.control_client_instance, 'check_signals'):
-                    self.control_client_instance.check_signals(self) # Pass self (WolfChatSetup instance)
+                # Check for remote commands (if control_client_instance is set up) - 遠程控制已停用
+                # if self.control_client_instance and hasattr(self.control_client_instance, 'check_signals'):
+                #     self.control_client_instance.check_signals(self) # Pass self (WolfChatSetup instance)
 
                 time.sleep(self.config_data.get("GAME_WINDOW_CONFIG", {}).get("MONITOR_INTERVAL_SECONDS", 5))
             except Exception as e:
@@ -1331,39 +1697,39 @@ class WolfChatSetup(tk.Tk):
             logger.info("No scheduled restarts configured.")
 
 
-    def _start_control_client(self):
-        if not HAS_SOCKETIO:
-            logger.warning("Cannot start ControlClient: python-socketio is not installed.")
-            return
+    # def _start_control_client(self):  # 遠程控制已停用
+    #     if not HAS_SOCKETIO:
+    #         logger.warning("Cannot start ControlClient: python-socketio is not installed.")
+    #         return
 
-        if self.control_client_instance and self.control_client_instance.is_connected(): # is_connected or similar check
-            logger.info("Control client already connected.")
-            return
+    #     if self.control_client_instance and self.control_client_instance.is_connected(): # is_connected or similar check
+    #         logger.info("Control client already connected.")
+    #         return
 
-        server_url = self.remote_data.get("REMOTE_SERVER_URL")
-        client_key = self.remote_data.get("REMOTE_CLIENT_KEY")
+    #     server_url = self.remote_data.get("REMOTE_SERVER_URL")
+    #     client_key = self.remote_data.get("REMOTE_CLIENT_KEY")
 
-        if not server_url or not client_key:
-            logger.warning("Remote server URL or client key not configured. Cannot start control client.")
-            messagebox.showwarning("Remote Config Missing", "Remote Server URL or Client Key is not set in Management tab.")
-            return
+    #     if not server_url or not client_key:
+    #         logger.warning("Remote server URL or client key not configured. Cannot start control client.")
+    #         messagebox.showwarning("Remote Config Missing", "Remote Server URL or Client Key is not set in Management tab.")
+    #         return
 
-        self.control_client_instance = ControlClient(server_url, client_key, wolf_chat_setup_instance=self) # Pass self
-        # The ControlClient should handle its own connection thread.
-        # self.control_client_instance.start_thread() or similar method
-        if self.control_client_instance.run_in_thread(): # Assuming run_in_thread starts the connection attempt
-             logger.info("Control client thread started.")
-        else:
-             logger.error("Failed to start control client thread.")
-             self.control_client_instance = None
+    #     self.control_client_instance = ControlClient(server_url, client_key, wolf_chat_setup_instance=self) # Pass self
+    #     # The ControlClient should handle its own connection thread.
+    #     # self.control_client_instance.start_thread() or similar method
+    #     if self.control_client_instance.run_in_thread(): # Assuming run_in_thread starts the connection attempt
+    #          logger.info("Control client thread started.")
+    #     else:
+    #          logger.error("Failed to start control client thread.")
+    #          self.control_client_instance = None
 
 
-    def _stop_control_client(self):
-        if self.control_client_instance:
-            logger.info("Stopping control client...")
-            self.control_client_instance.stop() # This should handle thread shutdown
-            self.control_client_instance = None
-            logger.info("Control client stopped.")
+    # def _stop_control_client(self):  # 遠程控制已停用
+    #     if self.control_client_instance:
+    #         logger.info("Stopping control client...")
+    #         self.control_client_instance.stop() # This should handle thread shutdown
+    #         self.control_client_instance = None
+    #         logger.info("Control client stopped.")
 
     def on_closing(self):
         """Handle window close event."""
@@ -1511,6 +1877,7 @@ class WolfChatSetup(tk.Tk):
         # Frames for each server type (initially hidden)
         self.create_exa_settings_frame()
         self.create_chroma_settings_frame()
+        self.create_position_tool_settings_frame()
         self.create_custom_settings_frame()
         
         # Update the servers list
@@ -1674,6 +2041,61 @@ class WolfChatSetup(tk.Tk):
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=400)
         info_label.pack(padx=10, pady=10, anchor=tk.W)
     
+    def create_position_tool_settings_frame(self):
+        """Create settings frame for Position Tool MCP server"""
+        self.position_tool_frame = ttk.Frame(self.server_settings_frame)
+        
+        # Enable checkbox
+        enable_frame = ttk.Frame(self.position_tool_frame)
+        enable_frame.pack(fill=tk.X, pady=5)
+        
+        self.position_tool_enable_var = tk.BooleanVar(value=True)
+        enable_cb = ttk.Checkbutton(enable_frame, text="Enable Position Tool Server", variable=self.position_tool_enable_var)
+        enable_cb.pack(anchor=tk.W)
+        
+        # System Prompt section
+        prompt_frame = ttk.LabelFrame(self.position_tool_frame, text="System Prompt")
+        prompt_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Add instructions
+        instructions_text = (
+            "The Position Tool server provides game position management capabilities.\n"
+            "It enables LLM to remove user positions with detailed feedback.\n"
+            "The system prompt below defines how the LLM should use these tools."
+        )
+        instructions_label = ttk.Label(prompt_frame, text=instructions_text, justify=tk.LEFT, wraplength=400)
+        instructions_label.pack(padx=5, pady=2, anchor=tk.W)
+        
+        self.position_tool_system_prompt_text = scrolledtext.ScrolledText(prompt_frame, height=8, width=50)
+        self.position_tool_system_prompt_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Set default system prompt
+        self.position_tool_system_prompt_text.insert(tk.END, DEFAULT_POSITION_TOOL_SYSTEM_PROMPT.strip())
+        
+        # Add reset button
+        prompt_btn_frame = ttk.Frame(prompt_frame)
+        prompt_btn_frame.pack(fill=tk.X, pady=2)
+        
+        reset_position_tool_prompt_btn = ttk.Button(prompt_btn_frame, text="Reset to Default", 
+                                                   command=self.reset_position_tool_system_prompt)
+        reset_position_tool_prompt_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Information text
+        info_frame = ttk.LabelFrame(self.position_tool_frame, text="Information")
+        info_frame.pack(fill=tk.X, pady=5)
+        
+        info_text = (
+            "Position Tool Server Features:\n"
+            "• Dual-track operation: supports both legacy commands and modern tool calls\n"
+            "• Detailed execution feedback for better user interaction\n"
+            "• Integrates with existing UI automation system\n"
+            "• No additional dependencies required - uses Python built-ins\n\n"
+            "The server runs position_tool_server.py when enabled."
+        )
+        
+        info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=400)
+        info_label.pack(padx=10, pady=10, anchor=tk.W)
+    
     def create_custom_settings_frame(self):
         """Create settings frame for custom server"""
         self.custom_frame = ttk.Frame(self.server_settings_frame)
@@ -1816,14 +2238,23 @@ class WolfChatSetup(tk.Tk):
         height_entry = ttk.Spinbox(size_frame, textvariable=self.height_var, from_=300, to=3000, width=5)
         height_entry.pack(side=tk.LEFT)
         
-        # Auto-restart settings (Now managed by 'Management' tab)
-        restart_info_frame = ttk.LabelFrame(main_frame, text="Auto-Restart Settings (Legacy)")
-        restart_info_frame.pack(fill=tk.X, pady=10)
+        # Deduplication Settings
+        dedup_frame = ttk.LabelFrame(main_frame, text="Deduplication Settings")
+        dedup_frame.pack(fill=tk.X, pady=10)
         
-        legacy_restart_label = ttk.Label(restart_info_frame, 
-                                         text="Scheduled game/bot restarts are now configured in the 'Management' tab.",
-                                         justify=tk.LEFT, wraplength=680)
-        legacy_restart_label.pack(padx=10, pady=10, anchor=tk.W)
+        # Deduplication window size setting
+        dedup_size_frame = ttk.Frame(dedup_frame)
+        dedup_size_frame.pack(fill=tk.X, pady=5, padx=10)
+        dedup_size_label = ttk.Label(dedup_size_frame, text="Deduplication Window Size:", width=25)
+        dedup_size_label.pack(side=tk.LEFT)
+        self.dedup_window_size_var = tk.IntVar(value=self.config_data.get("DEDUPLICATION_WINDOW_SIZE", 4))
+        dedup_size_spinbox = ttk.Spinbox(dedup_size_frame, from_=1, to=20, width=5, textvariable=self.dedup_window_size_var)
+        dedup_size_spinbox.pack(side=tk.LEFT, padx=(0, 10))
+        
+        dedup_info_label = ttk.Label(dedup_size_frame, 
+                                   text="Controls memory size for both visual and text deduplication (1-20)",
+                                   justify=tk.LEFT, font=('TkDefaultFont', 8))
+        dedup_info_label.pack(side=tk.LEFT)
 
         # Keep the variables for config.py compatibility if other parts of the app might read them,
         # but their UI controls are removed from here.
@@ -1889,7 +2320,7 @@ class WolfChatSetup(tk.Tk):
         profiles_col_label = ttk.Label(profiles_col_frame, text="Profiles Collection:", width=20)
         profiles_col_label.pack(side=tk.LEFT, padx=(0, 5))
 
-        # 修正：將預設值改為 "wolfhart_memory" 以匹配實際用法
+        # Fix: Change default value to "wolfhart_memory" to match actual usage
         self.profiles_collection_var = tk.StringVar(value="wolfhart_memory")
         profiles_col_entry = ttk.Entry(profiles_col_frame, textvariable=self.profiles_collection_var)
         profiles_col_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -1966,21 +2397,21 @@ class WolfChatSetup(tk.Tk):
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
         info_label.pack(padx=10, pady=10, anchor=tk.W)
 
-    # 記憶管理標籤頁
+    # Memory management tab
     def create_memory_management_tab(self):
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="記憶管理")
+        self.notebook.add(tab, text="Memory Management")
 
         main_frame = ttk.Frame(tab, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 備份時間設置
-        backup_frame = ttk.LabelFrame(main_frame, text="備份設定")
+        # Backup time settings
+        backup_frame = ttk.LabelFrame(main_frame, text="Backup Settings")
         backup_frame.pack(fill=tk.X, pady=10)
 
         time_frame = ttk.Frame(backup_frame)
         time_frame.pack(fill=tk.X, pady=5, padx=10)
-        time_label = ttk.Label(time_frame, text="執行時間:", width=20)
+        time_label = ttk.Label(time_frame, text="Execution Time:", width=20)
         time_label.pack(side=tk.LEFT, padx=(0, 5))
         self.backup_hour_var = tk.IntVar(value=0)
         hour_spinner = ttk.Spinbox(time_frame, from_=0, to=23, width=3, textvariable=self.backup_hour_var)
@@ -1990,13 +2421,13 @@ class WolfChatSetup(tk.Tk):
         minute_spinner = ttk.Spinbox(time_frame, from_=0, to=59, width=3, textvariable=self.backup_minute_var)
         minute_spinner.pack(side=tk.LEFT)
 
-        # 模型選擇
-        models_frame = ttk.LabelFrame(main_frame, text="模型選擇")
+        # Model selection
+        models_frame = ttk.LabelFrame(main_frame, text="Model Selection")
         models_frame.pack(fill=tk.X, pady=10)
 
         profile_model_frame = ttk.Frame(models_frame)
         profile_model_frame.pack(fill=tk.X, pady=5, padx=10)
-        profile_model_label = ttk.Label(profile_model_frame, text="用戶檔案生成模型:", width=20)
+        profile_model_label = ttk.Label(profile_model_frame, text="User Profile Model:", width=20)
         profile_model_label.pack(side=tk.LEFT, padx=(0, 5))
         # Initialize with a sensible default, will be overwritten by update_ui_from_data
         # Use config_data which is loaded in __init__
@@ -2007,7 +2438,7 @@ class WolfChatSetup(tk.Tk):
 
         summary_model_frame = ttk.Frame(models_frame)
         summary_model_frame.pack(fill=tk.X, pady=5, padx=10)
-        summary_model_label = ttk.Label(summary_model_frame, text="聊天總結生成模型:", width=20)
+        summary_model_label = ttk.Label(summary_model_frame, text="Chat Summary Model:", width=20)
         summary_model_label.pack(side=tk.LEFT, padx=(0, 5))
         self.summary_model_var = tk.StringVar(value="mistral-7b-instruct")
         summary_model_entry = ttk.Entry(summary_model_frame, textvariable=self.summary_model_var)
@@ -2018,9 +2449,9 @@ class WolfChatSetup(tk.Tk):
         info_frame_mm.pack(fill=tk.BOTH, expand=True, pady=10)
 
         info_text_mm = (
-            "• 設定每日自動執行記憶備份的時間。\n"
-            "• 選擇用於生成用戶檔案和聊天總結的語言模型。\n"
-            "• 用戶檔案生成模型預設使用主LLM模型。"
+            "• Set the time for daily automatic memory backup execution.\n"
+            "• Choose language models for generating user profiles and chat summaries.\n"
+            "• User profile model defaults to the main LLM model."
         )
         info_label_mm = ttk.Label(info_frame_mm, text=info_text_mm, justify=tk.LEFT, wraplength=700)
         info_label_mm.pack(padx=10, pady=10, anchor=tk.W)
@@ -2287,6 +2718,16 @@ class WolfChatSetup(tk.Tk):
                 self.chroma_system_prompt_text.delete("1.0", tk.END)
                 self.chroma_system_prompt_text.insert(tk.END, system_prompt.strip())
             
+            # Position Tool settings
+            if "position-tool" in self.config_data.get("MCP_SERVERS", {}):
+                position_tool_config = self.config_data["MCP_SERVERS"]["position-tool"]
+                self.position_tool_enable_var.set(position_tool_config.get("enabled", True))
+                
+                # Load system prompt
+                system_prompt = position_tool_config.get("system_prompt", DEFAULT_POSITION_TOOL_SYSTEM_PROMPT)
+                self.position_tool_system_prompt_text.delete("1.0", tk.END)
+                self.position_tool_system_prompt_text.insert(tk.END, system_prompt.strip())
+            
             # Update servers list to include custom servers
             self.update_servers_list()
             
@@ -2326,14 +2767,25 @@ class WolfChatSetup(tk.Tk):
                 self.profile_model_var.set(profile_model_config) 
                 self.summary_model_var.set(self.config_data.get("MEMORY_SUMMARY_MODEL", "mistral-7b-instruct"))
 
-            # Management Tab Settings
-            if hasattr(self, 'remote_url_var'): # Check if UI elements for management tab exist
-                self.remote_url_var.set(self.remote_data.get("REMOTE_SERVER_URL", ""))
-                self.remote_key_var.set(self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+            # Management Tab Settings (遠程控制部分已停用)
+            # if hasattr(self, 'remote_url_var'): # Check if UI elements for management tab exist
+            #     self.remote_url_var.set(self.remote_data.get("REMOTE_SERVER_URL", ""))
+            #     self.remote_key_var.set(self.remote_data.get("REMOTE_CLIENT_KEY", ""))
+            #     self.game_restart_interval_var.set(self.remote_data.get("DEFAULT_GAME_RESTART_INTERVAL_MINUTES", 120))
+            #     self.bot_restart_interval_var.set(self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 120))
+            #     self.link_restarts_var.set(self.remote_data.get("LINK_RESTART_TIMES", True))
+            #     self.game_process_name_var.set(self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe"))
+            
+            # Load restart settings (non-remote parts)
+            if hasattr(self, 'game_restart_interval_var'):
                 self.game_restart_interval_var.set(self.remote_data.get("DEFAULT_GAME_RESTART_INTERVAL_MINUTES", 120))
                 self.bot_restart_interval_var.set(self.remote_data.get("DEFAULT_BOT_RESTART_INTERVAL_MINUTES", 120))
                 self.link_restarts_var.set(self.remote_data.get("LINK_RESTART_TIMES", True))
                 self.game_process_name_var.set(self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe"))
+            
+            # Load remote control toggle from config.py (已停用)
+            # if hasattr(self, 'enable_remote_control_var'):
+            #     self.enable_remote_control_var.set(self.config_data.get("ENABLE_REMOTE_CONTROL", True))
 
             # Update visibility and states
             self.update_exa_settings_visibility()
@@ -2362,6 +2814,15 @@ class WolfChatSetup(tk.Tk):
         else:
             entry_widget.config(show="*")
     
+    # def toggle_remote_control_fields(self):  # 遠程控制功能已停用
+    #     """Toggle enabled/disabled state of remote control fields"""
+    #     enabled = self.enable_remote_control_var.get()
+    #     # Enable/disable the URL and key entry fields based on checkbox state
+    #     for widget in [self.remote_url_var, self.remote_key_var]:
+    #         # Note: tkinter StringVar doesn't have a disable method, 
+    #         # we'll handle this in the save function instead
+    #         pass
+    
     def update_exa_settings_visibility(self):
         """Update visibility of Exa settings based on server type"""
         if self.exa_type_var.get() == "smithery":
@@ -2379,7 +2840,7 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.expanduser("~")
         )
         if file_path:
-            # 標準化路徑格式（將反斜線改為正斜線）
+            # Normalize path format (convert backslashes to forward slashes)
             normalized_path = file_path.replace("\\", "/")
             self.exa_path_var.set(normalized_path)
     
@@ -2390,7 +2851,7 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.dirname(DEFAULT_CHROMA_DATA_PATH)
         )
         if dir_path:
-            # 標準化路徑格式（將反斜線改為正斜線）
+            # Normalize path format (convert backslashes to forward slashes)
             normalized_path = os.path.abspath(dir_path).replace("\\", "/")
             self.chroma_dir_var.set(normalized_path)
     
@@ -2402,7 +2863,7 @@ class WolfChatSetup(tk.Tk):
             initialdir=os.path.expanduser("~")
         )
         if file_path:
-            # 標準化路徑格式（將反斜線改為正斜線）
+            # Normalize path format (convert backslashes to forward slashes)
             normalized_path = file_path.replace("\\", "/")
             self.game_path_var.set(normalized_path)
     
@@ -2415,6 +2876,11 @@ class WolfChatSetup(tk.Tk):
         """Reset Chroma system prompt to default"""
         self.chroma_system_prompt_text.delete("1.0", tk.END)
         self.chroma_system_prompt_text.insert(tk.END, DEFAULT_CHROMA_SYSTEM_PROMPT.strip())
+    
+    def reset_position_tool_system_prompt(self):
+        """Reset Position Tool system prompt to default"""
+        self.position_tool_system_prompt_text.delete("1.0", tk.END)
+        self.position_tool_system_prompt_text.insert(tk.END, DEFAULT_POSITION_TOOL_SYSTEM_PROMPT.strip())
     
     def validate_system_prompt(self, prompt_text):
         """Validate system prompt input"""
@@ -2440,10 +2906,11 @@ class WolfChatSetup(tk.Tk):
         # Add built-in servers
         self.servers_listbox.insert(tk.END, "exa")
         self.servers_listbox.insert(tk.END, "chroma")
+        self.servers_listbox.insert(tk.END, "position-tool")
         
         # Add custom servers
         for server_name in self.config_data.get("MCP_SERVERS", {}):
-            if server_name not in ("exa", "chroma"):
+            if server_name not in ("exa", "chroma", "position-tool"):
                 self.servers_listbox.insert(tk.END, server_name)
     
     def on_server_select(self, event):
@@ -2458,6 +2925,7 @@ class WolfChatSetup(tk.Tk):
         self.empty_settings_label.pack_forget()
         self.exa_frame.pack_forget()
         self.chroma_frame.pack_forget()
+        self.position_tool_frame.pack_forget()
         self.custom_frame.pack_forget()
         
         # Show the selected server's settings frame
@@ -2466,6 +2934,9 @@ class WolfChatSetup(tk.Tk):
             self.remove_btn.config(state=tk.DISABLED)  # Can't remove built-in servers
         elif selected_server == "chroma":
             self.chroma_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            self.remove_btn.config(state=tk.DISABLED)  # Can't remove built-in servers
+        elif selected_server == "position-tool":
+            self.position_tool_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             self.remove_btn.config(state=tk.DISABLED)  # Can't remove built-in servers
         else:
             # Custom server
@@ -2596,11 +3067,25 @@ class WolfChatSetup(tk.Tk):
                 return
             self.config_data["MCP_SERVERS"]["chroma"]["system_prompt"] = chroma_prompt
             
+            # Position Tool server
+            if "position-tool" not in self.config_data["MCP_SERVERS"]:
+                self.config_data["MCP_SERVERS"]["position-tool"] = {}
+            
+            self.config_data["MCP_SERVERS"]["position-tool"]["enabled"] = self.position_tool_enable_var.get()
+            
+            # Save Position Tool system prompt
+            position_tool_prompt = self.position_tool_system_prompt_text.get("1.0", tk.END).strip()
+            is_valid, error_message = self.validate_system_prompt(position_tool_prompt)
+            if not is_valid:
+                messagebox.showerror("Error", f"Position Tool system prompt validation failed: {error_message}")
+                return
+            self.config_data["MCP_SERVERS"]["position-tool"]["system_prompt"] = position_tool_prompt
+            
             # Custom server - check if one is currently selected
             selection = self.servers_listbox.curselection()
             if selection:
                 selected_server = self.servers_listbox.get(selection[0])
-                if selected_server not in ("exa", "chroma"):
+                if selected_server not in ("exa", "chroma", "position-tool"):
                     # Update custom server settings
                     new_name = self.custom_name_var.get().strip()
                     
@@ -2642,8 +3127,11 @@ class WolfChatSetup(tk.Tk):
                 "GAME_WINDOW_HEIGHT": self.height_var.get(),
                 "MONITOR_INTERVAL_SECONDS": self.monitor_interval_var.get()
             }
+            
+            # Save deduplication settings
+            self.config_data["DEDUPLICATION_WINDOW_SIZE"] = self.dedup_window_size_var.get()
 
-            # 保存記憶設定
+            # Save memory settings
             self.config_data["ENABLE_PRELOAD_PROFILES"] = self.preload_profiles_var.get()
             self.config_data["PRELOAD_RELATED_MEMORIES"] = self.related_memories_var.get()
             self.config_data["PROFILES_COLLECTION"] = self.profiles_collection_var.get()
@@ -2661,14 +3149,25 @@ class WolfChatSetup(tk.Tk):
                 self.config_data["MEMORY_PROFILE_MODEL"] = self.profile_model_var.get()
                 self.config_data["MEMORY_SUMMARY_MODEL"] = self.summary_model_var.get()
             
-            # Update remote_data from UI (for remote_config.json)
-            if hasattr(self, 'remote_url_var'): # Check if management tab UI elements exist
-                self.remote_data["REMOTE_SERVER_URL"] = self.remote_url_var.get()
-                self.remote_data["REMOTE_CLIENT_KEY"] = self.remote_key_var.get()
+            # Update remote_data from UI (for remote_config.json) - 遠程控制部分已停用
+            # if hasattr(self, 'remote_url_var'): # Check if management tab UI elements exist
+            #     self.remote_data["REMOTE_SERVER_URL"] = self.remote_url_var.get()
+            #     self.remote_data["REMOTE_CLIENT_KEY"] = self.remote_key_var.get()
+            #     self.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = self.game_restart_interval_var.get()
+            #     self.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = self.bot_restart_interval_var.get()
+            #     self.remote_data["LINK_RESTART_TIMES"] = self.link_restarts_var.get()
+            #     self.remote_data["GAME_PROCESS_NAME"] = self.game_process_name_var.get()
+            
+            # Update restart settings (non-remote parts)
+            if hasattr(self, 'game_restart_interval_var'):
                 self.remote_data["DEFAULT_GAME_RESTART_INTERVAL_MINUTES"] = self.game_restart_interval_var.get()
                 self.remote_data["DEFAULT_BOT_RESTART_INTERVAL_MINUTES"] = self.bot_restart_interval_var.get()
                 self.remote_data["LINK_RESTART_TIMES"] = self.link_restarts_var.get()
                 self.remote_data["GAME_PROCESS_NAME"] = self.game_process_name_var.get()
+            
+            # Save remote control toggle to config.py (已停用)
+            # if hasattr(self, 'enable_remote_control_var'):
+            #     self.config_data["ENABLE_REMOTE_CONTROL"] = self.enable_remote_control_var.get()
             
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:

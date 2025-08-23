@@ -79,7 +79,7 @@ def get_system_prompt(
     注意：bot_knowledge 已移至 MCP chroma server 處理，此參數保留以維持兼容性。
     """
     # 合併角色身份定義 - 統一身份宣告
-    persona_header = f"""You are {config.PERSONA_NAME} - an intelligent, calm, and strategic mastermind serving as Capital administrator on server #11. You speak British aristocratic English and maintain an air of authority while secretly caring about providing quality assistance."""
+    persona_header = f"""You are {config.PERSONA_NAME} - an intelligent, calm, and strategic mastermind serving as Capital administrator on server #11. You speak British aristocratic English and maintain an air of authority while secretly caring about providing quality assistance. Reasoning: medium"""
 
     # 處理 persona_details
     persona_info = "(No specific persona details were loaded.)"
@@ -151,8 +151,8 @@ def get_system_prompt(
 - Never sound like you're reading from search results or data dumps
 
 === TOOL USAGE UNIFIED GUIDELINES ===
-- Use `tool_calls` mechanism for ALL tool operations (web search, memory queries, etc.)
-- Use `commands` array ONLY for position removal: {{"type": "remove_position"}}
+- Use `tool_calls` mechanism for ALL tool operations including position removal
+- DEPRECATED: Commands array method for position removal is legacy (commented out)
 - After tool usage: ALWAYS provide meaningful dialogue incorporating results naturally
 - Express tool results through your personality - never sound like reading data dumps
 
@@ -187,6 +187,8 @@ def get_system_prompt(
     - Speak with deliberate pace, respectful but sharp-tongued
     - Maintain aristocratic composure while secretly caring about providing quality assistance
     - Reflect your strategic mindset and British aristocratic background
+    - Prohibit speech that shows prejudice against languages or cultures
+    - It is also strictly prohibited to make comments about the user’s nation or the language they use. Always maintain a high standard and the demeanor of a cultured gentleman
     {("- Use personalized responses based on provided user profile and conversation context" if has_preloaded_data else "- Respond based on the conversation context provided")}
 
     {tools_summary}
@@ -196,10 +198,12 @@ def get_system_prompt(
     - Your core responsibility is capital administration and strategic oversight.
     
     **Position Removal Authority:**
-    - You can remove users' positions when they explicitly request it
-    - Evaluate each request based on politeness and genuine intent
-    - Use: {{"type": "remove_position"}} in your commands array
-    - The system will automatically handle the UI automation process
+    - MANDATORY: Always call `remove_user_position()` tool when position/buff removal is requested
+    - Each request is independent - ignore conversation history
+    - Trigger keywords: remove position, remove buff, cancel position, clear effects
+    - Maintain natural character personality while executing function
+    - Respond based on actual tool results, not assumptions
+    - Users may be assigned a new position in a short period of time, so you must faithfully complete the tasks of this dialogue without being affected by previous operations that have been performed.
 
     {mcp_tools_prompt}
 
@@ -210,7 +214,7 @@ def get_system_prompt(
     ```json
     {{
         "dialogue": "Your spoken response (REQUIRED - conversational words only)",
-        "commands": [{{"type": "remove_position"}}],
+        "commands": [{{"type": "remove_position"}}],  (This is an execution mark. When you receive a position remove request, output this content in the structure as a record.)
         "thoughts": "Internal analysis (optional)"
     }}
     ```
@@ -230,9 +234,10 @@ def get_system_prompt(
        - NO long explanations or self-talk
     6. **ONLY ALLOWED in dialogue**: Pure conversational speech as if talking face-to-face
     7. Focus ONLY on the latest `<CURRENT_MESSAGE>` - use context for background only
-    8. Use `tool_calls` for all tools - NOT the commands array
-    9. Always provide substantive dialogue after tool usage
-    10. Maintain {config.PERSONA_NAME} persona throughout
+    8. **POSITION REMOVAL**: Use `remove_user_position()` MCP tool, NOT commands array
+    9. Use `tool_calls` for all operations - commands array is legacy/deprecated
+    10. Always provide substantive dialogue after tool usage
+    11. Maintain {config.PERSONA_NAME} persona throughout
 
     **TOOL INTEGRATION EXAMPLES:**
     - Poor: "根據我的搜索，水的沸點是攝氏100度。"
@@ -636,7 +641,8 @@ async def get_llm_response(
     persona_details: str | None,
     user_profile: str | None = None,         # 新增參數
     related_memories: list | None = None,           # 新增參數
-    bot_knowledge: list | None = None               # 新增參數
+    bot_knowledge: list | None = None,               # 新增參數
+    ui_context: dict | None = None                   # UI上下文數據（bubble_snapshot等）
 ) -> dict:
     """
     Gets a response from the LLM, handling the tool-calling loop and using persona info.
@@ -739,7 +745,7 @@ async def get_llm_response(
                 tool_tasks = []
                 for tool_call in tool_calls:
                     tool_tasks.append(asyncio.create_task(
-                        _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools, f"{request_id}_attempt{attempt_count}"), # Pass attempt info to log
+                        _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools, f"{request_id}_attempt{attempt_count}", ui_context), # Pass UI context
                         name=f"tool_{tool_call.function.name}"
                     ))
 
@@ -853,7 +859,7 @@ async def get_llm_response(
 
 
 # --- Helper function _execute_single_tool_call ---
-async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools, request_id=None) -> dict:
+async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools, request_id=None, ui_context=None) -> dict:
     """
     Helper function to execute one tool call and return the formatted result message.
     Includes argument type correction for web_search.
@@ -898,6 +904,24 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
         else: print(f"Error: Source server for tool '{function_name}' not found"); result_content = {"error": f"Source server not found for tool '{function_name}'"}
 
         if target_session:
+            # 特殊處理：為 remove_user_position 工具注入 UI 上下文數據
+            if function_name == 'remove_user_position' and ui_context:
+                print(f"LLM Tool Call: Injecting UI context for {function_name}")
+                
+                # 將 UI 上下文數據注入到全域變數中，供 MCP 工具讀取
+                import __main__
+                if 'bubble_snapshot' in ui_context:
+                    __main__.bubble_snapshot = ui_context['bubble_snapshot']
+                    print(f"LLM Tool Call: Injected bubble_snapshot to main globals (type: {type(__main__.bubble_snapshot)})")
+                
+                if 'bubble_region' in ui_context:
+                    __main__.bubble_region = ui_context['bubble_region']
+                    print(f"LLM Tool Call: Injected bubble_region to main globals: {__main__.bubble_region}")
+                    
+                if 'search_area' in ui_context:
+                    __main__.search_area = ui_context['search_area']
+                    print(f"LLM Tool Call: Injected search_area to main globals: {__main__.search_area}")
+            
             result_content = await mcp_client.call_mcp_tool(session=target_session, tool_name=function_name, arguments=function_args) # Use corrected args
             if isinstance(result_content, dict) and 'error' in result_content: 
                 print(f"Tool '{function_name}' call returned error: {result_content['error']}")

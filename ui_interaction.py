@@ -18,6 +18,7 @@ import queue
 from typing import List, Tuple, Optional, Dict, Any
 import threading # Import threading for Lock if needed, or just use a simple flag
 import math # Added for distance calculation in dual method
+import datetime # Added for MCP result timestamps
 import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
 from simple_bubble_dedup import SimpleBubbleDeduplication
@@ -27,18 +28,18 @@ import json # Already imported, but good to note for RobustMessageDeduplication
 
 # 替換現有的 MessageDeduplication 類
 class RobustMessageDeduplication:
-    def __init__(self, storage_file="persistent_dedup.json", expiry_seconds=3600):
+    def __init__(self, storage_file="wolf_chat_dedup.json", max_messages=None):
         self.storage_file = storage_file
-        self.expiry_seconds = expiry_seconds
-        self.processed_messages = {}
+        # 從config獲取DEDUPLICATION_WINDOW_SIZE，如果不存在則使用預設值4
+        if max_messages is None:
+            max_messages = getattr(config, 'DEDUPLICATION_WINDOW_SIZE', 4)
+        self.max_messages = max_messages  # 最大記錄數量（滾動視窗）
+        self.processed_messages = collections.OrderedDict()  # 使用OrderedDict保持順序
         self.last_save_time = 0
         self.save_interval = 10  # 每10秒保存一次
         
         # 啟動時加載持久化數據
         self._load_from_storage()
-        
-        # 清理過期記錄
-        self._cleanup_expired()
         
         print(f"RobustDeduplication initialized with {len(self.processed_messages)} existing records")
     
@@ -48,11 +49,22 @@ class RobustMessageDeduplication:
             if os.path.exists(self.storage_file):
                 with open(self.storage_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self.processed_messages = data.get('messages', {})
+                    messages_data = data.get('messages', {})
+                    
+                    # 轉換為OrderedDict並限制數量
+                    self.processed_messages = collections.OrderedDict()
+                    loaded_count = 0
+                    # 加載最近的記錄（假設JSON中的順序就是時間順序）
+                    for key, timestamp in messages_data.items():
+                        if loaded_count >= self.max_messages:
+                            break
+                        self.processed_messages[key] = timestamp
+                        loaded_count += 1
+                    
                     print(f"Loaded {len(self.processed_messages)} dedup records from storage")
         except Exception as e:
             print(f"Warning: Could not load dedup storage: {e}")
-            self.processed_messages = {}
+            self.processed_messages = collections.OrderedDict()
     
     def _save_to_storage(self, force=False):
         """保存去重記錄到持久化文件"""
@@ -61,39 +73,23 @@ class RobustMessageDeduplication:
             return
         
         try:
-            # 只保存未過期的記錄
-            valid_records = {}
-            for key, timestamp in self.processed_messages.items():
-                if current_time - timestamp < self.expiry_seconds:
-                    valid_records[key] = timestamp
+            # 將OrderedDict轉換為普通dict以供JSON保存
+            messages_dict = dict(self.processed_messages)
             
             data = {
-                'messages': valid_records,
+                'messages': messages_dict,
                 'last_updated': current_time
             }
             
             with open(self.storage_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
             
-            self.processed_messages = valid_records
             self.last_save_time = current_time
+            print(f"Saved {len(messages_dict)} dedup records to storage")
             
         except Exception as e:
             print(f"Error saving dedup storage: {e}")
     
-    def _cleanup_expired(self):
-        """清理過期記錄"""
-        current_time = time.time()
-        before_count = len(self.processed_messages)
-        
-        self.processed_messages = {
-            key: timestamp for key, timestamp in self.processed_messages.items()
-            if current_time - timestamp < self.expiry_seconds
-        }
-        
-        after_count = len(self.processed_messages)
-        if before_count > after_count:
-            print(f"Cleaned up {before_count - after_count} expired dedup records")
     
     def _create_message_key(self, sender, content):
         """創建標準化的消息鍵"""
@@ -103,48 +99,41 @@ class RobustMessageDeduplication:
         return f"{clean_sender}:{clean_content}"
     
     def is_duplicate(self, sender, content):
-        """強化的重複檢查"""
+        """滾動視窗的重複檢查（無過期機制）"""
         if not sender or not content:
             print("Deduplication: Missing sender or content, treating as new")
             return False
         
         current_time = time.time()
         
-        # 定期清理（每5分鐘）
-        if hasattr(self, '_last_cleanup'):
-            if current_time - self._last_cleanup > 300:
-                self._cleanup_expired()
-                self._last_cleanup = current_time
-        else:
-            self._last_cleanup = current_time
-        
         # 創建消息鍵
         message_key = self._create_message_key(sender, content)
         
         # 精確匹配檢查
         if message_key in self.processed_messages:
-            age = current_time - self.processed_messages[message_key]
-            if age < self.expiry_seconds:
-                print(f"DUPLICATE EXACT: {sender} - {content[:40]}... (age: {age:.1f}s)")
-                return True
-            else:
-                # 過期了，移除
-                del self.processed_messages[message_key]
+            print(f"DUPLICATE EXACT: {sender} - {content[:40]}...")
+            # 更新時間戳（移動到最新位置）
+            del self.processed_messages[message_key]
+            self.processed_messages[message_key] = current_time
+            return True
         
-        # 相似性檢查（更嚴格）
+        # 相似性檢查
         clean_content = ' '.join(content.strip().split())
         for existing_key, timestamp in list(self.processed_messages.items()):
-            age = current_time - timestamp
-            if age >= self.expiry_seconds:
-                continue
-                
             try:
                 stored_sender, stored_content = existing_key.split(":", 1)
                 if sender.lower().strip() == stored_sender:
                     # 計算相似度
                     similarity = difflib.SequenceMatcher(None, clean_content, stored_content).ratio()
-                    if similarity >= 0.95:  # 95%相似度
-                        print(f"DUPLICATE SIMILAR: {sender} - {content[:40]}... (similarity: {similarity:.3f}, age: {age:.1f}s)")
+                    if similarity >= 0.98:  # 98%相似度
+                        print(f"DUPLICATE SIMILAR: {sender} - {content[:40]}... (similarity: {similarity:.3f})")
+                        # 更新為新的消息（覆蓋相似的舊消息）
+                        del self.processed_messages[existing_key]
+                        self.processed_messages[message_key] = current_time
+                        # 維持滾動視窗大小
+                        while len(self.processed_messages) > self.max_messages:
+                            self.processed_messages.popitem(last=False)  # 移除最舊的
+                        self._save_to_storage()
                         return True
             except ValueError:
                 continue
@@ -153,7 +142,11 @@ class RobustMessageDeduplication:
         self.processed_messages[message_key] = current_time
         print(f"NEW MESSAGE RECORDED: {sender} - {content[:40]}...")
         
-        # 異步保存（不阻塞主流程）
+        # 維持滾動視窗大小
+        while len(self.processed_messages) > self.max_messages:
+            self.processed_messages.popitem(last=False)  # 移除最舊的
+        
+        # 保存到文件
         self._save_to_storage()
         
         return False
@@ -167,13 +160,12 @@ class RobustMessageDeduplication:
     def get_stats(self):
         """獲取統計信息"""
         current_time = time.time()
-        active_count = sum(1 for timestamp in self.processed_messages.values() 
-                          if current_time - timestamp < self.expiry_seconds)
         
         return {
             'total_records': len(self.processed_messages),
-            'active_records': active_count,
-            'oldest_record_age': min([current_time - t for t in self.processed_messages.values()]) if self.processed_messages else 0
+            'active_records': len(self.processed_messages),  # 滾動視窗中的都是活躍記錄
+            'oldest_record_age': min([current_time - t for t in self.processed_messages.values()]) if self.processed_messages else 0,
+            'max_messages': self.max_messages
         }
 
 # 診斷工具：狀態重置檢測器
@@ -380,14 +372,17 @@ CHAT_INPUT_CENTER_Y = 1280
 SCREENSHOT_REGION = (70, 50, 800, 1365) # Updated region
 CONFIDENCE_THRESHOLD = 0.9 # Increased threshold for corner matching
 STATE_CONFIDENCE_THRESHOLD = 0.9
-AVATAR_OFFSET_X = -45 # Original offset, used for non-reply interactions like position removal
+AVATAR_OFFSET_X = -50 # Original offset, used for non-reply interactions like position removal
+AVATAR_OFFSET_Y = 15  # Vertical offset for non-reply interactions, as requested
 # AVATAR_OFFSET_X_RELOCATED = -50 # Replaced by specific reply offsets
 AVATAR_OFFSET_X_REPLY = -45 # Horizontal offset for avatar click after re-location (for reply context)
 AVATAR_OFFSET_Y_REPLY = 10  # Vertical offset for avatar click after re-location (for reply context)
+AVATAR_EXTENSION_PX = 120  # Extended pixels to the left for avatar inclusion in screenshots
 BUBBLE_RELOCATE_CONFIDENCE = 0.8 # Reduced confidence for finding the bubble snapshot (was 0.9)
 BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6 # Lower confidence for fallback attempts
 BBOX_SIMILARITY_TOLERANCE = 10
 RECENT_TEXT_HISTORY_MAXLEN = 5 # This state likely belongs in the coordinator
+DEDUPLICATION_WINDOW_SIZE = 4 # 統一控制圖片去重和文字去重的滾動視窗大小
 
 # --- New Constants for Dual Method ---
 CLAHE_CLIP_LIMIT = 2.0  # CLAHE enhancement parameter
@@ -396,6 +391,95 @@ MATCH_DISTANCE_THRESHOLD = 10  # Threshold for considering detections as overlap
 DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.85 # Confidence threshold for individual methods in dual mode
 DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD = 0.85 # Threshold for accepting single method result directly
 DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD = 0.8 # Threshold for accepting single method result in fallback
+
+# --- Helper Functions for Extended Screenshot ---
+def capture_extended_bubble_screenshot(bubble_region_tuple, extension_left=AVATAR_EXTENSION_PX):
+    """擴展泡泡截圖範圍，向左擴展指定像素以包含頭像"""
+    x, y, w, h = bubble_region_tuple
+    extended_region = (max(0, x - extension_left), y, w + extension_left, h)
+    return pyautogui.screenshot(region=extended_region), extension_left
+
+def compensate_coordinates_for_extended_screenshot(bubble_box, extension_px=AVATAR_EXTENSION_PX):
+    """將擴展截圖中的座標轉換為螢幕絕對座標"""
+    if bubble_box is None:
+        return None
+    return (bubble_box.left + extension_px, bubble_box.top, bubble_box.width, bubble_box.height)
+
+# Global DPI scale cache to avoid repeated detection
+_cached_dpi_scale = None
+
+def get_windows_dpi_scale():
+    """獲取Windows DPI縮放因子，處理125%等UI显示縮放（帶緩存）"""
+    global _cached_dpi_scale
+    
+    if _cached_dpi_scale is not None:
+        return _cached_dpi_scale
+        
+    try:
+        import ctypes
+        from ctypes import wintypes
+        
+        # 讓程序感知DPI（只設定一次）
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        
+        # 獲取螢幕DPI
+        dc = user32.GetDC(0)
+        gdi32 = ctypes.windll.gdi32
+        dpi = gdi32.GetDeviceCaps(dc, 88)  # LOGPIXELSX
+        user32.ReleaseDC(0, dc)
+        
+        # 標準DPI是96，計算縮放因子
+        scale_factor = dpi / 96.0
+        _cached_dpi_scale = scale_factor
+        print(f"Windows DPI detected: {dpi}, Scale factor: {scale_factor:.2f} ({scale_factor*100:.0f}%)")
+        return scale_factor
+    except Exception as e:
+        print(f"Warning: Could not detect DPI scaling, assuming 100%: {e}")
+        _cached_dpi_scale = 1.0
+        return 1.0
+
+def calculate_safe_click_region():
+    """計算安全點擊區域，考慮DPI縮放並基於config中的遊戲視窗設定，內縮5px作為安全區域"""
+    # 獲取DPI縮放因子
+    scale_factor = get_windows_dpi_scale()
+    
+    # 從 config 讀取遊戲視窗設定（100%基準）
+    window_x = config.GAME_WINDOW_X
+    window_y = config.GAME_WINDOW_Y 
+    window_width = config.GAME_WINDOW_WIDTH
+    window_height = config.GAME_WINDOW_HEIGHT
+    
+    # 檢查是否需要DPI調整（預設啟用）
+    apply_dpi_scaling = getattr(config, 'APPLY_DPI_SCALING', True)
+    
+    if apply_dpi_scaling and scale_factor != 1.0:
+        # 應用DPI縮放調整（config是按100%記錄）
+        actual_x = int(window_x * scale_factor)
+        actual_y = int(window_y * scale_factor) 
+        actual_width = int(window_width * scale_factor)
+        actual_height = int(window_height * scale_factor)
+        safe_margin = int(5 * scale_factor)
+    else:
+        # 不應用DPI調整或縮放為100%
+        actual_x = window_x
+        actual_y = window_y
+        actual_width = window_width
+        actual_height = window_height
+        safe_margin = 5
+    
+    # 計算安全區域
+    safe_x_min = actual_x + safe_margin
+    safe_y_min = actual_y + safe_margin
+    safe_x_max = actual_x + actual_width - safe_margin
+    safe_y_max = actual_y + actual_height - safe_margin
+    
+    return (safe_x_min, safe_y_min, safe_x_max, safe_y_max)
+
+def is_click_position_safe(x: int, y: int) -> bool:
+    """檢查點擊位置是否在安全區域內"""
+    safe_x_min, safe_y_min, safe_x_max, safe_y_max = calculate_safe_click_region()
+    return safe_x_min <= x <= safe_x_max and safe_y_min <= y <= safe_y_max
 
 # --- Helper Function (Module Level) ---
 def are_bboxes_similar(bbox1: Optional[Tuple[int, int, int, int]],
@@ -466,6 +550,16 @@ class DetectionModule:
             if not self.bubble_colors:
                  print("Warning: Color detection enabled, but failed to load any color configurations. Color detection might not work.")
 
+        # 經濟模式相關變數
+        self.eco_mode_enabled = False
+        self.no_new_bubbles_count = 0  # 連續無新泡泡的循環次數
+        self.eco_mode_threshold = 2    # 觸發經濟模式的閾值
+        self.eco_mode_interval = 1.5   # 經濟模式的檢測間隔（秒）
+        self.eco_mode_region = (90, 550, 610, 200)  # 固定監控區域 (x, y, width, height)
+        self.last_eco_screenshot = None  # 上次經濟模式截圖的numpy array
+        self.eco_mode_start_time = None  # 經濟模式開始時間
+        self.eco_mode_wakeup_interval = 300  # 5分鐘強制喚醒間隔（秒）
+        
         print(f"DetectionModule initialized. Color Detection: {'Enabled' if self.use_color_detection else 'Disabled'}. Dual Keyword Method: {'Enabled' if self.use_dual_method else 'Disabled'}")
 
     def _apply_clahe(self, image):
@@ -593,7 +687,7 @@ class DetectionModule:
         regular_tl_keys = ['corner_tl', 'corner_tl_type2', 'corner_tl_type3', 'corner_tl_type4'] # Added type4
         regular_br_keys = ['corner_br', 'corner_br_type2', 'corner_br_type3', 'corner_br_type4'] # Added type4
 
-        bubble_detection_region = (150, 330, 600, 880) # Define the specific region for bubbles
+        bubble_detection_region = (200, 330, 680, 1200) # Define the specific region for bubbles
         print(f"DEBUG: Using specific region for bubble corner detection: {bubble_detection_region}")
 
         all_regular_tl_boxes = []
@@ -691,7 +785,7 @@ class DetectionModule:
         all_bubbles_info = []
 
         # Define the specific region for bubble detection (same as template matching)
-        bubble_detection_region = (150, 330, 600, 880)
+        bubble_detection_region = (200, 270, 680, 1200)
         print(f"Using bubble color detection region: {bubble_detection_region}")
 
         try:
@@ -1381,6 +1475,61 @@ class DetectionModule:
         return self.verify_detection_result(
             lambda r: self.find_keyword_dual_method(r), region
         )
+    
+    def eco_mode_check_region_change(self) -> bool:
+        """
+        經濟模式：檢測固定區域是否有變化
+        使用腳本原有的cv2和numpy方法
+        返回True表示檢測到變化，應該退出經濟模式
+        包含5分鐘強制喚醒機制
+        """
+        try:
+            # 檢查5分鐘強制喚醒機制
+            if self.eco_mode_start_time is not None:
+                elapsed_time = time.time() - self.eco_mode_start_time
+                if elapsed_time >= self.eco_mode_wakeup_interval:
+                    print(f"經濟模式：已運行{elapsed_time:.1f}秒，觸發5分鐘強制喚醒機制")
+                    return True
+            
+            # 只在聊天室狀態下執行
+            if not self._find_template('chat_room', confidence=self.state_confidence):
+                print("經濟模式：不在聊天室狀態，跳過檢測")
+                return False
+            
+            # 截取固定區域並轉換為numpy array
+            current_screenshot = pyautogui.screenshot(region=self.eco_mode_region)
+            current_img = np.array(current_screenshot)
+            current_img = cv2.cvtColor(current_img, cv2.COLOR_RGB2BGR)
+            
+            # 轉換為灰度圖像以提高比較效率
+            current_gray = cv2.cvtColor(current_img, cv2.COLOR_BGR2GRAY)
+            
+            if self.last_eco_screenshot is None:
+                self.last_eco_screenshot = current_gray
+                print("經濟模式：初始化基準截圖")
+                return False
+            
+            # 計算結構相似性指數(SSIM)或直接使用像素差異
+            # 使用簡單的像素差異比較（與腳本風格一致）
+            diff = cv2.absdiff(self.last_eco_screenshot, current_gray)
+            non_zero_count = cv2.countNonZero(diff)
+            total_pixels = diff.shape[0] * diff.shape[1]
+            change_percentage = (non_zero_count / total_pixels) * 100
+            
+            # 設定變化閾值（可調整）
+            change_threshold = 2.0  # 2%的像素變化
+            
+            if change_percentage > change_threshold:
+                print(f"經濟模式：檢測到顯著變化 {change_percentage:.2f}%，退出經濟模式")
+                self.last_eco_screenshot = current_gray  # 更新基準
+                return True
+            
+            print(f"經濟模式：無顯著變化 {change_percentage:.2f}%，繼續監控")
+            return False
+            
+        except Exception as e:
+            print(f"經濟模式檢測錯誤: {e}")
+            return False
 
     def calculate_avatar_coords(self, bubble_tl_coords: Tuple[int, int], offset_x: int = AVATAR_OFFSET_X) -> Tuple[int, int]:
         """
@@ -1424,14 +1573,31 @@ class InteractionModule:
         print("InteractionModule initialized.")
 
     def click_at(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1, duration: float = 0.1):
-        """Safely click at specific coordinates."""
+        """Safely click at specific coordinates with safety boundary check."""
+        # 安全區域檢查
+        if not is_click_position_safe(x, y):
+            safe_x_min, safe_y_min, safe_x_max, safe_y_max = calculate_safe_click_region()
+            scale_factor = get_windows_dpi_scale()
+            scale_factor = get_windows_dpi_scale()
+            print(f"\n⚠️  SAFETY VIOLATION: Click position ({x}, {y}) is outside safe game window boundary!")
+            print(f"Safe area: ({safe_x_min}, {safe_y_min}) to ({safe_x_max}, {safe_y_max})")
+            print(f"Config window (100%): ({config.GAME_WINDOW_X}, {config.GAME_WINDOW_Y}) size ({config.GAME_WINDOW_WIDTH}x{config.GAME_WINDOW_HEIGHT})")
+            print(f"DPI scale factor: {scale_factor:.2f} ({scale_factor*100:.0f}%)")
+            print(f"DPI scaling: {'ENABLED' if getattr(config, 'APPLY_DPI_SCALING', True) else 'DISABLED'}")
+            print(f"Click operation BLOCKED for safety.")
+            return False  # 禁止點擊並返回false
+        
         try:
-            print(f"Moving to and clicking at: ({x}, {y}), button: {button}, clicks: {clicks}")
+            scale_factor = get_windows_dpi_scale()
+            scaling_info = f" [DPI {scale_factor:.2f}]" if scale_factor != 1.0 else ""
+            print(f"Moving to and clicking at: ({x}, {y}) [SAFE]{scaling_info}, button: {button}, clicks: {clicks}")
             pyautogui.moveTo(x, y, duration=duration)
             pyautogui.click(button=button, clicks=clicks, interval=interval)
             time.sleep(0.1)
+            return True  # 成功點擊
         except Exception as e:
             print(f"Error clicking at coordinates ({x}, {y}): {e}")
+            return False  # 點擊失敗
 
     def press_key(self, key: str, presses: int = 1, interval: float = 0.1):
         """Press a specific key."""
@@ -1677,12 +1843,20 @@ def remove_user_position(detector: DetectionModule,
                          interactor: InteractionModule,
                          trigger_bubble_region: Tuple[int, int, int, int], # Original region, might be outdated
                          bubble_snapshot: Any, # PIL Image object for re-location
-                         search_area: Optional[Tuple[int, int, int, int]]) -> bool: # Area to search snapshot in
+                         search_area: Optional[Tuple[int, int, int, int]]) -> dict: # Area to search snapshot in
     """
     Performs the sequence of UI actions to remove a user's position based on the triggering chat bubble.
     Includes re-location using the provided snapshot before proceeding.
-    Returns True if successful, False otherwise.
+    Returns dict with status, error_type, and message.
     """
+    
+    def _return_result(status: str, error_type: str = None, message: str = "") -> dict:
+        """Helper function to return consistent result format"""
+        return {
+            "status": status,
+            "error_type": error_type,
+            "message": message
+        }
     print(f"\n--- Starting Position Removal Process (Initial Trigger Region: {trigger_bubble_region}) ---")
 
     # --- Re-locate Bubble First ---
@@ -1697,21 +1871,21 @@ def remove_user_position(detector: DetectionModule,
                 
                 if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
                     print(f"Warning: Invalid bubble region {bubble_region_tuple} for taking new snapshot.")
-                    return False
+                    return _return_result("failed", "ui_operation_failed", "Invalid bubble region for snapshot creation")
                 
                 print(f"Taking new screenshot of region: {bubble_region_tuple}")
-                bubble_snapshot = pyautogui.screenshot(region=bubble_region_tuple)
+                bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
                 if bubble_snapshot:
-                    print("Successfully created new bubble snapshot.")
+                    print(f"Successfully created extended bubble snapshot with {extension_used}px left extension.")
                 else:
                     print("Failed to create new bubble snapshot.")
-                    return False
+                    return _return_result("failed", "ui_operation_failed", "Failed to create bubble snapshot")
             else:
                 print("Invalid trigger_bubble_region format, cannot create snapshot.")
-                return False
+                return _return_result("failed", "ui_operation_failed", "Invalid trigger bubble region format")
         except Exception as e:
             print(f"Error creating new bubble snapshot: {e}")
-            return False
+            return _return_result("failed", "ui_operation_failed", f"Exception creating bubble snapshot: {str(e)}")
     if search_area is None:
         print("Warning: Search area for snapshot is missing. Creating a default search area.")
         # Create a default search area centered around the original trigger region
@@ -1740,9 +1914,18 @@ def remove_user_position(detector: DetectionModule,
     # First attempt with standard confidence
     print(f"First attempt with confidence {BUBBLE_RELOCATE_CONFIDENCE}...")
     try:
-        new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+        temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                 region=region_to_search,
                                                 confidence=BUBBLE_RELOCATE_CONFIDENCE)
+        if temp_bubble_box:
+            compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+            if compensated_coords:
+                new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+            else:
+                new_bubble_box = None
+        else:
+            print(f"DETECTION FAILED: confidence={BUBBLE_RELOCATE_CONFIDENCE}, region={region_to_search}, image_size={bubble_snapshot.size if bubble_snapshot else 'None'}")
+            new_bubble_box = None
     except Exception as e:
         print(f"Exception during initial bubble location attempt: {e}")
 
@@ -1751,9 +1934,18 @@ def remove_user_position(detector: DetectionModule,
         print(f"First attempt failed. Trying with lower confidence {BUBBLE_RELOCATE_FALLBACK_CONFIDENCE}...")
         try:
             # Try with a lower confidence threshold
-            new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                     region=region_to_search,
                                                     confidence=BUBBLE_RELOCATE_FALLBACK_CONFIDENCE)
+            if temp_bubble_box:
+                compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                if compensated_coords:
+                    new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                else:
+                    new_bubble_box = None
+            else:
+                print(f"FALLBACK DETECTION FAILED: confidence={BUBBLE_RELOCATE_FALLBACK_CONFIDENCE}, region={region_to_search}")
+                new_bubble_box = None
         except Exception as e:
             print(f"Exception during fallback bubble location attempt: {e}")
 
@@ -1762,9 +1954,18 @@ def remove_user_position(detector: DetectionModule,
         print("Second attempt failed. Trying with even lower confidence 0.4...")
         try:
             # Last resort with very low confidence
-            new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                    region=region_to_search,
                                                    confidence=0.4)
+            if temp_bubble_box:
+                compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                if compensated_coords:
+                    new_bubble_box = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                else:
+                    new_bubble_box = None
+            else:
+                print(f"LAST RESORT DETECTION FAILED: confidence=0.4, region={region_to_search}")
+                new_bubble_box = None
         except Exception as e:
             print(f"Exception during last resort bubble location attempt: {e}")
 
@@ -1826,12 +2027,19 @@ def remove_user_position(detector: DetectionModule,
             print("Created fallback bubble box from original coordinates.")
         else:
             print("Error: No original trigger region available for fallback. Aborting position removal.")
-            return False
+            return _return_result("failed", "ui_operation_failed", "No original trigger region available for fallback")
 
-    # Use the NEW coordinates for all subsequent calculations
-    bubble_x, bubble_y = new_bubble_box.left, new_bubble_box.top
+    # Use compensated coordinates for screen clicks, but original coordinates for template search
+    # Store both compensated (for clicks) and original (for template search) coordinates
+    compensated_x, compensated_y = new_bubble_box.left, new_bubble_box.top
     bubble_w, bubble_h = new_bubble_box.width, new_bubble_box.height
-    print(f"Successfully re-located bubble at: ({bubble_x}, {bubble_y}, {bubble_w}, {bubble_h})")
+    
+    # For position detection, we need the original bubble coordinates (subtract extension offset)
+    bubble_x = compensated_x - AVATAR_EXTENSION_PX  # Remove the 120px extension for search region
+    bubble_y = compensated_y  # Y coordinate is not affected by left extension
+    
+    print(f"Successfully re-located bubble - Compensated: ({compensated_x}, {compensated_y}), Search base: ({bubble_x}, {bubble_y})")
+    print(f"Using search base coordinates for position detection, compensated coordinates for avatar clicks")
     # --- End Re-location ---
 
 
@@ -1847,7 +2055,7 @@ def remove_user_position(detector: DetectionModule,
     # Ensure region has positive width and height
     if search_region_width <= 0 or search_region_height <= 0:
         print(f"Error: Invalid search region calculated for position icons: width={search_region_width}, height={search_region_height}")
-        return False
+        return _return_result("failed", "ui_operation_failed", "Invalid search region calculated for position icons")
         
     search_region = (search_region_x_start, search_region_y_start, search_region_width, search_region_height)
     print(f"Searching for position icons in region: {search_region}")
@@ -1866,7 +2074,7 @@ def remove_user_position(detector: DetectionModule,
 
     if not found_positions:
         print("Error: No position icons found near the trigger bubble.")
-        return False
+        return _return_result("failed", "no_position_found", "User does not have any position assigned")
 
     # Find the closest one to the bubble's top-center
     bubble_top_center_x = bubble_x + bubble_w // 2
@@ -1877,11 +2085,11 @@ def remove_user_position(detector: DetectionModule,
     target_position_name = closest_position['name']
     print(f"Found pending position: |{target_position_name}| at {closest_position['coords']}")
 
-    # 2. Click user avatar (offset from *re-located* bubble top-left)
-    # --- MODIFIED: Use specific offsets for remove_position command as requested ---
-    avatar_click_x = bubble_x + AVATAR_OFFSET_X_REPLY # Use -45 offset
-    avatar_click_y = bubble_y + AVATAR_OFFSET_Y_REPLY # Use +10 offset
-    print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X_REPLY}, {AVATAR_OFFSET_Y_REPLY}) from re-located bubble top-left ({bubble_x}, {bubble_y})")
+    # 2. Click user avatar (offset from *compensated* bubble coordinates for accurate clicking)
+    # --- MODIFIED: Use compensated coordinates for avatar clicks ---
+    avatar_click_x = compensated_x + AVATAR_OFFSET_X # Use non-reply offset for position removal
+    avatar_click_y = compensated_y + AVATAR_OFFSET_Y # Use non-reply offset for position removal
+    print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X}, {AVATAR_OFFSET_Y}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
     # --- END MODIFICATION ---
     interactor.click_at(avatar_click_x, avatar_click_y)
     time.sleep(0.15) # Wait for profile page
@@ -1890,14 +2098,14 @@ def remove_user_position(detector: DetectionModule,
     if not detector._find_template('profile_page', confidence=detector.state_confidence):
         print("Error: Failed to verify Profile Page after clicking avatar.")
         perform_state_cleanup(detector, interactor) # Attempt cleanup
-        return False
+        return _return_result("failed", "ui_operation_failed", "Failed to verify Profile Page after clicking avatar")
     print("Profile page verified.")
 
     capitol_button_locs = detector._find_template('capitol_button', confidence=0.8)
     if not capitol_button_locs:
         print("Error: Capitol button (#11) not found on profile page.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", "Capitol button not found on profile page")
     interactor.click_at(capitol_button_locs[0][0], capitol_button_locs[0][1])
     print("Clicked Capitol button.")
     time.sleep(0.15) # Wait for capitol page
@@ -1906,7 +2114,7 @@ def remove_user_position(detector: DetectionModule,
     if not detector._find_template('president_title', confidence=detector.state_confidence):
         print("Error: Failed to verify Capitol Page (President Title not found).")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", "Failed to verify Capitol Page - President Title not found")
     print("Capitol page verified.")
 
     # 5. Find and Click Corresponding Position Button
@@ -1918,13 +2126,13 @@ def remove_user_position(detector: DetectionModule,
     if not target_button_key:
         print(f"Error: Internal error - unknown position name '{target_position_name}'")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", f"Internal error - unknown position name: {target_position_name}")
 
     pos_button_locs = detector._find_template(target_button_key, confidence=0.8)
     if not pos_button_locs:
         print(f"Error: Position button for '{target_position_name}' not found on Capitol page.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", f"Position button for '{target_position_name}' not found on Capitol page")
     interactor.click_at(pos_button_locs[0][0], pos_button_locs[0][1])
     print(f"Clicked '{target_position_name}' position button.")
     time.sleep(0.15) # Wait for position page
@@ -1938,12 +2146,12 @@ def remove_user_position(detector: DetectionModule,
     if not target_page_key:
          print(f"Error: Internal error - unknown position name '{target_position_name}' for page verification")
          perform_state_cleanup(detector, interactor)
-         return False
+         return _return_result("failed", "ui_operation_failed", f"Internal error - unknown position name for page verification: {target_position_name}")
 
     if not detector._find_template(target_page_key, confidence=detector.state_confidence):
         print(f"Error: Failed to verify correct position page for '{target_position_name}'.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", f"Failed to verify correct position page for '{target_position_name}'")
     print(f"Verified '{target_position_name}' position page.")
 
     # 7. Find and Click Dismiss Button
@@ -1951,7 +2159,7 @@ def remove_user_position(detector: DetectionModule,
     if not dismiss_locs:
         print("Error: Dismiss button not found on position page.")
         perform_state_cleanup(detector, interactor)
-        return False
+        return _return_result("failed", "ui_operation_failed", "Dismiss button not found on position page")
     interactor.click_at(dismiss_locs[0][0], dismiss_locs[0][1])
     print("Clicked Dismiss button.")
     time.sleep(0.1) # Wait for confirmation
@@ -1961,7 +2169,7 @@ def remove_user_position(detector: DetectionModule,
     if not confirm_locs:
         print("Error: Confirm button not found after clicking dismiss.")
         # Don't cleanup here, might be stuck in confirmation state
-        return False # Indicate failure, but let main loop decide next step
+        return _return_result("failed", "ui_operation_failed", "Confirm button not found after clicking dismiss")
     interactor.click_at(confirm_locs[0][0], confirm_locs[0][1])
     print("Clicked Confirm button. Position should be dismissed.")
     time.sleep(0.05) # Wait for action to complete (Reduced from 0.1)
@@ -1991,10 +2199,10 @@ def remove_user_position(detector: DetectionModule,
 
     if cleanup_success:
         print("--- Position Removal Process Completed Successfully ---")
-        return True
+        return _return_result("success", None, "Position removal completed successfully")
     else:
-        print("--- Position Removal Process Completed, but failed to confirm return to chat room ---")
-        return False # Technically removed, but UI state uncertain
+        print("--- Position Removal Process Completed Successfully (automatic navigation recovery will handle chat return) ---")
+        return _return_result("success", None, "Position removal completed successfully")
 
 
 # ==============================================================================
@@ -2052,8 +2260,8 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     # --- 初始化氣泡圖像去重系統（新增） ---
     bubble_deduplicator = SimpleBubbleDeduplication(
         storage_file="simple_bubble_dedup.json",
-        max_bubbles=4,    # 保留最近5個氣泡
-        threshold=7,      # 哈希差異閾值（值越小越嚴格）
+        max_bubbles=DEDUPLICATION_WINDOW_SIZE,  # 使用統一的滾動視窗大小
+        threshold=8,      # 哈希差異閾值（值越小越嚴格）
         hash_size=16      # 哈希大小
     )
     # --- 初始化氣泡圖像去重系統結束 ---
@@ -2130,6 +2338,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     
     while True:
         loop_counter += 1
+        found_new_bubble_this_cycle = False  # 追蹤本循環是否有新泡泡被處理
         
         # 每100次循環檢查一次對象狀態
         if loop_counter % 100 == 0:
@@ -2158,19 +2367,148 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     print(f"UI Thread: Processing command to send reply: '{text_to_send[:50]}...'")
                     interactor.send_chat_message(text_to_send)
 
-                elif action == 'remove_position':
-                    # region = command_data.get('trigger_bubble_region') # This is the old region, keep for reference?
+                elif action == 'remove_position_with_feedback':
+                    # Check position removal lock first (DISABLED)
+                    # if main.position_removal_used:
+                    #     print(f"UI Thread: Position removal already used in this conversation, blocking request")
+                    #     result = {
+                    #         "status": "blocked",
+                    #         "message": "Position removal function has already been used in this conversation. Only one usage per conversation is allowed.",
+                    #         "user_name": command_data.get('user_context', 'Unknown User'),
+                    #         "execution_time": datetime.datetime.now().isoformat(),
+                    #         "request_id": command_data.get('request_id')
+                    #     }
+                    #     if command_data.get('mcp_request', False):
+                    #         main.position_result_queue.put(result)
+                    #     continue
+                    
+                    # Set the lock before processing (DISABLED)
+                    # main.position_removal_used = True
+                    # print(f"UI Thread: Position removal lock activated for this conversation")
+                    
+                    # 新增：帶結果回傳的職位移除（用於MCP tool）
                     snapshot = command_data.get('bubble_snapshot')
                     area = command_data.get('search_area')
-                    # Pass all necessary data to the function, including the original region if needed for context
-                    # but the function should primarily use the snapshot for re-location.
+                    original_region = command_data.get('trigger_bubble_region')
+                    user_context = command_data.get('user_context', '')
+                    is_mcp_request = command_data.get('mcp_request', False)
+                    request_id = command_data.get('request_id')  # 新增：獲取request_id
+                    
+                    print(f"UI Thread: Processing remove_position_with_feedback (MCP: {is_mcp_request}, Request ID: {request_id})")
+                    print(f"UI Thread: User context: {user_context}")
+                    
+                    if snapshot:
+                        print(f"UI Thread: Snapshot available, attempting position removal...")
+                        removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+                        
+                        # Process detailed result information
+                        if removal_result["status"] == "success":
+                            result = {
+                                "status": "success",
+                                "message": "Position removal completed successfully",
+                                "position_name": "Unknown Position",  # Can be improved with UI recognition in future
+                                "user_name": user_context if user_context else "Unknown User",
+                                "execution_time": datetime.datetime.now().isoformat(),
+                                "request_id": request_id
+                            }
+                            print(f"UI Thread: Position removal successful: {result}")
+                        else:
+                            # Handle different failure types
+                            error_type = removal_result.get("error_type", "unknown")
+                            base_message = removal_result.get("message", "Unknown error occurred")
+                            
+                            # Reset lock for certain failure types that allow retry (DISABLED)
+                            # if error_type in ["ui_operation_failed", "unknown"]:
+                            #     main.position_removal_used = False
+                            #     print(f"UI Thread: Position removal lock reset due to technical failure ({error_type})")
+                            
+                            if error_type == "no_position_found":
+                                user_message = "Target user does not have any position assigned"
+                            elif error_type == "ui_operation_failed":
+                                user_message = f"UI operation failed: {base_message}"
+                            else:
+                                user_message = f"Operation failed: {base_message}"
+                            
+                            result = {
+                                "status": "failed",
+                                "error_type": error_type,
+                                "message": user_message,
+                                "user_name": user_context if user_context else "Unknown User", 
+                                "execution_time": datetime.datetime.now().isoformat(),
+                                "request_id": request_id
+                            }
+                            print(f"UI Thread: Position removal failed ({error_type}): {result}")
+                    else:
+                        # Reset lock for missing snapshot (technical issue) (DISABLED)
+                        # main.position_removal_used = False
+                        # print(f"UI Thread: Position removal lock reset due to missing snapshot data")
+                        
+                        result = {
+                            "status": "error",
+                            "message": "Missing essential UI positioning data (bubble snapshot)",
+                            "user_name": user_context if user_context else "Unknown User",
+                            "execution_time": datetime.datetime.now().isoformat(),
+                            "request_id": request_id
+                        }
+                        print(f"UI Thread: Missing snapshot data: {result}")
+                    
+                    # 改進：優先使用文件系統回傳結果（MCP通訊）
+                    if is_mcp_request and request_id:
+                        try:
+                            # 直接寫入結果文件
+                            with open("position_result.json", 'w', encoding='utf-8') as f:
+                                json.dump(result, f, ensure_ascii=False, indent=2)
+                            print(f"UI Thread: Result written to file for MCP request {request_id}")
+                        except Exception as file_error:
+                            print(f"UI Thread: Error writing result file: {file_error}")
+                            # 備用：嘗試使用舊的queue方式
+                            try:
+                                import main
+                                main.position_result_queue.put(result)
+                                print("UI Thread: Fallback - Result sent via queue")
+                            except Exception as queue_error:
+                                print(f"UI Thread: Both file and queue methods failed: {queue_error}")
+                    else:
+                        # 非MCP請求或無request_id，使用舊方式
+                        try:
+                            import main
+                            main.position_result_queue.put(result)
+                            print("UI Thread: Result sent back via legacy queue method")
+                        except Exception as e:
+                            print(f"UI Thread: Error with legacy queue method: {e}")
+
+                elif action == 'remove_position':
+                    # Check position removal lock first (DISABLED)
+                    # if main.position_removal_used:
+                    #     print(f"UI Thread: Position removal already used in this conversation, blocking legacy request")
+                    #     continue
+                    
+                    # Set the lock before processing (DISABLED)
+                    # main.position_removal_used = True
+                    # print(f"UI Thread: Position removal lock activated for this conversation (legacy)")
+                    
+                    # Legacy branch maintained (backward compatibility)
+                    snapshot = command_data.get('bubble_snapshot')
+                    area = command_data.get('search_area')
                     original_region = command_data.get('trigger_bubble_region')
                     if snapshot: # Check for snapshot presence
-                        print(f"UI Thread: Processing command to remove position (Snapshot provided: {'Yes' if snapshot else 'No'})")
-                        success = remove_user_position(detector, interactor, original_region, snapshot, area)
-                        print(f"UI Thread: Position removal attempt finished. Success: {success}")
+                        print(f"UI Thread: Processing legacy remove_position command (Snapshot provided: {'Yes' if snapshot else 'No'})")
+                        removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+                        success = removal_result["status"] == "success"
+                        
+                        # Reset lock for technical failures in legacy mode (DISABLED)
+                        # if not success:
+                        #     error_type = removal_result.get("error_type", "unknown")
+                        #     if error_type in ["ui_operation_failed", "unknown"]:
+                        #         main.position_removal_used = False
+                        #         print(f"UI Thread: Position removal lock reset due to technical failure in legacy mode ({error_type})")
+                        
+                        print(f"UI Thread: Legacy position removal attempt finished. Success: {success}, Type: {removal_result.get('error_type', 'N/A')}")
                     else:
-                        print("UI Thread: Received remove_position command without necessary snapshot data.")
+                        # Reset lock for missing snapshot (technical issue) (DISABLED)
+                        # main.position_removal_used = False
+                        # print(f"UI Thread: Position removal lock reset due to missing snapshot data (legacy)")
+                        print("UI Thread: Received legacy remove_position command without necessary snapshot data.")
 
 
                 elif action == 'pause':
@@ -2207,6 +2545,10 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     recent_texts.clear()
                     deduplicator.clear_all() # Simultaneously clear deduplication records
                     
+                    # Reset position removal lock (DISABLED)
+                    # main.position_removal_used = False
+                    # print("UI Thread: Position removal lock reset.")
+                    
                     # --- 新增：清理氣泡去重記錄 ---
                     if 'bubble_deduplicator' in locals():
                         bubble_deduplicator.clear_all()
@@ -2223,6 +2565,12 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     # --- 新增：清理氣泡去重記錄 ---
                     if 'bubble_deduplicator' in locals():
                         bubble_deduplicator.clear_all()
+                    
+                    # --- 重置經濟模式狀態 ---
+                    detector.eco_mode_enabled = False
+                    detector.eco_mode_start_time = None  # 重置經濟模式開始時間
+                    detector.no_new_bubbles_count = 0
+                    detector.last_eco_screenshot = None
                     # --- 清理氣泡去重記錄結束 ---
                     
                     print("UI Thread: recent_texts, last_processed_bubble_info, and deduplicator records reset.")
@@ -2328,6 +2676,21 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
              time.sleep(1)
 
 
+        # --- 經濟模式檢查 ---
+        if detector.eco_mode_enabled:
+            # 在經濟模式下，檢查固定區域是否有變化
+            if detector.eco_mode_check_region_change():
+                # 檢測到變化，退出經濟模式
+                detector.eco_mode_enabled = False
+                detector.eco_mode_start_time = None  # 重置經濟模式開始時間
+                detector.no_new_bubbles_count = 0
+                detector.last_eco_screenshot = None
+                print("退出經濟模式，恢復正常泡泡檢測")
+            else:
+                # 無變化，繼續經濟模式
+                time.sleep(detector.eco_mode_interval)
+                continue
+
         # --- Then Perform UI Monitoring (Enhanced Bubble Detection) ---
         # print("[DEBUG] UI Loop: Starting enhanced bubble detection...") # DEBUG REMOVED
         try:
@@ -2335,12 +2698,26 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
             all_bubbles_data = detector.enhanced_bubble_detection() # Returns list of dicts with verification
             if not all_bubbles_data:
                 # print("[DEBUG] UI Loop: No bubbles detected.") # DEBUG REMOVED
+                # --- 經濟模式邏輯：無泡泡情況 ---
+                detector.no_new_bubbles_count += 1
+                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
+                    detector.eco_mode_enabled = True
+                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
+                    detector.no_new_bubbles_count = 0
+                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
                 time.sleep(2); continue
 
             # Filter out bot bubbles
             other_bubbles_data = [b_info for b_info in all_bubbles_data if not b_info['is_bot']]
             if not other_bubbles_data:
                 # print("[DEBUG] UI Loop: No non-bot bubbles detected.") # DEBUG REMOVED
+                # --- 經濟模式邏輯：只有bot泡泡情況 ---
+                detector.no_new_bubbles_count += 1
+                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
+                    detector.eco_mode_enabled = True
+                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
+                    detector.no_new_bubbles_count = 0
+                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡（只有bot泡泡），進入經濟模式")
                 time.sleep(0.2); continue
 
             # print(f"[DEBUG] UI Loop: Found {len(other_bubbles_data)} non-bot bubbles. Sorting...") # DEBUG REMOVED
@@ -2354,6 +2731,49 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                 target_bbox = target_bubble_info['bbox']
                 # Ensure bubble_region uses standard ints
                 bubble_region = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
+
+                # --- 流程開始：截圖與第一層視覺去重 ---
+                try:
+                    # 確保 bubble_region_tuple 使用最新的 bbox 尺寸
+                    bubble_region_tuple = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
+                    if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
+                        print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping this bubble.")
+                        continue
+
+                    # 1. 截取包含頭像的擴展快照
+                    extended_bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
+                    if extended_bubble_snapshot is None:
+                        print("Warning: Failed to capture extended bubble snapshot. Skipping this bubble.")
+                        continue
+
+                    # 2. 【第一層防護】執行視覺去重檢查
+                    #    is_duplicate 方法會對包含頭像的圖片進行哈希計算，從而區分不同用戶
+                    #    新版本：只檢查不立即添加，返回確認數據供後續使用
+                    is_visual_duplicate, bubble_confirmation_data = bubble_deduplicator.is_duplicate(extended_bubble_snapshot, bubble_region_tuple)
+                    if is_visual_duplicate:
+                        print("--- VISUAL DUPLICATE DETECTED (L1). Skipping. ---")
+                        continue  # 如果視覺重複，直接跳過，成本極低
+
+                    # 3. 將 `bubble_snapshot` 變數指向擴展快照，供後續所有重新定位邏輯使用
+                    bubble_snapshot = extended_bubble_snapshot
+                    # 保存L1去重時的正確模板，供頭像點擊使用
+                    l1_bubble_snapshot = extended_bubble_snapshot
+
+                    # --- 保存除錯快照 ---
+                    try:
+                        screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
+                        screenshot_filename = f"debug_relocation_snapshot_{screenshot_index}.png"
+                        screenshot_path = os.path.join(DEBUG_SCREENSHOT_DIR, screenshot_filename)
+                        bubble_snapshot.save(screenshot_path)
+                        screenshot_counter += 1
+                    except Exception as save_err:
+                        print(f"Error saving debug snapshot: {repr(save_err)}")
+
+                except Exception as snapshot_err:
+                     print(f"Error during snapshot/L1 deduplication phase: {repr(snapshot_err)}")
+                     continue
+
+                # --- 視覺去重通過，開始執行高成本操作 ---
 
                 # 3. Enhanced Keyword Detection in Bubble with verification
                 # print(f"[DEBUG] UI Loop: Enhanced keyword detection in region {bubble_region}...") # DEBUG REMOVED
@@ -2409,17 +2829,11 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
                             print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping this bubble.")
                             continue # Skip to next bubble in the loop
-                        bubble_snapshot = pyautogui.screenshot(region=bubble_region_tuple)
+                        bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
                         if bubble_snapshot is None:
-                             print("Warning: Failed to capture bubble snapshot. Skipping this bubble.")
+                             print("Warning: Failed to capture extended bubble snapshot. Skipping this bubble.")
                              continue # Skip to next bubble
 
-                        # --- New: Image deduplication check ---
-                        if bubble_deduplicator.is_duplicate(bubble_snapshot, bubble_region_tuple):
-                            print("Detected duplicate bubble, skipping processing")
-                            perform_state_cleanup(detector, interactor)
-                            continue  # Skip processing this bubble
-                        # --- End of image deduplication check ---
 
                         # --- Save Snapshot for Debugging ---
                         try:
@@ -2443,9 +2857,14 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     if bubble_snapshot:
                         try:
                             # Use standard confidence for this initial critical step
-                            new_bubble_box_for_copy = pyautogui.locateOnScreen(bubble_snapshot,
+                            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
                                                                              region=search_area,
                                                                              confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                            if temp_bubble_box:
+                                compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                                new_bubble_box_for_copy = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                            else:
+                                new_bubble_box_for_copy = None
                         except Exception as e:
                             print(f"Exception during bubble location before copy: {e}")
 
@@ -2491,36 +2910,21 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     # print("[DEBUG] UI Loop: Retrieving sender name...") # DEBUG REMOVED
                     sender_name = None
                     try:
-                        # --- Bubble Re-location Logic ---
-                        print("Attempting to re-locate bubble before getting sender name...")
-                        if bubble_snapshot is None:
-                             print("Error: Bubble snapshot missing for re-location. Skipping this bubble.")
-                             continue
-
-                        # Try locating with decreasing confidence
-                        new_bubble_box = None
-                        confidences_to_try = [BUBBLE_RELOCATE_CONFIDENCE, BUBBLE_RELOCATE_FALLBACK_CONFIDENCE, 0.4]
-                        for conf in confidences_to_try:
-                            print(f"Attempting location with confidence {conf}...")
-                            try:
-                                new_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
-                                                                        region=search_area,
-                                                                        confidence=conf)
-                                if new_bubble_box:
-                                    print(f"Successfully located with confidence {conf}.")
-                                    break # Found it
-                            except Exception as e:
-                                print(f"Exception during location attempt with confidence {conf}: {e}")
-                        # --- End Confidence Loop ---
-
+                        # --- Reuse Text Copy Bubble Box (OPTIMIZATION) ---
+                        print("Reusing bubble box from successful text copy operation...")
+                        # Use the same bubble_box that was successfully used for text copying
+                        # This ensures perfect consistency between text copy and avatar click operations
+                        new_bubble_box = new_bubble_box_for_copy
+                        print(f"Reusing bubble box from text copy: {new_bubble_box}")
+                        
                         if new_bubble_box:
                             new_tl_x, new_tl_y = new_bubble_box.left, new_bubble_box.top
-                            print(f"Successfully re-located bubble snapshot at: ({new_tl_x}, {new_tl_y})")
+                            print(f"Using text-copy bubble position at: ({new_tl_x}, {new_tl_y})")
                             new_avatar_coords = (new_tl_x + AVATAR_OFFSET_X_REPLY, new_tl_y + AVATAR_OFFSET_Y_REPLY)
-                            print(f"Calculated new avatar coordinates for reply context: {new_avatar_coords}")
+                            print(f"Calculated avatar coordinates using text-copy bubble: {new_avatar_coords}")
                             sender_name = interactor.retrieve_sender_name_interaction(
                                 initial_avatar_coords=new_avatar_coords,
-                                bubble_snapshot=bubble_snapshot,
+                                bubble_snapshot=l1_bubble_snapshot,  # 使用L1去重時的正確模板
                                 search_area=search_area
                             )
                         else:
@@ -2533,7 +2937,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                 print(f"Using fallback avatar coordinates from original detection: {fallback_avatar_coords}")
                                 sender_name = interactor.retrieve_sender_name_interaction(
                                     initial_avatar_coords=fallback_avatar_coords,
-                                    bubble_snapshot=bubble_snapshot,
+                                    bubble_snapshot=l1_bubble_snapshot,  # 使用L1去重時的正確模板
                                     search_area=search_area
                                 )
                                 if not sender_name:
@@ -2560,35 +2964,29 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         print("Error: Failed to return to chat screen after getting name. Skipping this bubble.")
                         continue # Skip to next bubble
 
-                    if not sender_name:
-                        print("Error: Could not get sender name for this bubble, skipping.")
-                        continue # Skip to next bubble
-
-                    # --- Deduplication Check ---
-                    # This is the new central point for deduplication and recent_texts logic
-                    if sender_name and bubble_text: # Ensure both are valid before deduplication
-                        if deduplicator.is_duplicate(sender_name, bubble_text):
-                            print(f"UI Thread: Message blocked by robust deduplication: {sender_name} - {bubble_text[:30]}...")
-                            # Cleanup UI state as interaction might have occurred during sender_name retrieval
-                            perform_state_cleanup(detector, interactor)
-                            continue  # Skip this bubble
-
-                        # If not a duplicate by deduplicator, then check recent_texts (original safeguard)
-                        # if bubble_text in recent_texts:
-                        #     print(f"UI Thread: Content '{bubble_text[:30]}...' in recent_texts history, skipping.")
-                        #     perform_state_cleanup(detector, interactor) # Cleanup as we are skipping
-                        #     continue
-
-                        # If not a duplicate by any means, add to recent_texts and proceed
-                        print(">>> New trigger event (passed deduplication) <<<")
-                        # recent_texts.append(bubble_text) # No longer needed with image deduplication
-                    else:
-                        # This case implies sender_name or bubble_text was None/empty,
-                        # which should have been caught by earlier checks.
-                        # If somehow reached, log and skip.
-                        print(f"Warning: sender_name ('{sender_name}') or bubble_text ('{bubble_text[:30]}...') is invalid before deduplication check. Skipping.")
+                    if not sender_name or not bubble_text:
+                        print("Error: Could not get sender name or bubble text, skipping.")
                         perform_state_cleanup(detector, interactor)
                         continue
+
+                    # --- 【第二層防護】執行文字內容去重 ---
+                    if deduplicator.is_duplicate(sender_name, bubble_text):
+                        print(f"--- TEXT DUPLICATE DETECTED (L2). User: {sender_name}, Text: {bubble_text[:30]}... Skipping. ---")
+                        # 因為已經執行了UI互動(獲取名稱)，所以這裡需要清理狀態
+                        perform_state_cleanup(detector, interactor)
+                        continue
+
+                    # --- 所有檢查通過，這是一個全新的有效觸發 ---
+                    print(">>> New trigger event (passed BOTH visual and text deduplication) <<<")
+                    
+                    # --- 【確認階段】將通過兩階段驗證的泡泡添加到視覺去重記錄中 ---
+                    if bubble_confirmation_data:
+                        # 更新發送者信息到確認數據中
+                        bubble_confirmation_data['sender'] = sender_name
+                        # 確認添加到視覺去重記錄
+                        bubble_deduplicator.confirm_add_bubble(bubble_confirmation_data)
+                    else:
+                        print("Warning: No bubble confirmation data available for final confirmation")
 
                     # --- Attempt to activate reply context ---
                     # print("[DEBUG] UI Loop: Attempting to activate reply context...") # DEBUG REMOVED
@@ -2600,7 +2998,12 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                              final_bubble_box_for_reply = None
                         else:
                              print(f"Attempting final re-location for reply context using search_area: {search_area}")
-                             final_bubble_box_for_reply = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                             temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                             if temp_bubble_box:
+                                 compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
+                                 final_bubble_box_for_reply = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
+                             else:
+                                 final_bubble_box_for_reply = None
 
                         if final_bubble_box_for_reply:
                             print(f"Final re-location successful at: {final_bubble_box_for_reply}")
@@ -2664,17 +3067,10 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                             'search_area': search_area
                         }
                         trigger_queue.put(data_to_send)
+                        found_new_bubble_this_cycle = True  # 標記找到新泡泡
                         print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
                         
-                        # --- 新增：更新氣泡去重記錄中的發送者信息 ---
-                        # 注意：我們在前面已經添加了氣泡到去重系統，但當時還沒獲取發送者名稱
-                        # 這裡我們嘗試再次更新發送者信息（如果實現允許的話）
-                        if 'bubble_deduplicator' in locals() and bubble_snapshot and sender_name:
-                            bubble_id = bubble_deduplicator.generate_bubble_id(bubble_region_tuple)
-                            if bubble_id in bubble_deduplicator.recent_bubbles:
-                                bubble_deduplicator.recent_bubbles[bubble_id]['sender'] = sender_name
-                                bubble_deduplicator._save_storage()
-                        # --- 更新發送者信息結束 ---
+                        # --- 發送者信息已在確認階段統一處理，此處不再需要更新 ---
 
                         # --- CRITICAL: Break loop after successfully processing one trigger ---
                         print("--- Single bubble processing complete. Breaking scan cycle. ---")
@@ -2693,6 +3089,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                 'search_area': search_area
                             }
                             trigger_queue.put(minimal_data)
+                            found_new_bubble_this_cycle = True  # 標記找到新泡泡（即便是fallback）
                             print("Minimal fallback data placed in Queue after error.")
                         except Exception as min_q_err:
                             print(f"Critical failure: Could not place any data in queue: {min_q_err}")
@@ -2707,6 +3104,18 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
             # If it broke, the sleep still happens here before the next cycle.
             # print("[DEBUG] UI Loop: Finished bubble iteration or broke early. Sleeping...") # DEBUG REMOVED
             time.sleep(1.5) # Polling interval after checking all bubbles or processing one
+            
+            # --- 經濟模式邏輯：在循環結束時檢查是否有新泡泡被處理 ---
+            if not found_new_bubble_this_cycle:
+                detector.no_new_bubbles_count += 1
+                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
+                    detector.eco_mode_enabled = True
+                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
+                    detector.no_new_bubbles_count = 0
+                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
+            else:
+                # 有新泡泡被處理，重置計數
+                detector.no_new_bubbles_count = 0
 
         except KeyboardInterrupt:
             print("\nMonitoring interrupted.")

@@ -93,16 +93,19 @@ class SimpleBubbleDeduplication:
         return f"bubble_{bubble_region[0]}_{bubble_region[1]}_{bubble_region[2]}_{bubble_region[3]}"
         
     def is_duplicate(self, bubble_snapshot, bubble_region, sender_name=""):
-        """Check if bubble is a duplicate"""
+        """
+        檢查泡泡是否重複，但不立即添加到記錄中
+        返回: (is_duplicate: bool, bubble_data_for_confirmation: dict or None)
+        """
         with self.lock:
             if bubble_snapshot is None:
-                return False
+                return True, None  # 無效快照視為重複
                 
             # Calculate hash of current bubble
             current_hash = self.compute_image_hash(bubble_snapshot)
             if current_hash is None:
                 print("Unable to calculate bubble hash, cannot perform deduplication")
-                return False
+                return True, None  # 無法計算哈希視為重複
                 
             # Generate ID for current bubble
             bubble_id = self.generate_bubble_id(bubble_region)
@@ -116,9 +119,32 @@ class SimpleBubbleDeduplication:
                     print(f"Detected duplicate bubble (ID: {stored_id}, Hash difference: {hash_diff})")
                     if sender_name:
                         print(f"Sender: {sender_name}, Recorded sender: {bubble_data.get('sender', 'Unknown')}")
-                    return True
+                    return True, None
             
-            # Not a duplicate, add to recent bubbles list
+            # Not a duplicate, prepare data for later confirmation
+            bubble_data_for_confirmation = {
+                'bubble_id': bubble_id,
+                'hash': current_hash,
+                'sender': sender_name,
+                'bubble_region': bubble_region
+            }
+            
+            return False, bubble_data_for_confirmation
+    
+    def confirm_add_bubble(self, bubble_data_for_confirmation):
+        """
+        確認添加泡泡到記錄中（在第二階段驗證通過後調用）
+        """
+        with self.lock:
+            if bubble_data_for_confirmation is None:
+                print("Warning: No bubble data to confirm")
+                return False
+                
+            bubble_id = bubble_data_for_confirmation['bubble_id']
+            current_hash = bubble_data_for_confirmation['hash']
+            sender_name = bubble_data_for_confirmation['sender']
+            
+            # Add to recent bubbles list
             self.recent_bubbles[bubble_id] = {
                 'hash': current_hash, 
                 'sender': sender_name
@@ -129,7 +155,8 @@ class SimpleBubbleDeduplication:
                 self.recent_bubbles.popitem(last=False)  # Remove first item (oldest)
                 
             self._save_storage()
-            return False
+            print(f"Confirmed and added bubble (ID: {bubble_id}, Sender: {sender_name})")
+            return True
     
     def clear_all(self):
         """Clear all records"""
