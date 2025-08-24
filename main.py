@@ -739,6 +739,7 @@ async def initialize_mcp_connections():
     connection_tasks = [
         asyncio.create_task(connect_and_discover(key, server_config), name=f"connect_{key}")
         for key, server_config in config.MCP_SERVERS.items()
+        if getattr(config, 'MCP_SERVERS_ENABLED', {}).get(key, server_config.get("enabled", True))  # Check both sources for enabled state
     ]
     if connection_tasks:
         results = await asyncio.gather(*connection_tasks, return_exceptions=True)

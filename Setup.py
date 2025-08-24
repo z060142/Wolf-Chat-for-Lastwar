@@ -455,6 +455,18 @@ def load_current_config():
                 import traceback
                 traceback.print_exc()
 
+            # Extract MCP_SERVERS_ENABLED for persistent state
+            try:
+                enabled_section = re.search(r'MCP_SERVERS_ENABLED\s*=\s*{(.+?)}', config_content, re.DOTALL)
+                if enabled_section:
+                    enabled_text = enabled_section.group(1)
+                    enabled_items = re.findall(r'"([^"]+)":\s*(True|False)', enabled_text)
+                    for server_name, enabled_str in enabled_items:
+                        if server_name in config_data["MCP_SERVERS"]:
+                            config_data["MCP_SERVERS"][server_name]["enabled"] = (enabled_str == "True")
+            except Exception as e:
+                print(f"Error parsing MCP_SERVERS_ENABLED section: {e}")
+
             # Extract memory settings
             enable_preload_match = re.search(r'ENABLE_PRELOAD_PROFILES\s*=\s*(True|False)', config_content)
             if enable_preload_match:
@@ -664,6 +676,16 @@ def generate_config_file(config_data, env_data):
             
             f.write("    },\n")
         
+        f.write("}\n\n")
+        
+        # Write MCP server enabled states for persistence
+        f.write("# =============================================================================\n")
+        f.write("# MCP Server Enabled States (for Setup.py persistence)\n")
+        f.write("# =============================================================================\n")
+        f.write("MCP_SERVERS_ENABLED = {\n")
+        for server_name, server_config in config_data["MCP_SERVERS"].items():
+            enabled = server_config.get("enabled", True)
+            f.write(f"    \"{server_name}\": {enabled},\n")
         f.write("}\n\n")
         
         # Write remaining configuration sections
