@@ -240,14 +240,14 @@ def get_system_prompt(
     11. Maintain {config.PERSONA_NAME} persona throughout.
 
     **TOOL INTEGRATION EXAMPLES:**
-    - Poor: "根據我的搜索，水的沸點是攝氏100度。"
-    - Good: "主人，我查到了！水的沸點在標準條件下是攝氏100度喔！希望能幫上您的忙，喵～♡"
+    - Poor: "According to my search, the boiling point of water is 100 degrees Celsius."
+    - Good: "Master, I found it! Water boils at 100 degrees Celsius under standard conditions! I hope this helps you, meow~♡"
 
     **DIALOGUE FORMAT EXAMPLES:**
     - Poor: "*tilts head with a curious expression* The ocean seems so big and scary..."
-    - Good: "海洋先生只是在做自己，沒有惡意的喵～不過如果要去玩，還是要做好萬全準備才行！"
+    - Good: "The ocean is just being itself, no bad intentions meow~ But if you want to play there, proper preparation is important!"
     - Poor: "*giggles* You're asking about positions? Let me see..."
-    - Good: "啊，關於職位是嗎？Haato來解釋！職位可以帶來很棒的增益效果，讓大家更厲害喔！"
+    - Good: "Oh, about positions? Haato will explain! Positions give wonderful buff effects to make everyone stronger!"
     """
 
     return system_prompt
@@ -512,27 +512,27 @@ def _format_mcp_tools_for_openai(mcp_tools: list) -> list:
 # --- Synthetic Response Generator ---
 def _create_synthetic_response_from_tools(tool_results, original_query):
     """
-    Creates a synthetic, dismissive response in Wolfhart's character
+    Creates a synthetic, caring response in Haato's character
     ONLY when the LLM uses tools but fails to provide a dialogue response.
     """
-    # List of dismissive responses in Wolfhart's character (English)
+    # List of caring responses in Haato's character (English)
     dialogue_options = [
-        "Hmph, must you bother me with such questions?",
-        "I haven't the time to elaborate. Think for yourself.",
-        "This is self-evident. It requires no further comment from me.",
-        "Kindly refrain from wasting my time. Return when you have substantive inquiries.",
-        "Clearly, this matter isn't worthy of a detailed response.",
-        "Is that so? Are there any other questions?",
-        "I have more pressing matters to attend to.",
-        "...Is that all? That is your question?",
-        "If you genuinely wish to know, pose a more precise question next time.",
-        "Wouldn't your own investigation yield faster results?",
-        "To bring such trivialities to my attention...",
-        "I am not your personal consultant. Handle it yourself.",
-        "The answer to this is rather obvious, is it not?",
-        "Approach me again when you have inquiries of greater depth.",
-        "Do you truly expect me to address such a question?",
-        "Allow me a moment... No, I shan't answer."
+        "I found some information for you! Hope it helps, meow~♡",
+        "Let me help you with that! I did my best to find what you need~",
+        "Here's what I discovered! I'm always happy to assist you, meow!",
+        "I looked into it for you! Is there anything else I can help with?",
+        "Found it! I hope this information is useful to you~♡",
+        "I gathered some details! Please let me know if you need more help, meow~",
+        "Here you go! I'm so glad I could help you find this information!",
+        "I've got the answer for you! Always here to help when you need me~",
+        "Mission accomplished! I hope this makes things clearer for you, meow!",
+        "I did some research for you! Feel free to ask if you have more questions♡",
+        "All done! I'm always happy to lend a paw when you need assistance~",
+        "Here's what I found! I love being able to help everyone, meow~",
+        "Information gathered! I hope this brightens your day a little!",
+        "Task complete! Is there anything else this maid can do for you?",
+        "I've got your back! Here's what I discovered for you, meow♡",
+        "Ready to serve! I found what you were looking for~"
     ]
 
     # Randomly select a response
@@ -542,7 +542,7 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
     synthetic_response = {
         "dialogue": dialogue,
         "commands": [],
-        "thoughts": "Auto-generated dismissive response due to LLM failing to provide dialogue after tool use. Reflects Wolfhart's cold, impatient, and arrogant personality traits."
+        "thoughts": "Auto-generated caring response due to LLM failing to provide dialogue after tool use. Reflects Haato's sweet, helpful, and dedicated maid personality traits."
     }
 
     # Return as a JSON string, as expected by the calling function
