@@ -152,7 +152,6 @@ def get_system_prompt(
 
 === TOOL USAGE UNIFIED GUIDELINES ===
 - Use `tool_calls` mechanism for ALL tool operations including position removal.
-- DEPRECATED: Commands array method for position removal is legacy (commented out)
 - After using a tool, ALWAYS provide a sweet and helpful dialogue that incorporates the results naturally.
 - Express tool results through your personality - never sound like you're reading data dumps.
 
@@ -214,7 +213,6 @@ def get_system_prompt(
     ```json
     {{
         "dialogue": "Your spoken response (REQUIRED - conversational words only, meow~!)",
-        "commands": [{{"type": "remove_position"}}],  (This is an execution mark. When you receive a position remove request, output this content in the structure as a record.)
         "thoughts": "Internal analysis (optional, e.g., 'The user seems confused, I should be extra gentle!')"
     }}
     ```
@@ -235,7 +233,7 @@ def get_system_prompt(
     6. **ONLY ALLOWED in dialogue**: Pure conversational speech as if talking face-to-face, full of warmth!
     7. Focus ONLY on the latest `<CURRENT_MESSAGE>` - use context for background only.
     8. **POSITION REMOVAL**: Use `remove_user_position()` MCP tool, NOT commands array.
-    9. Use `tool_calls` for all operations - commands array is legacy/deprecated.
+    9. Use `tool_calls` for all operations.
     10. Always provide a sweet and caring dialogue after using a tool.
     11. Maintain {config.PERSONA_NAME} persona throughout.
 
@@ -704,13 +702,62 @@ async def get_llm_response(
                           f"Model: {config.LLM_MODEL}\nMessages: {json.dumps(messages, ensure_ascii=False, indent=2)}")
 
                 cycle_start_time = time.time()
-                response = await client.chat.completions.create(
-                    model=config.LLM_MODEL,
-                    messages=messages,
-                    tools=openai_formatted_tools if openai_formatted_tools else None,
-                    tool_choice="auto" if openai_formatted_tools else None,
-                    # Consider adding a timeout here if desired, e.g., timeout=30.0
-                )
+
+                # Build API call parameters
+                api_params = {
+                    "model": config.LLM_MODEL,
+                    "messages": messages,
+                    "tools": openai_formatted_tools if openai_formatted_tools else None,
+                    "tool_choice": "auto" if openai_formatted_tools else None,
+                }
+
+                # Handle extra API parameters from config
+                if hasattr(config, 'EXTRA_API_PARAMS') and config.EXTRA_API_PARAMS:
+                    print(f"Processing extra API parameters: {config.EXTRA_API_PARAMS}")
+
+                    # Separate SDK-supported params from provider-specific params
+                    sdk_supported_params = {
+                        'temperature', 'top_p', 'max_tokens', 'max_completion_tokens',
+                        'presence_penalty', 'frequency_penalty', 'logit_bias',
+                        'logprobs', 'top_logprobs', 'n', 'stop', 'stream',
+                        'stream_options', 'seed', 'user', 'response_format',
+                        'service_tier', 'parallel_tool_calls'
+                    }
+
+                    extra_body_params = {}
+
+                    for key, value in config.EXTRA_API_PARAMS.items():
+                        if key in sdk_supported_params:
+                            # These can be passed directly as kwargs
+                            api_params[key] = value
+                            print(f"  Added SDK-supported parameter: {key} = {value}")
+                        else:
+                            # Provider-specific params go into extra_body
+                            extra_body_params[key] = value
+                            print(f"  Added provider-specific parameter to extra_body: {key} = {value}")
+
+                    # If there are provider-specific params, add them to extra_body
+                    if extra_body_params:
+                        api_params['extra_body'] = extra_body_params
+                        print(f"  Using extra_body for provider-specific params: {extra_body_params}")
+
+                # Try to make the API call
+                try:
+                    response = await client.chat.completions.create(**api_params)
+                except TypeError as type_err:
+                    # If we still get a TypeError, log it and retry without extra params
+                    error_msg = str(type_err)
+                    print(f"Warning: Error with API parameters: {error_msg}")
+                    print("Retrying API call with base parameters only...")
+                    # Rebuild params without extra parameters
+                    api_params = {
+                        "model": config.LLM_MODEL,
+                        "messages": messages,
+                        "tools": openai_formatted_tools if openai_formatted_tools else None,
+                        "tool_choice": "auto" if openai_formatted_tools else None,
+                    }
+                    response = await client.chat.completions.create(**api_params)
+
                 cycle_duration = time.time() - cycle_start_time
 
                 response_message = response.choices[0].message

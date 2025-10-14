@@ -297,6 +297,7 @@ def load_current_config():
     config_data = {
         "OPENAI_API_BASE_URL": "",
         "LLM_MODEL": "deepseek/deepseek-chat-v3-0324",
+        "EXTRA_API_PARAMS": {},
         "MCP_SERVERS": {
             "exa": {
                 "enabled": True,
@@ -341,7 +342,28 @@ def load_current_config():
             model_match = re.search(r'LLM_MODEL\s*=\s*["\'](.+?)["\']', config_content)
             if model_match:
                 config_data["LLM_MODEL"] = model_match.group(1)
-                
+
+            # Extract EXTRA_API_PARAMS (supports nested objects)
+            try:
+                # Find the line with EXTRA_API_PARAMS
+                extra_params_match = re.search(r'EXTRA_API_PARAMS\s*=\s*(.+?)(?=\n\n|\n#|$)', config_content, re.DOTALL)
+                if extra_params_match:
+                    extra_params_str = extra_params_match.group(1).strip()
+                    # Remove trailing comments if any
+                    if '#' in extra_params_str and not extra_params_str.startswith('{'):
+                        extra_params_str = extra_params_str.split('#')[0].strip()
+
+                    # Try to parse as Python literal (handles nested dicts)
+                    try:
+                        import ast
+                        config_data["EXTRA_API_PARAMS"] = ast.literal_eval(extra_params_str)
+                    except (ValueError, SyntaxError):
+                        # Fallback to JSON parsing
+                        config_data["EXTRA_API_PARAMS"] = json.loads(extra_params_str)
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"Warning: Could not parse EXTRA_API_PARAMS: {e}")
+                config_data["EXTRA_API_PARAMS"] = {}
+
             # Extract logging settings
             chat_logging_match = re.search(r'ENABLE_CHAT_LOGGING\s*=\s*(True|False)', config_content)
             if chat_logging_match:
@@ -569,6 +591,16 @@ def generate_config_file(config_data, env_data):
         f.write(f"OPENAI_API_BASE_URL = \"{config_data['OPENAI_API_BASE_URL']}\"\n")
         f.write("OPENAI_API_KEY = os.getenv(\"OPENAI_API_KEY\")\n")
         f.write(f"LLM_MODEL = \"{config_data['LLM_MODEL']}\"\n\n")
+
+        # Write Extra API Parameters
+        f.write("# =============================================================================\n")
+        f.write("# Extra API Parameters (Optional)\n")
+        f.write("# =============================================================================\n")
+        f.write("# Add any extra parameters to pass to the LLM API request\n")
+        f.write("# These will be merged with the base API call parameters\n")
+        f.write("# Example: {\"reasoning\": {\"effort\": \"high\"}, \"temperature\": 0.7}\n")
+        extra_params = config_data.get('EXTRA_API_PARAMS', {})
+        f.write(f"EXTRA_API_PARAMS = {json.dumps(extra_params)}\n\n")
         
         # Write API Keys section
         f.write("# =============================================================================\n")
@@ -1766,9 +1798,38 @@ class WolfChatSetup(tk.Tk):
         """Create the API Settings tab"""
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="API Settings")
-        
-        # Main frame with padding
-        main_frame = ttk.Frame(tab, padding=10)
+
+        # Create canvas and scrollbar for scrolling
+        canvas = tk.Canvas(tab)
+        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Bind mouse wheel to scroll (only when mouse is over the canvas)
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        def _bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind("<Enter>", _bind_mousewheel)
+        canvas.bind("<Leave>", _unbind_mousewheel)
+
+        # Main frame with padding (now inside scrollable_frame)
+        main_frame = ttk.Frame(scrollable_frame, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
@@ -1845,7 +1906,54 @@ class WolfChatSetup(tk.Tk):
         
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
         info_label.pack(padx=10, pady=10, anchor=tk.W)
-    
+
+        # Extra API Parameters
+        extra_params_frame = ttk.LabelFrame(main_frame, text="Extra API Parameters (Advanced)")
+        extra_params_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        extra_params_help = ttk.Label(extra_params_frame,
+                                      text="Enter additional API parameters in JSON format.\n"
+                                           "• Standard params (temperature, top_p, max_tokens, etc.) are passed directly\n"
+                                           "• Provider-specific params (reasoning, etc.) are sent via extra_body\n"
+                                           "Examples: {\"temperature\": 0.7} or {\"reasoning\": {\"effort\": \"high\", \"exclude\": true}}",
+                                      justify=tk.LEFT, wraplength=700)
+        extra_params_help.pack(padx=10, pady=(5, 5), anchor=tk.W)
+
+        # Create text widget with scrollbar for JSON input
+        text_frame = ttk.Frame(extra_params_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.extra_params_text = scrolledtext.ScrolledText(text_frame, height=6, width=80, wrap=tk.WORD)
+        self.extra_params_text.pack(fill=tk.BOTH, expand=True)
+
+        # Validation button
+        validate_frame = ttk.Frame(extra_params_frame)
+        validate_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        validate_btn = ttk.Button(validate_frame, text="Validate JSON", command=self.validate_extra_params)
+        validate_btn.pack(side=tk.LEFT, padx=2)
+
+        self.extra_params_status_var = tk.StringVar(value="")
+        status_label = ttk.Label(validate_frame, textvariable=self.extra_params_status_var, foreground="green")
+        status_label.pack(side=tk.LEFT, padx=10)
+
+    def validate_extra_params(self):
+        """Validate the JSON input for extra API parameters"""
+        content = self.extra_params_text.get("1.0", tk.END).strip()
+
+        if not content:
+            self.extra_params_status_var.set("Empty - will use default settings")
+            return True
+
+        try:
+            json.loads(content)
+            self.extra_params_status_var.set("✓ Valid JSON")
+            return True
+        except json.JSONDecodeError as e:
+            self.extra_params_status_var.set(f"✗ Invalid JSON: {str(e)}")
+            messagebox.showerror("Invalid JSON", f"The extra parameters JSON is invalid:\n\n{str(e)}")
+            return False
+
     def create_mcp_tab(self):
         """Create the MCP Settings tab"""
         tab = ttk.Frame(self.notebook)
@@ -2703,6 +2811,12 @@ class WolfChatSetup(tk.Tk):
             self.api_url_var.set(self.config_data.get("OPENAI_API_BASE_URL", ""))
             self.api_key_var.set(self.env_data.get("OPENAI_API_KEY", ""))
             self.model_var.set(self.config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324"))
+
+            # Extra API Parameters
+            extra_params = self.config_data.get("EXTRA_API_PARAMS", {})
+            self.extra_params_text.delete("1.0", tk.END)
+            if extra_params:
+                self.extra_params_text.insert(tk.END, json.dumps(extra_params, indent=2))
             
             # MCP Servers
             # Exa settings
@@ -3048,7 +3162,21 @@ class WolfChatSetup(tk.Tk):
             # API settings
             self.config_data["OPENAI_API_BASE_URL"] = self.api_url_var.get()
             self.config_data["LLM_MODEL"] = self.model_var.get()
-            
+
+            # Extra API Parameters
+            extra_params_text = self.extra_params_text.get("1.0", tk.END).strip()
+            if extra_params_text:
+                # Validate JSON before saving
+                if not self.validate_extra_params():
+                    return  # Validation failed, don't save
+                try:
+                    self.config_data["EXTRA_API_PARAMS"] = json.loads(extra_params_text)
+                except json.JSONDecodeError:
+                    messagebox.showerror("Error", "Failed to parse extra API parameters JSON")
+                    return
+            else:
+                self.config_data["EXTRA_API_PARAMS"] = {}
+
             # Environment variables
             self.env_data["OPENAI_API_KEY"] = self.api_key_var.get()
             self.env_data["EXA_API_KEY"] = self.exa_key_var.get()
