@@ -2092,7 +2092,7 @@ def remove_user_position(detector: DetectionModule,
     print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X}, {AVATAR_OFFSET_Y}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
     # --- END MODIFICATION ---
     interactor.click_at(avatar_click_x, avatar_click_y)
-    time.sleep(0.15) # Wait for profile page
+    time.sleep(0.2) # Wait for profile page
 
     # 3. Verify Profile Page and Click Capitol Button
     if not detector._find_template('profile_page', confidence=detector.state_confidence):
@@ -2108,7 +2108,7 @@ def remove_user_position(detector: DetectionModule,
         return _return_result("failed", "ui_operation_failed", "Capitol button not found on profile page")
     interactor.click_at(capitol_button_locs[0][0], capitol_button_locs[0][1])
     print("Clicked Capitol button.")
-    time.sleep(0.15) # Wait for capitol page
+    time.sleep(0.2) # Wait for capitol page
 
     # 4. Verify Capitol Page
     if not detector._find_template('president_title', confidence=detector.state_confidence):
@@ -2135,7 +2135,7 @@ def remove_user_position(detector: DetectionModule,
         return _return_result("failed", "ui_operation_failed", f"Position button for '{target_position_name}' not found on Capitol page")
     interactor.click_at(pos_button_locs[0][0], pos_button_locs[0][1])
     print(f"Clicked '{target_position_name}' position button.")
-    time.sleep(0.15) # Wait for position page
+    time.sleep(0.4) # Wait for position page
 
     # 6. Verify Position Page
     position_page_templates = {
@@ -2162,7 +2162,7 @@ def remove_user_position(detector: DetectionModule,
         return _return_result("failed", "ui_operation_failed", "Dismiss button not found on position page")
     interactor.click_at(dismiss_locs[0][0], dismiss_locs[0][1])
     print("Clicked Dismiss button.")
-    time.sleep(0.1) # Wait for confirmation
+    time.sleep(0.4) # Wait for confirmation
 
     # 8. Find and Click Confirm Button
     confirm_locs = detector._find_template('confirm_button', confidence=0.8)

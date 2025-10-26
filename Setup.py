@@ -1470,7 +1470,7 @@ class WolfChatSetup(tk.Tk):
                 logger.error(f"Error terminating/killing own bot process: {e}")
             self.bot_process_instance = None
             bot_process_instance = None
-        
+
         # Fallback: find and kill any python process running the bot script
         if not stopped:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -1492,7 +1492,7 @@ class WolfChatSetup(tk.Tk):
                     break
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
                     continue
-        
+
         if not stopped: # If no Popen instance and no external process found
             logger.info(f"Bot process '{bot_script_name}' not found running.")
             stopped = True
@@ -1500,6 +1500,31 @@ class WolfChatSetup(tk.Tk):
         if self.bot_process_instance: # Clear Popen object if it exists
             self.bot_process_instance = None
             bot_process_instance = None
+
+        # CRITICAL: Clean up orphaned MCP processes after stopping bot
+        logger.info("Running MCP process cleanup utility...")
+        try:
+            cleanup_script = os.path.join(os.path.dirname(__file__), "cleanup_mcp_processes.py")
+            if os.path.exists(cleanup_script):
+                result = subprocess.run(
+                    [sys.executable, cleanup_script, "--quiet"],
+                    timeout=10,
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    logger.info("MCP cleanup completed successfully")
+                else:
+                    logger.warning(f"MCP cleanup returned code {result.returncode}")
+                    if result.stdout:
+                        logger.debug(f"Cleanup output: {result.stdout}")
+            else:
+                logger.warning(f"MCP cleanup script not found at {cleanup_script}")
+        except subprocess.TimeoutExpired:
+            logger.error("MCP cleanup timed out after 10 seconds")
+        except Exception as cleanup_err:
+            logger.error(f"Error running MCP cleanup: {cleanup_err}")
+
         return stopped
 
     def _restart_game_managed(self):

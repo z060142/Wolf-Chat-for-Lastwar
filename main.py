@@ -35,6 +35,8 @@ import chroma_client
 import subprocess # Import subprocess module
 import signal
 import platform
+import atexit
+import psutil  # For robust process management
 # Import position tool server for MCP integration
 import position_tool_server
 import json  # For file communication with MCP server
@@ -55,8 +57,10 @@ else:
 
 # --- Global Variables ---
 active_mcp_sessions: dict[str, ClientSession] = {}
-# Store Popen objects for managed MCP servers
+# Store Popen objects for managed MCP servers (CRITICAL: Now actively used for cleanup)
 mcp_server_processes: dict[str, asyncio.subprocess.Process] = {}
+# Track MCP process PIDs for forced cleanup
+mcp_server_pids: dict[str, int] = {}
 all_discovered_mcp_tools: list[dict] = []
 exit_stack = AsyncExitStack()
 # Stores loaded persona data (as a string for easy injection into prompt)
@@ -248,42 +252,65 @@ def log_chat_interaction(user_name: str, user_message: str, bot_name: str, bot_m
 # --- End Chat Logging Function ---
 
 
-# --- MCP Server Subprocess Termination Logic (Windows) ---
+# --- MCP Server Subprocess Termination Logic (ENHANCED for forced cleanup) ---
 def terminate_all_mcp_servers():
-    """Attempts to terminate all managed MCP server subprocesses."""
-    if not mcp_server_processes:
+    """
+    CRITICAL: Force terminate all MCP server processes and their children.
+    This function is called from multiple cleanup handlers to ensure no orphan processes.
+    """
+    global mcp_server_pids
+
+    if not mcp_server_pids:
+        print("[MCP-CLEANUP] No tracked MCP processes to terminate.")
         return
-    print(f"[INFO] Terminating {len(mcp_server_processes)} managed MCP server subprocess(es)...")
-    for key, proc in list(mcp_server_processes.items()): # Iterate over a copy of items
-        if proc.returncode is None: # Check if process is still running
-            print(f"[INFO] Terminating server '{key}' (PID: {proc.pid})...")
+
+    print(f"[MCP-CLEANUP] Force terminating {len(mcp_server_pids)} MCP server process(es)...")
+
+    for key, pid in list(mcp_server_pids.items()):
+        try:
+            # Use psutil for robust process handling
+            parent_proc = psutil.Process(pid)
+            print(f"[MCP-CLEANUP] Terminating '{key}' (PID: {pid})...")
+
+            # Get all child processes BEFORE terminating parent
             try:
-                if platform.system() == "Windows" and win32api:
-                    # Send CTRL_BREAK_EVENT on Windows if flag was set
-                    # Note: This requires the process was started with CREATE_NEW_PROCESS_GROUP
-                    proc.send_signal(signal.CTRL_BREAK_EVENT)
-                    print(f"[INFO] Sent CTRL_BREAK_EVENT to server '{key}'.")
-                    # Optionally wait with timeout, then kill if needed
-                    # proc.wait(timeout=5) # This is blocking, avoid in async handler?
-                else:
-                    # Use standard terminate for non-Windows or if win32api failed
-                    proc.terminate()
-                    print(f"[INFO] Sent SIGTERM to server '{key}'.")
-            except ProcessLookupError:
-                 print(f"[WARN] Process for server '{key}' (PID: {proc.pid}) not found.")
-            except Exception as e:
-                print(f"[ERROR] Error terminating server '{key}' (PID: {proc.pid}): {e}")
-                # Fallback to kill if terminate fails or isn't applicable
+                children = parent_proc.children(recursive=True)
+                print(f"[MCP-CLEANUP] Found {len(children)} child process(es) for '{key}'")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                children = []
+
+            # Terminate parent first
+            try:
+                parent_proc.terminate()
+                parent_proc.wait(timeout=3)
+                print(f"[MCP-CLEANUP] '{key}' terminated gracefully.")
+            except psutil.TimeoutExpired:
+                print(f"[MCP-CLEANUP] '{key}' did not terminate, killing...")
+                parent_proc.kill()
+                parent_proc.wait(timeout=2)
+                print(f"[MCP-CLEANUP] '{key}' killed.")
+            except psutil.NoSuchProcess:
+                print(f"[MCP-CLEANUP] '{key}' process already gone.")
+
+            # Terminate all children
+            for child in children:
                 try:
-                    if proc.returncode is None:
-                        proc.kill()
-                        print(f"[WARN] Forcefully killed server '{key}' (PID: {proc.pid}).")
-                except Exception as kill_e:
-                    print(f"[ERROR] Error killing server '{key}' (PID: {proc.pid}): {kill_e}")
-        # Remove from dict after attempting termination
-        if key in mcp_server_processes:
-             del mcp_server_processes[key]
-    print("[INFO] Finished attempting MCP server termination.")
+                    if child.is_running():
+                        print(f"[MCP-CLEANUP] Killing child PID: {child.pid}")
+                        child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+        except psutil.NoSuchProcess:
+            print(f"[MCP-CLEANUP] '{key}' (PID: {pid}) not found.")
+        except psutil.AccessDenied:
+            print(f"[MCP-CLEANUP] Access denied for '{key}' (PID: {pid}).")
+        except Exception as e:
+            print(f"[MCP-CLEANUP] Error terminating '{key}' (PID: {pid}): {e}")
+
+    # Clear tracking
+    mcp_server_pids.clear()
+    print("[MCP-CLEANUP] Finished MCP server cleanup.")
 
 def windows_ctrl_handler(ctrl_type):
     """Handles Windows console control events."""
@@ -604,15 +631,6 @@ async def shutdown():
     # Ensure shutdown is requested if called externally (e.g., Ctrl+C)
     if not shutdown_requested:
         print("Shutdown initiated externally (e.g., Ctrl+C).")
-    
-    # Clean up MCP communication files
-    try:
-        for file_path in [COMMAND_FILE, RESULT_FILE, HEARTBEAT_FILE, CHAT_CONTEXT_FILE]:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                print(f"Cleaned up MCP file: {file_path}")
-    except Exception as cleanup_error:
-        print(f"Warning: Error cleaning MCP files: {cleanup_error}")
         shutdown_requested = True # Ensure listener thread stops
 
     print(f"\nInitiating shutdown procedure...")
@@ -642,12 +660,25 @@ async def shutdown():
         print(f"Error closing AsyncExitStack: {e}")
         import traceback
         traceback.print_exc()
-    finally:
-        # Clear global dictionaries after cleanup
-        active_mcp_sessions.clear()
-        all_discovered_mcp_tools.clear()
-        wolfhart_persona_details = None
-        print("Program cleanup completed.")
+
+    # 3. CRITICAL: Force terminate all MCP servers (safety net)
+    print("[SHUTDOWN] Force terminating MCP servers as safety net...")
+    terminate_all_mcp_servers()
+
+    # 4. Clean up MCP communication files
+    try:
+        for file_path in [COMMAND_FILE, RESULT_FILE, HEARTBEAT_FILE, CHAT_CONTEXT_FILE]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Cleaned up MCP file: {file_path}")
+    except Exception as cleanup_error:
+        print(f"Warning: Error cleaning MCP files: {cleanup_error}")
+
+    # Clear global dictionaries after cleanup
+    active_mcp_sessions.clear()
+    all_discovered_mcp_tools.clear()
+    wolfhart_persona_details = None
+    print("Program cleanup completed.")
 
 
 # --- Initialization Functions ---
@@ -655,7 +686,7 @@ async def connect_and_discover(key: str, server_config: dict):
     """
     Connects to a single MCP server, initializes the session, and discovers tools.
     """
-    global all_discovered_mcp_tools, active_mcp_sessions, exit_stack # Remove mcp_server_processes from global list here
+    global all_discovered_mcp_tools, active_mcp_sessions, exit_stack, mcp_server_pids
     print(f"\nProcessing Server: '{key}'")
     command = server_config.get("command")
     args = server_config.get("args", [])
@@ -684,6 +715,29 @@ async def connect_and_discover(key: str, server_config: dict):
             stdio_client(server_params)
         )
         print(f"stdio_client for '{key}' active, provides read/write streams.")
+
+        # --- CRITICAL: Track MCP process PID for forced cleanup ---
+        await asyncio.sleep(0.1)  # Brief delay to ensure process is created
+        try:
+            # Find the newly created process by command line
+            target_cmdline_parts = [command] + args
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+                try:
+                    cmdline = proc.cmdline()
+                    # Match command and first unique arg
+                    if cmdline and len(cmdline) >= len(args) + 1:
+                        if command.lower() in cmdline[0].lower():
+                            # Check if args match
+                            matches_args = any(arg in ' '.join(cmdline) for arg in args if arg)
+                            if matches_args or len(args) == 0:
+                                mcp_server_pids[key] = proc.pid
+                                print(f"[MCP-TRACK] Registered '{key}' server PID: {proc.pid}")
+                                break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, IndexError):
+                    continue
+        except Exception as track_err:
+            print(f"[MCP-TRACK] Warning: Failed to track PID for '{key}': {track_err}")
+        # --- End PID tracking ---
         # --- End stdio_client usage ---
 
         # stdio_client provides the correct stream types for ClientSession
@@ -1233,6 +1287,45 @@ def set_dpi_awareness():
         print(f"Warning: An unexpected error occurred while setting DPI awareness: {e}")
         return False
 
+# --- Multi-Layer Cleanup Handlers ---
+def emergency_cleanup_handler(signum=None, frame=None):
+    """
+    CRITICAL: Emergency cleanup handler for forced termination.
+    Called from multiple sources: atexit, signal handlers, Windows console handler.
+    """
+    print(f"\n[EMERGENCY-CLEANUP] Triggered (signal: {signum})")
+
+    # Force terminate all MCP servers
+    terminate_all_mcp_servers()
+
+    # Clean up MCP communication files
+    try:
+        for file_path in [COMMAND_FILE, RESULT_FILE, HEARTBEAT_FILE, CHAT_CONTEXT_FILE]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+    except Exception as e:
+        print(f"[EMERGENCY-CLEANUP] Error removing files: {e}")
+
+    print("[EMERGENCY-CLEANUP] Completed.")
+
+def setup_cleanup_handlers():
+    """Register cleanup handlers at multiple levels for maximum reliability."""
+
+    # 1. atexit handler (normal Python exit)
+    atexit.register(emergency_cleanup_handler)
+    print("[CLEANUP-INIT] Registered atexit handler")
+
+    # 2. Signal handlers (SIGTERM, SIGINT)
+    try:
+        signal.signal(signal.SIGTERM, emergency_cleanup_handler)
+        signal.signal(signal.SIGINT, emergency_cleanup_handler)
+        print("[CLEANUP-INIT] Registered SIGTERM and SIGINT handlers")
+    except Exception as e:
+        print(f"[CLEANUP-INIT] Warning: Failed to register signal handlers: {e}")
+
+    # 3. Windows console handler (already registered in windows_ctrl_handler)
+    # See lines 309-318 for existing Windows handler setup
+
 # --- Program Entry Point ---
 if __name__ == "__main__":
     print("Program starting...")
@@ -1240,6 +1333,11 @@ if __name__ == "__main__":
     # --- Set DPI Awareness early ---
     set_dpi_awareness()
     # --- End DPI Awareness setting ---
+
+    # --- Setup Multi-Layer Cleanup Handlers ---
+    setup_cleanup_handlers()
+    print("[INIT] Multi-layer cleanup handlers registered")
+    # --- End Cleanup Handlers Setup ---
 
     try:
         # Run the main async function that handles setup and the loop
@@ -1255,4 +1353,6 @@ if __name__ == "__main__":
         # Catch top-level errors during asyncio.run itself
         print(f"Top-level error during asyncio.run execution: {e}")
     finally:
+        # Final safety net - ensure MCP cleanup
+        emergency_cleanup_handler()
         print("Program exited.")
