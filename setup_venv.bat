@@ -100,6 +100,28 @@ if errorlevel 1 (
 
 echo.
 echo ============================================================
+echo Downloading embedding model...
+echo ============================================================
+echo.
+echo This will download the sentence-transformers model for multilingual embeddings...
+echo Model: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+echo.
+
+python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2'); print('Model downloaded successfully!')"
+
+if errorlevel 1 (
+    echo.
+    echo WARNING: Failed to download embedding model
+    echo You may need to download it manually later
+    echo.
+) else (
+    echo.
+    echo Embedding model downloaded successfully!
+    echo.
+)
+
+echo.
+echo ============================================================
 echo Creating launcher scripts...
 echo ============================================================
 echo.

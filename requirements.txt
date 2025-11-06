@@ -52,6 +52,9 @@ keyboard
 # ChromaDB for vector database and semantic search
 chromadb
 
+# Sentence Transformers for embedding models
+sentence_transformers
+
 # ============================================================
 # System Monitoring and Process Management
 # ============================================================
