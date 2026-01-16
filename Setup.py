@@ -233,6 +233,7 @@ def load_remote_config():
         "DEFAULT_BOT_RESTART_INTERVAL_MINUTES": 120,
         "LINK_RESTART_TIMES": True,
         "GAME_PROCESS_NAME": "LastWar.exe", # Default game process name
+        "LAUNCHER_PROCESS_NAME": "LastWarLauncher.exe", # Default launcher process name
         "BOT_SCRIPT_NAME": "main.py" # Default bot script name
     }
     if os.path.exists(REMOTE_CONFIG_PATH):
@@ -318,7 +319,7 @@ def load_current_config():
             "WINDOW_TITLE": "Last War-Survival Game",
             "ENABLE_SCHEDULED_RESTART": True,
             "RESTART_INTERVAL_MINUTES": 60,
-            "GAME_EXECUTABLE_PATH": normalize_path(fr"C:\Users\{CURRENT_USERNAME}\AppData\Local\TheLastWar\Launch.exe"),
+            "GAME_EXECUTABLE_PATH": normalize_path(fr"C:\Users\{CURRENT_USERNAME}\AppData\Local\FunFly\Last War-Survival Game\Game\LastWar.exe"),
             "GAME_WINDOW_X": 50,
             "GAME_WINDOW_Y": 30,
             "GAME_WINDOW_WIDTH": 600,
@@ -2344,7 +2345,7 @@ class WolfChatSetup(tk.Tk):
         path_label = ttk.Label(path_frame, text="Game Executable Path:", width=20)
         path_label.pack(side=tk.LEFT, padx=(0, 5))
         
-        self.game_path_var = tk.StringVar(value=fr"C:\Users\{CURRENT_USERNAME}\AppData\Local\TheLastWar\Launch.exe")
+        self.game_path_var = tk.StringVar(value=fr"C:\Users\{CURRENT_USERNAME}\AppData\Local\FunFly\Last War-Survival Game\Game\LastWar.exe")
         path_entry = ttk.Entry(path_frame, textvariable=self.game_path_var)
         path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         

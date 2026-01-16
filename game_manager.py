@@ -65,9 +65,14 @@ class GameMonitor:
 
         # Read game process name from remote_data, use default if not found
         self.game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
+        # Read launcher process name (for games with separate launcher)
+        self.launcher_process_name = self.remote_data.get("LAUNCHER_PROCESS_NAME", "")
+        # Cooldown period after starting game (seconds)
+        self.start_cooldown = 30
 
         # Internal state
         self.running = False
+        self.last_start_time = None  # Track when game was last started (for cooldown)
         self.next_restart_time = None
         self.monitor_thread = None
         self.stop_event = threading.Event()
@@ -76,7 +81,8 @@ class GameMonitor:
         self.last_focus_failure_count = 0
         self.last_successful_foreground = time.time()
 
-        self.logger.info(f"GameMonitor initialized. Game window: '{self.window_title}', Process: '{self.game_process_name}'")
+        launcher_info = f", Launcher: '{self.launcher_process_name}'" if self.launcher_process_name else ""
+        self.logger.info(f"GameMonitor initialized. Game window: '{self.window_title}', Process: '{self.game_process_name}'{launcher_info}")
         self.logger.info(f"Position: ({self.window_x}, {self.window_y}), Size: {self.window_width}x{self.window_height}")
         self.logger.info(f"Scheduled Restart: {'Enabled' if self.enable_restart else 'Disabled'}, Interval: {self.restart_interval} minutes")
 
@@ -251,15 +257,36 @@ class GameMonitor:
         self.logger.info("Game window monitoring loop finished")
 
     def _is_game_running(self):
-        """Check if game is running"""
+        """Check if game or launcher is running"""
+        # Check cooldown period after game start
+        if self.last_start_time:
+            elapsed = time.time() - self.last_start_time
+            if elapsed < self.start_cooldown:
+                self.logger.debug(f"In startup cooldown period ({elapsed:.1f}s / {self.start_cooldown}s)")
+                return True  # Assume running during cooldown
+
         if not HAS_PSUTIL:
             self.logger.warning("_is_game_running: psutil not available, cannot check process status.")
-            return True # Assume running if psutil is not available to avoid unintended restarts
+            return True  # Assume running if psutil is not available to avoid unintended restarts
+
         try:
-            return any(p.name().lower() == self.game_process_name.lower() for p in psutil.process_iter(['name']))
+            # Build list of process names to check (game + launcher if configured)
+            process_names = [self.game_process_name.lower()]
+            if self.launcher_process_name:
+                process_names.append(self.launcher_process_name.lower())
+
+            # Check if any of the target processes are running
+            for p in psutil.process_iter(['name']):
+                try:
+                    proc_name = p.info['name']
+                    if proc_name and proc_name.lower() in process_names:
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            return False
         except Exception as e:
             self.logger.error(f"Error checking game process: {e}")
-            return False # Assume not running on error
+            return False  # Assume not running on error
 
     def _find_game_window(self):
         """Find the game window with the specified title"""
@@ -528,13 +555,15 @@ class GameMonitor:
         try:
             if sys.platform == "win32":
                 os.startfile(self.game_path)
-                self.logger.info("Called os.startfile to launch game")
+                self.last_start_time = time.time()  # Record start time for cooldown
+                self.logger.info(f"Called os.startfile to launch game (cooldown: {self.start_cooldown}s)")
                 return True
             else:
                 # Use subprocess.Popen for non-Windows platforms
                 # Ensure it runs detached if possible, or handle appropriately
-                subprocess.Popen([self.game_path], start_new_session=True) # Attempt detached start
-                self.logger.info("Called subprocess.Popen to launch game")
+                subprocess.Popen([self.game_path], start_new_session=True)  # Attempt detached start
+                self.last_start_time = time.time()  # Record start time for cooldown
+                self.logger.info(f"Called subprocess.Popen to launch game (cooldown: {self.start_cooldown}s)")
                 return True
         except FileNotFoundError:
             self.logger.error(f"Startup error: Game launcher '{self.game_path}' not found")
@@ -584,9 +613,13 @@ class GameMonitor:
         if remote_data:
             self.remote_data = remote_data
             old_process_name = self.game_process_name
+            old_launcher_name = self.launcher_process_name
             self.game_process_name = self.remote_data.get("GAME_PROCESS_NAME", old_process_name)
+            self.launcher_process_name = self.remote_data.get("LAUNCHER_PROCESS_NAME", old_launcher_name)
             if self.game_process_name != old_process_name:
                 self.logger.info(f"Game process name updated to '{self.game_process_name}'")
+            if self.launcher_process_name != old_launcher_name:
+                self.logger.info(f"Launcher process name updated to '{self.launcher_process_name}'")
 
         self.logger.info("GameMonitor configuration updated")
 
