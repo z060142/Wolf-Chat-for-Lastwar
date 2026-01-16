@@ -1029,8 +1029,10 @@ async def run_main_with_exit_stack():
                 continue
 
             # --- Add user message to history ---
+            # History format: (timestamp, speaker_type, speaker_name, message, tool_info)
+            # tool_info is None for user messages, list of {tool_name, tool_result} for bot messages
             timestamp = datetime.datetime.now() # Get current timestamp
-            conversation_history.append((timestamp, 'user', sender_name, bubble_text))
+            conversation_history.append((timestamp, 'user', sender_name, bubble_text, None))
             print(f"Added user message from {sender_name} to history at {timestamp}.")
             # --- End Add user message ---
 
@@ -1193,9 +1195,11 @@ async def run_main_with_exit_stack():
                 # Only send to game when valid response (via command queue)
                 if bot_dialogue and valid_response:
                     # --- Add bot response to history ---
+                    # History format: (timestamp, speaker_type, speaker_name, message, tool_info)
                     timestamp = datetime.datetime.now() # Get current timestamp
-                    conversation_history.append((timestamp, 'bot', config.PERSONA_NAME, bot_dialogue))
-                    print(f"Added bot response to history at {timestamp}.")
+                    tool_info = bot_response_data.get("tool_info", [])  # Get tool_info from response
+                    conversation_history.append((timestamp, 'bot', config.PERSONA_NAME, bot_dialogue, tool_info))
+                    print(f"Added bot response to history at {timestamp}. Tool info: {len(tool_info)} tool(s) used.")
                     # --- End Add bot response ---
 
                     # --- Log the interaction ---

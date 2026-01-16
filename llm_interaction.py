@@ -554,13 +554,43 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
 
 
 # --- History Formatting Helper ---
-def _build_context_messages(current_sender_name: str, history: list[tuple[datetime, str, str, str]], system_prompt: str) -> list[dict]:
+def _format_tool_info_status(tool_info: list | None) -> str:
     """
-    Builds the message list for the LLM API based on history rules, including timestamps.
+    Format tool_info for display in history context.
+    Returns a short status string like "[Tool: web_search]" or "[No tools used]"
+    """
+    if not tool_info:
+        return "[No tools used]"
+    tool_names = [t.get("tool_name", "unknown") for t in tool_info]
+    return f"[Tools: {', '.join(tool_names)}]"
+
+
+def _format_tool_results_full(tool_info: list | None) -> str:
+    """
+    Format full tool results for recent conversations.
+    Returns detailed tool results (each truncated to 1000 chars).
+    """
+    if not tool_info:
+        return ""
+
+    results = []
+    for i, tool in enumerate(tool_info):
+        tool_name = tool.get("tool_name", "unknown")
+        tool_result = tool.get("tool_result", "")
+        results.append(f"<tool_result index=\"{i+1}\" name=\"{tool_name}\">\n{tool_result}\n</tool_result>")
+
+    return "\n".join(results)
+
+
+def _build_context_messages(current_sender_name: str, history: list[tuple], system_prompt: str) -> list[dict]:
+    """
+    Builds the message list for the LLM API based on history rules, including timestamps and tool info.
 
     Args:
         current_sender_name: The name of the user whose message triggered this interaction.
-        history: List of tuples: (timestamp: datetime, speaker_type: 'user'|'bot', speaker_name: str, message: str)
+        history: List of tuples: (timestamp, speaker_type, speaker_name, message, tool_info)
+                 - tool_info is optional (for backward compatibility with 4-element tuples)
+                 - tool_info is None for user messages, list of {tool_name, tool_result} for bot messages
         system_prompt: The system prompt string.
 
     Returns:
@@ -569,14 +599,24 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
     # Limits
     SAME_SENDER_LIMIT = 5  # Last 5 interactions (user + bot response = 1 interaction)
     OTHER_SENDER_LIMIT = 5 # Last 5 interactions from other users (user + bot response = 1 interaction)
+    FULL_TOOL_RESULTS_LIMIT = 2  # Include full tool results for the 2 most recent interactions
 
     relevant_history = []
     same_sender_interactions = 0
     other_sender_messages = 0
 
+    # Track how many interactions have included full tool results
+    full_tool_results_count = 0
+
     # Iterate history in reverse (newest first)
     for i in range(len(history) - 1, -1, -1):
-        timestamp, speaker_type, speaker_name, message = history[i]
+        # Handle both 4-element and 5-element tuples (backward compatibility)
+        entry = history[i]
+        if len(entry) >= 5:
+            timestamp, speaker_type, speaker_name, message, tool_info = entry[:5]
+        else:
+            timestamp, speaker_type, speaker_name, message = entry[:4]
+            tool_info = None
 
         # Format timestamp
         formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
@@ -592,7 +632,30 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
         role = "assistant" if speaker_type == 'bot' else "user"
         api_message = {"role": role, "content": formatted_content} # Use formatted content
 
-        is_current_sender = (speaker_type == 'user' and speaker_name == current_sender_name) # This check remains for history filtering logic below
+        is_current_sender = (speaker_type == 'user' and speaker_name == current_sender_name)
+
+        # Helper function to format bot response with tool info
+        def format_bot_response(bot_entry_idx):
+            nonlocal full_tool_results_count
+            bot_entry = history[bot_entry_idx]
+            if len(bot_entry) >= 5:
+                bot_timestamp, bot_speaker_type, bot_speaker_name, bot_message, bot_tool_info = bot_entry[:5]
+            else:
+                bot_timestamp, bot_speaker_type, bot_speaker_name, bot_message = bot_entry[:4]
+                bot_tool_info = None
+
+            bot_formatted_timestamp = bot_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            tool_status = _format_tool_info_status(bot_tool_info)
+
+            # For the most recent N interactions (any user), include full tool results
+            if full_tool_results_count < FULL_TOOL_RESULTS_LIMIT and bot_tool_info:
+                tool_results_full = _format_tool_results_full(bot_tool_info)
+                bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name} {tool_status}: {bot_message}\n<previous_tool_results>\n{tool_results_full}\n</previous_tool_results>"
+                full_tool_results_count += 1
+            else:
+                bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name} {tool_status}: {bot_message}"
+
+            return {"role": "assistant", "content": bot_formatted_content}
 
         if is_current_sender:
             # This is the current user's message. Check if the previous message was the bot's response to them.
@@ -600,11 +663,8 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
                 relevant_history.append(api_message) # Append user message with timestamp
                 # Check for preceding bot response
                 if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
-                     # Include the bot's response as part of the interaction pair
-                     bot_timestamp, bot_speaker_type, bot_speaker_name, bot_message = history[i-1]
-                     bot_formatted_timestamp = bot_timestamp.strftime("%Y-%m-%d %H:%M:%S")
-                     bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name}: {bot_message}"
-                     relevant_history.append({"role": "assistant", "content": bot_formatted_content}) # Append bot message with timestamp
+                     relevant_history.append(format_bot_response(i-1))
+
                 same_sender_interactions += 1
         elif speaker_type == 'user': # Message from a different user
             if other_sender_messages < OTHER_SENDER_LIMIT:
@@ -612,11 +672,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
                 relevant_history.append(api_message) # Append other user message with timestamp
                 # Check for preceding bot response to other users too
                 if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
-                     # Include the bot's response to other users as well
-                     bot_timestamp, bot_speaker_type, bot_speaker_name, bot_message = history[i-1]
-                     bot_formatted_timestamp = bot_timestamp.strftime("%Y-%m-%d %H:%M:%S")
-                     bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name}: {bot_message}"
-                     relevant_history.append({"role": "assistant", "content": bot_formatted_content}) # Append bot message with timestamp
+                     relevant_history.append(format_bot_response(i-1))
                 other_sender_messages += 1
         # Bot responses are handled when processing the user message they replied to.
 
@@ -639,7 +695,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple[dateti
 # --- Main Interaction Function ---
 async def get_llm_response(
     current_sender_name: str, # Changed from user_input
-    history: list[tuple[datetime, str, str, str]], # Updated history parameter type hint
+    history: list[tuple], # History tuples: (timestamp, speaker_type, speaker_name, message, tool_info?)
     mcp_sessions: dict[str, ClientSession],
     available_mcp_tools: list[dict],
     persona_details: str | None,
@@ -662,7 +718,7 @@ async def get_llm_response(
     while attempt_count < max_attempts:
         attempt_count += 1
         # --- Reset parsed_response at the beginning of each attempt ---
-        parsed_response = {"dialogue": "", "commands": [], "thoughts": "", "valid_response": False}
+        parsed_response = {"dialogue": "", "commands": [], "thoughts": "", "valid_response": False, "tool_info": []}
         print(f"\n--- Starting LLM Interaction Attempt {attempt_count}/{max_attempts} ---")
         # Debug log the raw history received for this attempt
         debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Received History (Sender: {current_sender_name})", history)
@@ -899,6 +955,21 @@ async def get_llm_response(
         # Check validity for retry logic
         if parsed_response.get("valid_response"):
             print(f"--- Valid response obtained in Attempt {attempt_count}. ---")
+            # --- Add tool_info to parsed_response ---
+            # Build tool_info from all_tool_results for this attempt
+            tool_info_list = []
+            for tool_result in all_tool_results:
+                tool_name = tool_result.get("name", "unknown")
+                tool_content = tool_result.get("content", "")
+                # Truncate content to 1000 chars
+                if len(tool_content) > 1000:
+                    tool_content = tool_content[:1000] + "...[truncated]"
+                tool_info_list.append({
+                    "tool_name": tool_name,
+                    "tool_result": tool_content
+                })
+            parsed_response["tool_info"] = tool_info_list
+            # --- End Add tool_info ---
             break # Exit the outer retry loop on success
         elif attempt_count < max_attempts:
             print(f"--- Invalid response in Attempt {attempt_count}. Retrying... ---")
