@@ -749,9 +749,14 @@ async def connect_and_discover(key: str, server_config: dict):
         # We no longer manually manage the process object here.
         # We rely on stdio_client's context manager (__aexit__) to terminate the process.
 
-        print(f"Initializing Session '{key}'...")
-        await session.initialize()
-        print(f"Session '{key}' initialized successfully.")
+        print(f"Initializing Session '{key}' with 30s timeout...")
+        try:
+            await asyncio.wait_for(session.initialize(), timeout=30)
+            print(f"Session '{key}' initialized successfully.")
+        except asyncio.TimeoutError:
+            print(f"ERROR: Session '{key}' initialization timed out after 30 seconds!")
+            print(f"Skipping this MCP server. Check server startup logs for issues.")
+            return  # Exit this function early to skip this server
 
         active_mcp_sessions[key] = session
 

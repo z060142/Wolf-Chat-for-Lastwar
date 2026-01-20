@@ -1,9 +1,15 @@
-# mcp_client.py (Complete code including ValidationError workaround)
+# mcp_client.py (Complete code including ValidationError workaround + Timeout Protection)
 
 import asyncio
 import json # Import json for parsing error details
 import ast  # Import ast for safely evaluating string literals
 from mcp import ClientSession, types, McpError # Import McpError
+
+# === TIMEOUT CONFIGURATION ===
+# Default timeout values for MCP operations (in seconds)
+MCP_INITIALIZE_TIMEOUT = 30  # Timeout for session.initialize()
+MCP_LIST_TOOLS_TIMEOUT = 30  # Timeout for session.list_tools()
+MCP_CALL_TOOL_TIMEOUT = 120  # Timeout for session.call_tool()
 # Import Pydantic validation error if needed for specific catch
 try:
     # pydantic_core is where ValidationError lives in Pydantic v2+
@@ -32,18 +38,22 @@ except ImportError:
 import config # Import configuration
 
 # --- list_mcp_tools Function ---
-async def list_mcp_tools(session: ClientSession) -> list[dict]:
+async def list_mcp_tools(session: ClientSession, timeout: float = None) -> list[dict]:
     """
-    Lists the available MCP tools for a given session.
+    Lists the available MCP tools for a given session with timeout protection.
     Parses the response structure and converts Tool objects to dictionaries.
 
     Args:
         session: The active MCP ClientSession.
+        timeout: Optional timeout in seconds. Defaults to MCP_LIST_TOOLS_TIMEOUT.
 
     Returns:
         A list of tool definition dictionaries, ready for formatting for LLM.
         Returns an empty list on error or if no tools are found.
     """
+    if timeout is None:
+        timeout = MCP_LIST_TOOLS_TIMEOUT
+
     tool_definition_list = [] # Initialize list for the dictionaries we will return
     try:
         # Check if the session object has the necessary method
@@ -51,8 +61,15 @@ async def list_mcp_tools(session: ClientSession) -> list[dict]:
              print(f"Error: MCP ClientSession object is missing the callable 'list_tools' method. Please check the SDK.")
              return tool_definition_list
 
-        # Call the SDK method to get the response containing tools
-        response = await session.list_tools()
+        # Call the SDK method with timeout protection
+        print(f"Calling session.list_tools() with {timeout}s timeout...")
+        try:
+            response = await asyncio.wait_for(session.list_tools(), timeout=timeout)
+        except asyncio.TimeoutError:
+            print(f"ERROR: session.list_tools() timed out after {timeout} seconds!")
+            print(f"This usually indicates the MCP server is unresponsive or processing large datasets.")
+            print(f"Consider: 1) Increasing timeout in mcp_client.py, 2) Checking MCP server logs, 3) Reducing server data size")
+            return tool_definition_list
         # print(f"DEBUG: Raw list_tools response from session {session}: {response}") # Debug
 
         # Extract the raw list of tools (likely Tool objects)
@@ -140,11 +157,20 @@ def _confirm_execution(tool_name: str, arguments: dict) -> bool:
         return True
 
 # --- call_mcp_tool Function ---
-async def call_mcp_tool(session: ClientSession, tool_name: str, arguments: dict):
+async def call_mcp_tool(session: ClientSession, tool_name: str, arguments: dict, timeout: float = None):
     """
-    Calls a specified MCP tool via the given session.
+    Calls a specified MCP tool via the given session with timeout protection.
     Includes confirmation step and workaround for ValidationError on missing 'content'.
+
+    Args:
+        session: The active MCP ClientSession.
+        tool_name: Name of the tool to call.
+        arguments: Arguments to pass to the tool.
+        timeout: Optional timeout in seconds. Defaults to MCP_CALL_TOOL_TIMEOUT.
     """
+    if timeout is None:
+        timeout = MCP_CALL_TOOL_TIMEOUT
+
     # Call confirmation helper function
     if not _confirm_execution(tool_name, arguments):
         return {"error": "User declined execution", "tool_name": tool_name}
@@ -156,11 +182,17 @@ async def call_mcp_tool(session: ClientSession, tool_name: str, arguments: dict)
              print(error_msg)
              return {"error": error_msg, "tool_name": tool_name}
 
-        print(f"Calling MCP tool '{tool_name}'...")
-        # The actual SDK call that might raise McpError wrapping ValidationError
-        result = await session.call_tool(tool_name, arguments=arguments)
-        print(f"Tool '{tool_name}' execution completed (SDK validation passed).")
-        return result # Return the validated result if successful
+        print(f"Calling MCP tool '{tool_name}' with {timeout}s timeout...")
+        # The actual SDK call with timeout protection
+        try:
+            result = await asyncio.wait_for(session.call_tool(tool_name, arguments=arguments), timeout=timeout)
+            print(f"Tool '{tool_name}' execution completed (SDK validation passed).")
+            return result # Return the validated result if successful
+        except asyncio.TimeoutError:
+            error_msg = f"Tool '{tool_name}' timed out after {timeout} seconds!"
+            print(f"ERROR: {error_msg}")
+            print(f"Consider increasing timeout for this tool or checking server performance.")
+            return {"error": error_msg, "tool_name": tool_name, "timeout": timeout}
 
     except McpError as mcp_err:
         # --- Workaround for ValidationError on missing 'content' ---
