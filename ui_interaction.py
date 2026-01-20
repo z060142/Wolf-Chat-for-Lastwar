@@ -388,7 +388,7 @@ DEDUPLICATION_WINDOW_SIZE = 4 # 統一控制圖片去重和文字去重的滾動
 CLAHE_CLIP_LIMIT = 2.0  # CLAHE enhancement parameter
 CLAHE_TILE_SIZE = (8, 8)  # CLAHE grid size
 MATCH_DISTANCE_THRESHOLD = 10  # Threshold for considering detections as overlapping (pixels)
-DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.9 # Confidence threshold for individual methods in dual mode
+DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.87 # Confidence threshold for individual methods in dual mode
 DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD = 0.85 # Threshold for accepting single method result directly
 DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD = 0.8 # Threshold for accepting single method result in fallback
 
@@ -2065,7 +2065,7 @@ def remove_user_position(detector: DetectionModule,
         'SECURITY': POS_SEC_IMG, 'STRATEGY': POS_STR_IMG
     }
     found_positions = []
-    position_icon_confidence = 0.8 # Slightly increased confidence (was 0.75)
+    position_icon_confidence = 0.75 # Slightly increased confidence (was 0.75)
     for name, path in position_templates.items():
         # Use unique keys for detector templates
         locations = detector._find_template(name.lower() + '_pos', confidence=position_icon_confidence, region=search_region)
