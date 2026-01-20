@@ -63,6 +63,91 @@ mcp_server_processes: dict[str, asyncio.subprocess.Process] = {}
 mcp_server_pids: dict[str, int] = {}
 all_discovered_mcp_tools: list[dict] = []
 exit_stack = AsyncExitStack()
+
+# --- Custom stdio_client wrapper to capture process object ---
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Tuple, Any
+
+@asynccontextmanager
+async def stdio_client_with_process(server_params: StdioServerParameters, server_key: str) -> AsyncIterator[Tuple[Any, Any]]:
+    """
+    Custom wrapper around stdio_client that captures the process PID.
+    This allows us to track and terminate MCP server processes on shutdown.
+
+    Args:
+        server_params: StdioServerParameters for the MCP server
+        server_key: Unique key identifier for this server
+
+    Yields:
+        Tuple of (read_stream, write_stream) just like stdio_client
+    """
+    # Get initial process list to identify new process
+    initial_pids = set(p.pid for p in psutil.process_iter())
+
+    async with stdio_client(server_params) as (read, write):
+        # Brief delay to ensure process is fully spawned
+        await asyncio.sleep(0.2)
+
+        # Find the newly created process
+        command_lower = server_params.command.lower()
+        args_list = server_params.args or []
+
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+                try:
+                    # Skip processes that existed before
+                    if proc.pid in initial_pids:
+                        continue
+
+                    cmdline = proc.cmdline()
+                    if not cmdline:
+                        continue
+
+                    cmdline_str = ' '.join(cmdline).lower()
+
+                    # Strategy 1: Direct command match (python, uvx, etc.)
+                    if command_lower in cmdline[0].lower():
+                        matches_args = len(args_list) == 0 or any(arg in cmdline_str for arg in args_list if arg)
+                        if matches_args:
+                            mcp_server_pids[server_key] = proc.pid
+                            print(f"[MCP-TRACK] Registered '{server_key}' PID: {proc.pid} (direct match)")
+                            break
+
+                    # Strategy 2: Node/npx wrapper match (for globally installed npm packages)
+                    elif 'node' in cmdline[0].lower() or 'npx' in cmdline_str[:50]:
+                        # Check if our command appears in the full cmdline
+                        if command_lower in cmdline_str:
+                            matches_args = len(args_list) == 0 or any(arg in cmdline_str for arg in args_list if arg)
+                            if matches_args:
+                                mcp_server_pids[server_key] = proc.pid
+                                print(f"[MCP-TRACK] Registered '{server_key}' PID: {proc.pid} (node wrapper)")
+                                print(f"[MCP-TRACK] Full cmdline: {' '.join(cmdline[:3])}...")
+                                break
+
+                    # Strategy 3: Full cmdline search (fallback)
+                    elif command_lower in cmdline_str:
+                        matches_args = len(args_list) == 0 or any(arg in cmdline_str for arg in args_list if arg)
+                        if matches_args:
+                            mcp_server_pids[server_key] = proc.pid
+                            print(f"[MCP-TRACK] Registered '{server_key}' PID: {proc.pid} (cmdline search)")
+                            break
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied, IndexError):
+                    continue
+
+            if server_key not in mcp_server_pids:
+                print(f"[MCP-TRACK] Warning: Could not find PID for '{server_key}'")
+                print(f"[MCP-TRACK] Command: {command_lower}, Args: {args_list}")
+
+        except Exception as track_err:
+            print(f"[MCP-TRACK] Error tracking PID for '{server_key}': {track_err}")
+
+        # Yield the streams
+        try:
+            yield read, write
+        finally:
+            # Cleanup happens in stdio_client's context manager
+            pass
 # Stores loaded persona data (as a string for easy injection into prompt)
 wolfhart_persona_details: str | None = None
 # --- Conversation History ---
@@ -707,38 +792,12 @@ async def connect_and_discover(key: str, server_config: dict):
     )
 
     try:
-        # --- Use stdio_client again ---
-        print(f"Using stdio_client to start and connect to Server '{key}'...")
-        # Pass server_params to stdio_client
-        # stdio_client manages the subprocess lifecycle within its context
+        # --- Use custom stdio_client wrapper to capture process PID ---
+        print(f"Starting MCP server '{key}' with process tracking...")
         read, write = await exit_stack.enter_async_context(
-            stdio_client(server_params)
+            stdio_client_with_process(server_params, key)
         )
-        print(f"stdio_client for '{key}' active, provides read/write streams.")
-
-        # --- CRITICAL: Track MCP process PID for forced cleanup ---
-        await asyncio.sleep(0.1)  # Brief delay to ensure process is created
-        try:
-            # Find the newly created process by command line
-            target_cmdline_parts = [command] + args
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
-                try:
-                    cmdline = proc.cmdline()
-                    # Match command and first unique arg
-                    if cmdline and len(cmdline) >= len(args) + 1:
-                        if command.lower() in cmdline[0].lower():
-                            # Check if args match
-                            matches_args = any(arg in ' '.join(cmdline) for arg in args if arg)
-                            if matches_args or len(args) == 0:
-                                mcp_server_pids[key] = proc.pid
-                                print(f"[MCP-TRACK] Registered '{key}' server PID: {proc.pid}")
-                                break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, IndexError):
-                    continue
-        except Exception as track_err:
-            print(f"[MCP-TRACK] Warning: Failed to track PID for '{key}': {track_err}")
-        # --- End PID tracking ---
-        # --- End stdio_client usage ---
+        print(f"MCP server '{key}' started, streams connected.")
 
         # stdio_client provides the correct stream types for ClientSession
         session = await exit_stack.enter_async_context(
