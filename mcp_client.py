@@ -187,7 +187,26 @@ async def call_mcp_tool(session: ClientSession, tool_name: str, arguments: dict,
         try:
             result = await asyncio.wait_for(session.call_tool(tool_name, arguments=arguments), timeout=timeout)
             print(f"Tool '{tool_name}' execution completed (SDK validation passed).")
-            return result # Return the validated result if successful
+
+            # Extract content from MCP SDK CallToolResult object to avoid double-serialization issues
+            if hasattr(result, 'content'):
+                # Extract text from content list
+                content_list = result.content if isinstance(result.content, list) else [result.content]
+                extracted_texts = []
+                for item in content_list:
+                    if hasattr(item, 'text'):
+                        extracted_texts.append(item.text)
+                    elif hasattr(item, 'data'):
+                        # Handle non-text content (images, etc.)
+                        extracted_texts.append(f"[{item.type}: {item.data}]")
+                    else:
+                        extracted_texts.append(str(item))
+
+                # Return combined text content as a simple string
+                return "\n".join(extracted_texts) if extracted_texts else ""
+            else:
+                # Fallback to returning the whole object if structure is unexpected
+                return result
         except asyncio.TimeoutError:
             error_msg = f"Tool '{tool_name}' timed out after {timeout} seconds!"
             print(f"ERROR: {error_msg}")
