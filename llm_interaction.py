@@ -312,7 +312,7 @@ def parse_structured_response(response_content: str) -> dict:
             try: # Correctly placed try block for parsing extracted string
                 parsed_json = safe_json_loads(
                     json_str,
-                    default={"valid_response": False, "dialogue": "JSON解析失败"},
+                    default={"valid_response": False, "dialogue": ""},
                     expected_type=dict
                 )
                 # REMOVED DEBUG LOGS FROM HERE
@@ -355,7 +355,7 @@ def parse_structured_response(response_content: str) -> dict:
             # REMOVED DEBUG LOGS FROM HERE
             parsed_json = safe_json_loads(
                 content_to_parse_directly,
-                default={"valid_response": False, "dialogue": "JSON解析失败"},
+                default={"valid_response": False, "dialogue": ""},
                 expected_type=dict
             )
             # REMOVED DEBUG LOGS FROM HERE
@@ -500,6 +500,56 @@ def parse_structured_response(response_content: str) -> dict:
     
     # REMOVED DEBUG LOGS FROM HERE
     return default_result
+
+
+async def repair_json_format(malformed_content: str) -> str | None:
+    """
+    使用LLM將格式錯誤的回應重新格式化為正確的JSON格式。
+    這是一個輕量級的修復調用，只負責格式化，不改變內容語義。
+
+    Args:
+        malformed_content: 格式錯誤的原始LLM回應
+
+    Returns:
+        修復後的JSON字符串，如果修復失敗則返回None
+    """
+    if not client:
+        print("Warning: LLM client not initialized, cannot repair JSON format")
+        return None
+
+    repair_prompt = f"""Reformat this content into the required JSON format.
+
+Content:
+```
+{malformed_content}
+```
+
+Output this exact JSON structure only:
+```json
+{{
+    "dialogue": "main response text here",
+    "thoughts": "internal thoughts or empty string"
+}}
+```"""
+
+    try:
+        print("Attempting to repair malformed JSON format...")
+        response = await client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[
+                {"role": "user", "content": repair_prompt}
+            ],
+            temperature=0  # 使用0溫度保證穩定輸出
+        )
+
+        repaired_content = response.choices[0].message.content
+        print(f"JSON repair attempt completed. Result length: {len(repaired_content) if repaired_content else 0}")
+
+        return repaired_content
+
+    except Exception as e:
+        print(f"Error during JSON format repair: {e}")
+        return None
 
 
 def _format_mcp_tools_for_openai(mcp_tools: list) -> list:
@@ -942,6 +992,36 @@ async def get_llm_response(
         print(f"DEBUG: Attempt {attempt_count} - Returned from initial parse_structured_response.")
         print(f"DEBUG: Attempt {attempt_count} - initial parsed_response dict: {parsed_response}")
         # --- End Debug Logs ---
+
+        # --- JSON Format Repair Attempt ---
+        # If initial parsing failed and we have content to work with, try to repair the format
+        if not parsed_response.get("valid_response") and content_to_parse and content_to_parse.strip():
+            print(f"INFO: Initial JSON parsing failed (Attempt {attempt_count}). Attempting format repair...")
+            debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Initiating Format Repair",
+                      f"Original content length: {len(content_to_parse)}")
+
+            repaired_content = await repair_json_format(content_to_parse)
+
+            if repaired_content:
+                print(f"INFO: Format repair returned content. Re-parsing...")
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Repair Result",
+                          f"Repaired content:\n{repaired_content}")
+
+                # Re-parse the repaired content
+                repaired_parsed = parse_structured_response(repaired_content)
+
+                if repaired_parsed.get("valid_response"):
+                    print(f"SUCCESS: Format repair successful! Valid response obtained.")
+                    parsed_response = repaired_parsed  # Use the repaired version
+                    debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Repair Success",
+                              f"Repaired parsed response: {repaired_parsed}")
+                else:
+                    print(f"WARNING: Format repair did not yield valid response. Will try other fallbacks...")
+                    debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Repair Failed",
+                              "Repaired content still could not be parsed as valid")
+            else:
+                print(f"WARNING: Format repair returned no content. Will try other fallbacks...")
+        # --- End JSON Format Repair ---
 
         # Check if we need to generate a synthetic response
         if all_tool_results and not parsed_response.get("valid_response"):
