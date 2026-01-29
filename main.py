@@ -6,6 +6,7 @@ import os
 import json # Import json module
 import collections # For deque
 import datetime # For logging timestamp
+import logging
 from contextlib import AsyncExitStack
 # --- Import standard queue ---
 from queue import Queue as ThreadSafeQueue, Empty as QueueEmpty # Rename to avoid confusion, import Empty
@@ -17,13 +18,26 @@ from mcp import ClientSession, StdioServerParameters, types
 import threading
 import time
 # Import RobustMessageDeduplication and StateResetDetector from ui_interaction
-from ui_interaction import RobustMessageDeduplication, StateResetDetector 
+from ui_interaction import RobustMessageDeduplication, StateResetDetector
 try:
     import keyboard # Needs pip install keyboard
 except ImportError:
     print("Error: 'keyboard' library not found. Please install it: pip install keyboard")
     sys.exit(1)
 # --- End Keyboard Imports ---
+
+# --- Logger Setup ---
+from utils.logger_config import setup_logger
+logger = setup_logger(
+    name="wolf_chat",
+    log_file="wolf_chat.log",
+    level=logging.INFO
+)
+logger.info("=" * 50)
+logger.info("Wolf Chat Starting...")
+logger.info(f"Python version: {sys.version}")
+logger.info("=" * 50)
+# --- End Logger Setup ---
 
 import config
 import mcp_client
@@ -1111,17 +1125,27 @@ async def run_main_with_exit_stack():
                 try:
                     memory_start_time = time.time()
 
-                    # 1. Get user profile
-                    user_profile = chroma_client.get_entity_profile(sender_name)
+                    # Get event loop for parallel execution
+                    loop = asyncio.get_event_loop()
 
-                    # 2. Preload related memories if configured
+                    # Prepare parallel tasks
+                    tasks = []
+
+                    # Task 1: Get user profile
+                    profile_task = loop.run_in_executor(None, chroma_client.get_entity_profile, sender_name)
+                    tasks.append(profile_task)
+
+                    # Task 2: Preload related memories if configured
                     if hasattr(config, 'PRELOAD_RELATED_MEMORIES') and config.PRELOAD_RELATED_MEMORIES > 0:
-                        related_memories = chroma_client.get_related_memories(
-                            sender_name,
-                            limit=config.PRELOAD_RELATED_MEMORIES
+                        memories_task = loop.run_in_executor(
+                            None,
+                            lambda: chroma_client.get_related_memories(sender_name, limit=config.PRELOAD_RELATED_MEMORIES)
                         )
+                        tasks.append(memories_task)
+                    else:
+                        tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
 
-                    # 3. Optionally preload bot knowledge based on message content
+                    # Task 3: Prepare bot knowledge retrieval based on message content
                     key_game_terms = ["capital_position", "capital_administrator_role", "server_hierarchy",
                                      "last_war", "winter_war", "excavations", "blueprints",
                                      "honor_points", "golden_eggs", "diamonds"]
@@ -1130,19 +1154,41 @@ async def run_main_with_exit_stack():
                     found_terms = [term for term in key_game_terms if term.lower() in bubble_text.lower()]
 
                     if found_terms:
-                        # Retrieve knowledge for found terms (limit to 2 terms, 2 results each)
-                        for term in found_terms[:2]:
-                            term_knowledge = chroma_client.get_bot_knowledge(term, limit=2)
-                            bot_knowledge.extend(term_knowledge)
+                        # Create task for knowledge retrieval (limit to 2 terms)
+                        def get_knowledge():
+                            knowledge = []
+                            for term in found_terms[:2]:
+                                term_knowledge = chroma_client.get_bot_knowledge(term, limit=2)
+                                knowledge.extend(term_knowledge)
+                            return knowledge
+
+                        knowledge_task = loop.run_in_executor(None, get_knowledge)
+                        tasks.append(knowledge_task)
+                    else:
+                        tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
+
+                    # Execute all tasks in parallel with error handling
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    # Process results
+                    user_profile = results[0] if not isinstance(results[0], Exception) else None
+                    related_memories = results[1] if not isinstance(results[1], Exception) else []
+                    bot_knowledge = results[2] if not isinstance(results[2], Exception) else []
+
+                    # Log any exceptions
+                    task_names = ["profile", "memories", "knowledge"]
+                    for i, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            logger.error(f"Memory preload {task_names[i]} failed: {result}")
 
                     memory_retrieval_time = time.time() - memory_start_time
-                    print(f"Memory retrieval complete: User profile {'successful' if user_profile else 'failed'}, "
+                    logger.info(f"Memory retrieval complete (parallel): User profile {'successful' if user_profile else 'failed'}, "
                           f"{len(related_memories)} related memories, "
                           f"{len(bot_knowledge)} bot knowledge, "
                           f"total time {memory_retrieval_time:.3f}s")
 
                 except Exception as mem_err:
-                    print(f"Error during memory retrieval: {mem_err}")
+                    logger.error(f"Error during memory retrieval: {mem_err}")
                     # Clear all memory data on error to avoid using partial data
                     user_profile = None
                     related_memories = []

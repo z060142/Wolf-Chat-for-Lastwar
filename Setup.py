@@ -28,6 +28,7 @@ import datetime
 import schedule
 import psutil
 import random # Added for exponential backoff jitter
+from utils.json_helper import safe_json_loads
 import urllib3 # Added for SSL warning suppression
 import game_manager # Added for new game monitoring module
 
@@ -360,7 +361,7 @@ def load_current_config():
                         config_data["EXTRA_API_PARAMS"] = ast.literal_eval(extra_params_str)
                     except (ValueError, SyntaxError):
                         # Fallback to JSON parsing
-                        config_data["EXTRA_API_PARAMS"] = json.loads(extra_params_str)
+                        config_data["EXTRA_API_PARAMS"] = safe_json_loads(extra_params_str, default={}, expected_type=dict)
             except (json.JSONDecodeError, Exception) as e:
                 print(f"Warning: Could not parse EXTRA_API_PARAMS: {e}")
                 config_data["EXTRA_API_PARAMS"] = {}
@@ -2095,7 +2096,7 @@ class WolfChatSetup(tk.Tk):
             return True
 
         try:
-            json.loads(content)
+            safe_json_loads(content, raise_on_error=True)
             self.extra_params_status_var.set("✓ Valid JSON")
             return True
         except json.JSONDecodeError as e:
@@ -3441,7 +3442,7 @@ class WolfChatSetup(tk.Tk):
                 if not self.validate_extra_params():
                     return  # Validation failed, don't save
                 try:
-                    self.config_data["EXTRA_API_PARAMS"] = json.loads(extra_params_text)
+                    self.config_data["EXTRA_API_PARAMS"] = safe_json_loads(extra_params_text, default={}, expected_type=dict)
                 except json.JSONDecodeError:
                     messagebox.showerror("Error", "Failed to parse extra API parameters JSON")
                     return

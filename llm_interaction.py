@@ -10,6 +10,7 @@ from openai import AsyncOpenAI, OpenAIError
 from mcp import ClientSession # Type hinting
 import config
 import mcp_client # To call MCP tools
+from utils.json_helper import safe_json_loads, validate_json_schema
 
 # --- Debug 配置 ---
 # 要關閉 debug 功能，只需將此變數設置為 False 或註釋掉該行
@@ -300,9 +301,13 @@ def parse_structured_response(response_content: str) -> dict:
             json_str = json_match.group(1).strip() # Add .strip() here
             # REMOVED DEBUG LOGS FROM HERE
             try: # Correctly placed try block for parsing extracted string
-                parsed_json = json.loads(json_str)
+                parsed_json = safe_json_loads(
+                    json_str,
+                    default={"valid_response": False, "dialogue": "JSON解析失败"},
+                    expected_type=dict
+                )
                 # REMOVED DEBUG LOGS FROM HERE
-                if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
+                if parsed_json and validate_json_schema(parsed_json, ["dialogue"]):
                     # REMOVED DEBUG LOGS FROM HERE
                     # 清理 dialogue 中的非對話內容
                     dialogue_content = parsed_json.get("dialogue", "")
@@ -339,9 +344,13 @@ def parse_structured_response(response_content: str) -> dict:
         try:
             content_to_parse_directly = cleaned_content.strip()
             # REMOVED DEBUG LOGS FROM HERE
-            parsed_json = json.loads(content_to_parse_directly) # Add .strip()
+            parsed_json = safe_json_loads(
+                content_to_parse_directly,
+                default={"valid_response": False, "dialogue": "JSON解析失败"},
+                expected_type=dict
+            )
             # REMOVED DEBUG LOGS FROM HERE
-            if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
+            if parsed_json and validate_json_schema(parsed_json, ["dialogue"]):
                 # REMOVED DEBUG LOGS FROM HERE
                 # 清理 dialogue 中的非對話內容
                 dialogue_content = parsed_json.get("dialogue", "")
@@ -398,7 +407,7 @@ def parse_structured_response(response_content: str) -> dict:
             # REMOVED DEBUG LOGS FROM HERE
             # 嘗試修復可能的JSON錯誤
             fixed_commands_str = commands_str.replace("'", '"').replace('\n', ' ')
-            commands = json.loads(fixed_commands_str)
+            commands = safe_json_loads(fixed_commands_str, default=[], expected_type=list)
             if isinstance(commands, list):
                 default_result["commands"] = commands
                 print(f"Extracted {len(commands)} commands via regex.") # Simplified print
@@ -429,7 +438,7 @@ def parse_structured_response(response_content: str) -> dict:
             if not json_content.endswith('}'):
                 json_content = json_content + '}'
             # REMOVED DEBUG LOGS FROM HERE
-            parsed_data = json.loads(json_content)
+            parsed_data = safe_json_loads(json_content, default={}, expected_type=dict)
             
             # 獲取對話內容
             if "dialogue" in parsed_data:
@@ -1003,7 +1012,7 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
                   f"Tool: {function_name}\nID: {tool_call_id}\nArgs: {function_args_str}")
 
     try:
-        function_args = json.loads(function_args_str)
+        function_args = safe_json_loads(function_args_str, default={}, expected_type=dict)
         print(f"Parsed arguments (dictionary): {function_args}")
 
         # Argument Type Correction for web_search
