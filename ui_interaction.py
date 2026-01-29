@@ -344,6 +344,8 @@ POS_INT_IMG = os.path.join(TEMPLATE_DIR, "positions", "interior.png")
 POS_SCI_IMG = os.path.join(TEMPLATE_DIR, "positions", "science.png")
 POS_SEC_IMG = os.path.join(TEMPLATE_DIR, "positions", "security.png")
 POS_STR_IMG = os.path.join(TEMPLATE_DIR, "positions", "strategy.png")
+POS_ADM_IMG = os.path.join(TEMPLATE_DIR, "positions", "administrator.png")
+POS_MIL_IMG = os.path.join(TEMPLATE_DIR, "positions", "military.png")
 
 # Capitol Page Elements
 CAPITOL_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "capitol_#11.png")
@@ -353,11 +355,15 @@ POS_BTN_INT_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_interior.png")
 POS_BTN_SCI_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_science.png")
 POS_BTN_SEC_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_security.png")
 POS_BTN_STR_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_strategy.png")
+POS_BTN_ADM_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_administrator.png")
+POS_BTN_MIL_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_military.png")
 PAGE_DEV_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_DEVELOPMENT.png")
 PAGE_INT_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_INTERIOR.png")
 PAGE_SCI_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_SCIENCE.png")
 PAGE_SEC_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_SECURITY.png")
 PAGE_STR_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_STRATEGY.png")
+PAGE_ADM_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_administrator.png")
+PAGE_MIL_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_military.png")
 DISMISS_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "dismiss.png")
 CONFIRM_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "confirm.png")
 CLOSE_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "close_button.png")
@@ -2062,7 +2068,8 @@ def remove_user_position(detector: DetectionModule,
 
     position_templates = {
         'DEVELOPMENT': POS_DEV_IMG, 'INTERIOR': POS_INT_IMG, 'SCIENCE': POS_SCI_IMG,
-        'SECURITY': POS_SEC_IMG, 'STRATEGY': POS_STR_IMG
+        'SECURITY': POS_SEC_IMG, 'STRATEGY': POS_STR_IMG, 'ADMINISTRATOR': POS_ADM_IMG,
+        'MILITARY': POS_MIL_IMG
     }
     found_positions = []
     position_icon_confidence = 0.75 # Slightly increased confidence (was 0.75)
@@ -2120,7 +2127,8 @@ def remove_user_position(detector: DetectionModule,
     # 5. Find and Click Corresponding Position Button
     position_button_templates = {
         'DEVELOPMENT': 'pos_btn_dev', 'INTERIOR': 'pos_btn_int', 'SCIENCE': 'pos_btn_sci',
-        'SECURITY': 'pos_btn_sec', 'STRATEGY': 'pos_btn_str'
+        'SECURITY': 'pos_btn_sec', 'STRATEGY': 'pos_btn_str', 'ADMINISTRATOR': 'pos_btn_adm',
+        'MILITARY': 'pos_btn_mil'
     }
     target_button_key = position_button_templates.get(target_position_name)
     if not target_button_key:
@@ -2140,7 +2148,8 @@ def remove_user_position(detector: DetectionModule,
     # 6. Verify Position Page
     position_page_templates = {
         'DEVELOPMENT': 'page_dev', 'INTERIOR': 'page_int', 'SCIENCE': 'page_sci',
-        'SECURITY': 'page_sec', 'STRATEGY': 'page_str'
+        'SECURITY': 'page_sec', 'STRATEGY': 'page_str', 'ADMINISTRATOR': 'page_adm',
+        'MILITARY': 'page_mil'
     }
     target_page_key = position_page_templates.get(target_position_name)
     if not target_page_key:
@@ -2288,13 +2297,16 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
         'world_chat': WORLD_CHAT_IMG, 'private_chat': PRIVATE_CHAT_IMG,
         # Position templates
         'development_pos': POS_DEV_IMG, 'interior_pos': POS_INT_IMG, 'science_pos': POS_SCI_IMG,
-        'security_pos': POS_SEC_IMG, 'strategy_pos': POS_STR_IMG,
+        'security_pos': POS_SEC_IMG, 'strategy_pos': POS_STR_IMG, 'administrator_pos': POS_ADM_IMG,
+        'military_pos': POS_MIL_IMG,
         # Capitol templates
         'capitol_button': CAPITOL_BUTTON_IMG, 'president_title': PRESIDENT_TITLE_IMG,
         'pos_btn_dev': POS_BTN_DEV_IMG, 'pos_btn_int': POS_BTN_INT_IMG, 'pos_btn_sci': POS_BTN_SCI_IMG,
-        'pos_btn_sec': POS_BTN_SEC_IMG, 'pos_btn_str': POS_BTN_STR_IMG,
+        'pos_btn_sec': POS_BTN_SEC_IMG, 'pos_btn_str': POS_BTN_STR_IMG, 'pos_btn_adm': POS_BTN_ADM_IMG,
+        'pos_btn_mil': POS_BTN_MIL_IMG,
         'page_dev': PAGE_DEV_IMG, 'page_int': PAGE_INT_IMG, 'page_sci': PAGE_SCI_IMG,
-        'page_sec': PAGE_SEC_IMG, 'page_str': PAGE_STR_IMG,
+        'page_sec': PAGE_SEC_IMG, 'page_str': PAGE_STR_IMG, 'page_adm': PAGE_ADM_IMG,
+        'page_mil': PAGE_MIL_IMG,
         'dismiss_button': DISMISS_BUTTON_IMG, 'confirm_button': CONFIRM_BUTTON_IMG,
         'close_button': CLOSE_BUTTON_IMG, 'back_arrow': BACK_ARROW_IMG,
         'reply_button': REPLY_BUTTON_IMG,
