@@ -665,9 +665,9 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
         A list of message dictionaries for the OpenAI API.
     """
     # Limits
-    SAME_SENDER_LIMIT = 5  # Last 5 interactions (user + bot response = 1 interaction)
-    OTHER_SENDER_LIMIT = 5 # Last 5 interactions from other users (user + bot response = 1 interaction)
-    FULL_TOOL_RESULTS_LIMIT = 2  # Include full tool results for the 2 most recent interactions
+    SAME_SENDER_LIMIT = 4  # Last 5 interactions (user + bot response = 1 interaction)
+    OTHER_SENDER_LIMIT = 3 # Last 5 interactions from other users (user + bot response = 1 interaction)
+    FULL_TOOL_RESULTS_LIMIT = 1  # Include full tool results for the 1 most recent interaction from current sender only
 
     relevant_history = []
     same_sender_interactions = 0
@@ -703,7 +703,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
         is_current_sender = (speaker_type == 'user' and speaker_name == current_sender_name)
 
         # Helper function to format bot response with tool info
-        def format_bot_response(bot_entry_idx):
+        def format_bot_response(bot_entry_idx, is_response_to_current_sender=False):
             nonlocal full_tool_results_count
             bot_entry = history[bot_entry_idx]
             if len(bot_entry) >= 5:
@@ -715,8 +715,8 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
             bot_formatted_timestamp = bot_timestamp.strftime("%Y-%m-%d %H:%M:%S")
             tool_status = _format_tool_info_status(bot_tool_info)
 
-            # For the most recent N interactions (any user), include full tool results
-            if full_tool_results_count < FULL_TOOL_RESULTS_LIMIT and bot_tool_info:
+            # Only include full tool results for current sender's interactions (limited to FULL_TOOL_RESULTS_LIMIT)
+            if is_response_to_current_sender and full_tool_results_count < FULL_TOOL_RESULTS_LIMIT and bot_tool_info:
                 tool_results_full = _format_tool_results_full(bot_tool_info)
                 bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name} {tool_status}: {bot_message}\n<previous_tool_results>\n{tool_results_full}\n</previous_tool_results>"
                 full_tool_results_count += 1
@@ -731,7 +731,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
                 relevant_history.append(api_message) # Append user message with timestamp
                 # Check for preceding bot response
                 if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
-                     relevant_history.append(format_bot_response(i-1))
+                     relevant_history.append(format_bot_response(i-1, is_response_to_current_sender=True))
 
                 same_sender_interactions += 1
         elif speaker_type == 'user': # Message from a different user
@@ -740,7 +740,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
                 relevant_history.append(api_message) # Append other user message with timestamp
                 # Check for preceding bot response to other users too
                 if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
-                     relevant_history.append(format_bot_response(i-1))
+                     relevant_history.append(format_bot_response(i-1, is_response_to_current_sender=False))
                 other_sender_messages += 1
         # Bot responses are handled when processing the user message they replied to.
 
