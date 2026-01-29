@@ -253,6 +253,15 @@ def get_system_prompt(
     - Never use asterisk actions (*does something*)
     - Deliver information directly in natural dialogue
     - Stay in character while providing accurate information
+
+    **OUTPUT FORMAT:**
+    You MUST respond ONLY in this exact JSON format:
+    ```json
+    {{
+        "dialogue": "Your spoken response (REQUIRED - conversational words only)",
+        "thoughts": "Internal analysis (optional, e.g., 'The user seems confused, I should...')"
+    }}
+    ```
     """
 
     return system_prompt
