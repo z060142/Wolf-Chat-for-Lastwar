@@ -298,7 +298,7 @@ def load_current_config():
     
     config_data = {
         "OPENAI_API_BASE_URL": "",
-        "LLM_MODEL": "deepseek/deepseek-chat-v3-0324",
+        "LLM_MODEL": "moonshotai/kimi-k2.5",
         "EXTRA_API_PARAMS": {},
         "MCP_SERVERS": {
             "exa": {
@@ -631,12 +631,12 @@ def load_current_config():
                  profile_model_val = profile_model_match.group(1).strip()
                  if profile_model_val == "LLM_MODEL":
                      # If it refers to LLM_MODEL, use the already parsed LLM_MODEL value
-                     config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324") # Fallback if LLM_MODEL wasn't parsed
+                     config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5") # Fallback if LLM_MODEL wasn't parsed
                  else:
                      config_data["MEMORY_PROFILE_MODEL"] = profile_model_val
             else:
                  # Default to LLM_MODEL if not found
-                 config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+                 config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5")
 
 
             summary_model_match = re.search(r'MEMORY_SUMMARY_MODEL\s*=\s*["\'](.+?)["\']', config_content)
@@ -2039,7 +2039,7 @@ class WolfChatSetup(tk.Tk):
         model_label = ttk.Label(model_frame, text="LLM Model:", width=15)
         model_label.pack(side=tk.LEFT, padx=(0, 5))
         
-        self.model_var = tk.StringVar(value="deepseek/deepseek-chat-v3-0324")
+        self.model_var = tk.StringVar(value="moonshotai/kimi-k2.5")
         self.model_entry = ttk.Entry(model_frame, textvariable=self.model_var)
         self.model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
@@ -2711,7 +2711,7 @@ class WolfChatSetup(tk.Tk):
         profile_model_label.pack(side=tk.LEFT, padx=(0, 5))
         # Initialize with a sensible default, will be overwritten by update_ui_from_data
         # Use config_data which is loaded in __init__
-        profile_model_default = self.config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+        profile_model_default = self.config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5")
         self.profile_model_var = tk.StringVar(value=profile_model_default) 
         profile_model_entry = ttk.Entry(profile_model_frame, textvariable=self.profile_model_var)
         profile_model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -2960,7 +2960,7 @@ class WolfChatSetup(tk.Tk):
             # API Tab
             self.api_url_var.set(self.config_data.get("OPENAI_API_BASE_URL", ""))
             self.api_key_var.set(self.env_data.get("OPENAI_API_KEY", ""))
-            self.model_var.set(self.config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324"))
+            self.model_var.set(self.config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5"))
 
             # Extra API Parameters
             extra_params = self.config_data.get("EXTRA_API_PARAMS", {})

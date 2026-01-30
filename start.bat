@@ -86,32 +86,78 @@ if not exist ".venv\" (
     echo.
 )
 
-REM Initialize ChromaDB if needed (first-time setup)
-if not exist "chroma_data\chroma.sqlite3" (
+REM Install Chroma MCP if needed (first-time setup)
+echo Checking Chroma MCP installation...
+
+REM Check if chroma-mcp is installed in the virtual environment
+.venv\Scripts\python.exe -c "import chroma_mcp" >nul 2>&1
+if errorlevel 1 (
     echo.
     echo ============================================================
-    echo ChromaDB not initialized - Running first-time initialization
+    echo Chroma MCP not installed - Installing latest version
     echo ============================================================
-    echo.
-    echo This will download the embedding model on first run...
-    echo Please wait, this may take a few minutes...
     echo.
 
-    .venv\Scripts\python.exe scripts\init_chromadb.py
+    REM Define download URL and temporary folder
+    set "DOWNLOAD_URL=https://github.com/chroma-core/chroma-mcp/releases/download/v0.2.6/chroma_mcp-0.2.6-py3-none-any.whl"
+    set "TEMP_FOLDER=temp_chroma_install"
+    set "WHL_FILE=chroma_mcp-0.2.6-py3-none-any.whl"
+
+    echo [1/4] Creating temporary download folder...
+    if exist "!TEMP_FOLDER!\" (
+        rmdir /s /q "!TEMP_FOLDER!"
+    )
+    mkdir "!TEMP_FOLDER!"
+    if errorlevel 1 (
+        echo ERROR: Failed to create temporary folder
+        pause
+        exit /b 1
+    )
+    echo.
+
+    echo [2/4] Downloading Chroma MCP v0.2.6...
+    echo This may take a moment depending on your internet connection...
+    echo.
+    powershell -Command "& {$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri '!DOWNLOAD_URL!' -OutFile '!TEMP_FOLDER!\!WHL_FILE!'}"
 
     if errorlevel 1 (
-        echo.
-        echo ERROR: ChromaDB initialization failed
-        echo.
+        echo ERROR: Failed to download package
+        rmdir /s /q "!TEMP_FOLDER!"
         pause
         exit /b 1
     )
 
+    if not exist "!TEMP_FOLDER!\!WHL_FILE!" (
+        echo ERROR: Downloaded file not found
+        rmdir /s /q "!TEMP_FOLDER!"
+        pause
+        exit /b 1
+    )
+    echo Download completed successfully
     echo.
-    echo ChromaDB initialization completed successfully
+
+    echo [3/4] Installing Chroma MCP with UV...
+    echo.
+    uv pip install "!TEMP_FOLDER!\!WHL_FILE!"
+
+    if errorlevel 1 (
+        echo ERROR: Failed to install Chroma MCP
+        rmdir /s /q "!TEMP_FOLDER!"
+        pause
+        exit /b 1
+    )
+    echo.
+
+    echo [4/4] Cleaning up temporary files...
+    rmdir /s /q "!TEMP_FOLDER!"
+    echo.
+
+    echo ============================================================
+    echo Chroma MCP v0.2.6 installed successfully!
+    echo ============================================================
     echo.
 ) else (
-    echo ChromaDB database found, skipping initialization
+    echo Chroma MCP already installed
     echo.
 )
 
