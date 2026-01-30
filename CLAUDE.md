@@ -9,16 +9,25 @@ Wolf Chat is a Python-based chatbot assistant designed for integration with "Las
 ## Development Commands
 
 ### Setup and Installation
+
+**⚠️ IMPORTANT: Always run Setup.py first before running the application!**
+
 ```bash
-# Install dependencies
+# 1. Install dependencies
 pip install -r requirements.txt
 
-# Run the main application
-python main.py
-
-# Setup and configuration utility
+# 2. Run Setup.py to generate config.py (REQUIRED for first-time setup)
+# This interactive GUI utility will create and manage all configuration
 python Setup.py
+
+# 3. Run the main application
+python main.py
 ```
+
+**Critical Notes:**
+- `config.py` is **automatically generated** by `Setup.py` - **DO NOT edit config.py directly**
+- All configuration changes must be made through `Setup.py` to ensure consistency
+- If you need to modify any settings (API keys, MCP servers, system parameters), always use `Setup.py`
 
 ### Development Tools
 ```bash
@@ -59,8 +68,8 @@ python system_prompt_tester.py
 2. **ui_interaction.py**: Handles screen recognition, chat monitoring, and game UI automation using OpenCV and PyAutoGUI
 3. **llm_interaction.py**: Manages LLM API communication, system prompts, and tool calling functionality
 4. **mcp_client.py**: Handles MCP server communication, tool discovery, and execution
-5. **config.py**: Centralized configuration management with environment variables
-6. **Setup.py**: Configuration and setup utility with GUI interface
+5. **Setup.py**: ⚠️ **Configuration manager** - Interactive GUI utility that generates and manages `config.py`. **All configuration changes must go through this script**
+6. **config.py**: ⚠️ **AUTO-GENERATED FILE** - Centralized configuration storage created by Setup.py. **DO NOT EDIT DIRECTLY** - use Setup.py instead
 7. **game_manager.py**: Game window monitoring and process management
 8. **chroma_client.py**: ChromaDB vector database client for memory management
 9. **memory_manager.py**: Advanced memory system with entity profiles and conversation history
@@ -76,6 +85,16 @@ python system_prompt_tester.py
 
 ## Configuration
 
+### ⚠️ Configuration Management Philosophy
+
+**CRITICAL: config.py is AUTO-GENERATED - Never Edit Directly!**
+
+All configuration in this project is managed through `Setup.py`:
+- `config.py` is **automatically generated** by running `python Setup.py`
+- **DO NOT modify config.py manually** - changes will be overwritten
+- To change any settings, always run `Setup.py` and use its GUI interface
+- When modifying code that references config parameters, update `Setup.py` instead
+
 ### Environment Variables (.env)
 ```bash
 OPENAI_API_KEY=your_api_key_here
@@ -83,13 +102,14 @@ EXA_API_KEY=your_exa_key_here
 ```
 
 ### Key Configuration Files
-- `config.py`: Main configuration with API settings, MCP servers, and system parameters
+- **`Setup.py`**: ⚠️ **Configuration source of truth** - Modify this to change any settings
+- **`config.py`**: ⚠️ **AUTO-GENERATED** - Created by Setup.py, contains API settings, MCP servers, and system parameters
 - `persona.json`: Bot character definition and personality traits
 - `bubble_colors.json`: Color configuration for chat bubble detection
 - `templates/`: UI template images for screen recognition
 
 ### MCP Server Configuration
-MCP servers are configured in `config.py` under `MCP_SERVERS`. Each server includes modular system prompts:
+MCP servers are configured through `Setup.py`, which generates the configuration in `config.py` under `MCP_SERVERS`. Each server includes modular system prompts:
 ```python
 MCP_SERVERS = {
     "exa": {
@@ -142,7 +162,7 @@ Main collections:
 - **Conversations**: Chat history and context
 - **Bot Memory**: Game knowledge and reference information
 
-Memory preloading can be configured via `ENABLE_PRELOAD_PROFILES` in config.py.
+Memory preloading can be configured via `ENABLE_PRELOAD_PROFILES` setting in `Setup.py` (which generates the parameter in config.py).
 
 ## UI System
 
@@ -186,6 +206,35 @@ Key dependencies include:
 - Supports both manual and automated game window management
 - Designed for Windows environment with cross-platform considerations
 
+## ⚠️ Configuration Management Rules
+
+**CRITICAL: Read this before modifying any configuration!**
+
+### The Golden Rule
+- **config.py is AUTO-GENERATED** - It is created and managed entirely by Setup.py
+- **NEVER edit config.py directly** - All manual edits will be lost when Setup.py runs again
+
+### What to do instead
+1. **To change settings**: Run `python Setup.py` and use the GUI interface
+2. **To add new parameters**: Modify `Setup.py` to include the new parameter in its generation logic
+3. **To modify MCP servers**: Edit the MCP server configuration section in `Setup.py`
+4. **To change system prompts**: Update the system_prompt fields in `Setup.py`
+
+### Why this matters
+- Setup.py ensures configuration consistency and validation
+- Direct edits to config.py will be overwritten without warning
+- Setup.py handles environment variable loading, path resolution, and error checking
+- This architecture prevents configuration drift and ensures reproducibility
+
+### When developing new features
+If your feature requires new configuration parameters:
+1. Add the parameter to `Setup.py` (in the appropriate section)
+2. Update the config generation logic in `Setup.py`
+3. Run `Setup.py` to regenerate `config.py`
+4. Import the parameter from `config` in your code
+
+**Remember**: config.py is not source code - it's a build artifact. Treat it like a compiled binary.
+
 ## System Prompt Development
 
 ### Key Documentation Files
@@ -196,9 +245,10 @@ Key dependencies include:
 
 ### Modification Guidelines
 1. **High Priority Areas**: Capital management abilities and character behavior (`llm_interaction.py`)
-2. **Medium Priority**: MCP tool configurations (`config.py` system_prompt fields)
+2. **Medium Priority**: MCP tool configurations (modify `Setup.py` to change system_prompt fields - **DO NOT edit config.py directly**)
 3. **Character Personality**: Modify `persona.json` for behavioral changes
-4. **Testing**: Always run `python system_prompt_tester.py` after modifications
+4. **Configuration Changes**: ⚠️ **Always use Setup.py** - never edit config.py manually
+5. **Testing**: Always run `python system_prompt_tester.py` after modifications
 
 ### Architecture Principles
 - **Modular Design**: Each MCP server has independent system_prompt

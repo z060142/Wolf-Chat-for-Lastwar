@@ -385,8 +385,8 @@ REPLY_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "reply_button.png") # Added for re
 SCREENSHOT_REGION = (70, 50, 800, 1365)  # (x, y, width, height)
 
 # 對話泡泡偵測區域 - 分別用於不同的偵測方法
-BUBBLE_DETECTION_REGION_TEMPLATE = (200, 330, 680, 1200)  # 用於模板匹配
-BUBBLE_DETECTION_REGION_COLOR = (200, 270, 680, 1200)     # 用於顏色偵測
+BUBBLE_DETECTION_REGION_TEMPLATE = (200, 330, 680, 1215)  # 用於模板匹配
+BUBBLE_DETECTION_REGION_COLOR = (200, 270, 680, 1215)     # 用於顏色偵測
 
 # 經濟模式監控區域 - 用於閒置時的變化偵測
 ECO_MODE_REGION = (90, 550, 610, 200)  # 經濟模式固定監控區域
