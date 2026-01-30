@@ -14,6 +14,10 @@ openai==1.70.0
 # Changelog: https://github.com/modelcontextprotocol/python-sdk/releases
 mcp>=1.25.0
 
+# FastMCP for building MCP servers
+# Used by position_tool_server.py for position management tool
+fastmcp==2.14.4
+
 # Python environment configuration
 python-dotenv==1.1.0
 
@@ -94,6 +98,11 @@ urllib3==2.2.3
 # ============================================================
 # Progress bar for CLI
 tqdm==4.67.0
+
+# ============================================================
+# Optional Dependencies (commented out by default)
+# ============================================================
+# python-socketio==5.16.0  # For remote control features (currently disabled)
 
 # ============================================================
 # Notes:

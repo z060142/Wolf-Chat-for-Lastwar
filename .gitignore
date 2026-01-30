@@ -14,3 +14,20 @@ chroma_data/
 wolf_control.py
 remote_config.json
 wolf_chat_dedup.json
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# UV package manager
+.uv/
+uv.lock
+
+# Generated launcher scripts (from old setup_venv.bat)
+run_setup.bat
+activate_venv.bat
+
+# Requirements hash for dependency tracking
+.requirements_hash
