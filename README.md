@@ -9,6 +9,7 @@ This bot will:
 - Detect chat messages containing the keywords "wolf" or "Wolf"
 - Generate responses using a language model
 - Automatically input responses into the game chat interface
+- Serve as Vice President role to remove server members' Congress positions/buffs upon request
 
 ## Main Features
 
@@ -19,7 +20,7 @@ This bot will:
 
 ## System Requirements
 
-- Python 3.11+ (Python 3.13 recommended)
+- Python 3.8-3.12 (Python 3.11 recommended)
 - OpenAI API key or compatible service
 - Game client ("Last War-Survival Game")
 - Windows OS (with administrator privileges recommended)
@@ -33,25 +34,30 @@ This bot will:
    - Download the ZIP file directly from GitHub (click the green "Code" button, select "Download ZIP")
    - Extract to a folder of your choice
 
-2. **Run the Launcher**:
+2. **Install UV Package Manager**:
+   Open PowerShell and run:
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+   ```
+
+3. **Run the Launcher**:
    ```batch
    start.bat
    ```
 
    This will automatically:
-   - Install UV package manager (if not already installed)
    - Create a virtual environment using UV
-   - Install all dependencies (10-100x faster than pip!)
+   - Install all dependencies
    - Download the embedding model
    - Launch the Setup.py configuration tool
 
-3. **Configure via Setup.py**:
+4. **Configure via Setup.py**:
    - The Setup.py GUI will open automatically
    - Configure your API keys, MCP servers, and system settings
    - Setup.py will automatically generate `config.py` and `.env` files
    - **Never edit config.py directly** - always use Setup.py
 
-4. **Capture necessary UI template images** (see "UI Setup" section below)
+5. **Capture necessary UI template images** (see "UI Setup" section below)
 
 ### Alternative Installation (Traditional pip)
 
@@ -70,14 +76,6 @@ If you prefer using pip instead of UV:
 3. **Configure via the GUI**:
    - Setup.py will guide you through the configuration
    - It will create `.env` and `config.py` files automatically
-
-### About UV Package Manager
-
-UV is a blazingly fast Python package installer and resolver:
-- **10-100x faster** than pip
-- Built-in dependency caching
-- Automatic conflict resolution
-- More information: https://github.com/astral-sh/uv
 
 ### Manual Environment Setup
 
@@ -179,7 +177,27 @@ The system requires template images of UI elements to function properly:
 
 ### Running the Bot
 
-1. **Start the game client**
+**Recommended Method (Using Setup.py GUI)**:
+
+1. **Launch Setup.py**:
+   ```batch
+   python Setup.py
+   ```
+
+2. **Start Bot & Game**:
+   - In the Setup.py window, click **"Start Managed bot & Game"** button
+   - This will automatically:
+     - Launch the game client
+     - Start the chatbot with proper monitoring
+     - Manage both processes together
+
+3. **Test Chat Functionality**:
+   - Click **"Run Test"** button in Setup.py to test the chat response without game interaction
+   - This allows you to verify LLM responses and configurations safely
+
+**Alternative Method (Manual Launch)**:
+
+1. **Start the game client manually**
 
 2. **Launch the bot**:
    ```batch
