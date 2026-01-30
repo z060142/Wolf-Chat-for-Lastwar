@@ -889,10 +889,10 @@ def generate_config_file(config_data, env_data):
         f.write(f"PRELOAD_RELATED_MEMORIES = {preload_memories}\n\n")
 
         f.write("# Collection Names (used for both local access and MCP tool calls)\n")
-        profiles_col = config_data.get('PROFILES_COLLECTION', 'user_profiles')
+        profiles_col = config_data.get('PROFILES_COLLECTION', 'wolfhart_memory')
         f.write(f"PROFILES_COLLECTION = \"{profiles_col}\"\n")
 
-        conversations_col = config_data.get('CONVERSATIONS_COLLECTION', 'conversations')
+        conversations_col = config_data.get('CONVERSATIONS_COLLECTION', 'wolfhart_memory')
         f.write(f"CONVERSATIONS_COLLECTION = \"{conversations_col}\"\n")
 
         bot_memory_col = config_data.get('BOT_MEMORY_COLLECTION', 'wolfhart_memory')
@@ -2612,7 +2612,7 @@ class WolfChatSetup(tk.Tk):
         conv_col_label = ttk.Label(conv_col_frame, text="Conversations Collection:", width=20)
         conv_col_label.pack(side=tk.LEFT, padx=(0, 5))
 
-        self.conversations_collection_var = tk.StringVar(value="conversations")
+        self.conversations_collection_var = tk.StringVar(value="wolfhart_memory")
         conv_col_entry = ttk.Entry(conv_col_frame, textvariable=self.conversations_collection_var)
         conv_col_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -3036,8 +3036,8 @@ class WolfChatSetup(tk.Tk):
             # Memory Settings
             self.preload_profiles_var.set(self.config_data.get("ENABLE_PRELOAD_PROFILES", True))
             self.related_memories_var.set(self.config_data.get("PRELOAD_RELATED_MEMORIES", 2))
-            self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "user_profiles")) # Default was user_profiles
-            self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "conversations"))
+            self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "wolfhart_memory")) # Default was wolfhart_memory
+            self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "wolfhart_memory"))
             self.bot_memory_collection_var.set(self.config_data.get("BOT_MEMORY_COLLECTION", "wolfhart_memory"))
             # Embedding Model Name for Memory Settings Tab
             if hasattr(self, 'embedding_model_name_var'):

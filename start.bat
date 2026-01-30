@@ -86,6 +86,35 @@ if not exist ".venv\" (
     echo.
 )
 
+REM Initialize ChromaDB if needed (first-time setup)
+if not exist "chroma_data\chroma.sqlite3" (
+    echo.
+    echo ============================================================
+    echo ChromaDB not initialized - Running first-time initialization
+    echo ============================================================
+    echo.
+    echo This will download the embedding model on first run...
+    echo Please wait, this may take a few minutes...
+    echo.
+
+    .venv\Scripts\python.exe scripts\init_chromadb.py
+
+    if errorlevel 1 (
+        echo.
+        echo ERROR: ChromaDB initialization failed
+        echo.
+        pause
+        exit /b 1
+    )
+
+    echo.
+    echo ChromaDB initialization completed successfully
+    echo.
+) else (
+    echo ChromaDB database found, skipping initialization
+    echo.
+)
+
 REM Check if Setup.py exists
 if not exist "Setup.py" (
     echo.
