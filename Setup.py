@@ -2170,8 +2170,8 @@ class WolfChatSetup(tk.Tk):
         # Enable checkbox
         enable_frame = ttk.Frame(self.exa_frame)
         enable_frame.pack(fill=tk.X, pady=5)
-        
-        self.exa_enable_var = tk.BooleanVar(value=True)
+
+        self.exa_enable_var = tk.BooleanVar(value=False)
         enable_cb = ttk.Checkbutton(enable_frame, text="Enable Exa Server", variable=self.exa_enable_var)
         enable_cb.pack(anchor=tk.W)
         
@@ -2972,7 +2972,7 @@ class WolfChatSetup(tk.Tk):
             # Exa settings
             if "exa" in self.config_data.get("MCP_SERVERS", {}):
                 exa_config = self.config_data["MCP_SERVERS"]["exa"]
-                self.exa_enable_var.set(exa_config.get("enabled", True))
+                self.exa_enable_var.set(exa_config.get("enabled", False))
                 self.exa_key_var.set(self.env_data.get("EXA_API_KEY", ""))
                 
                 if exa_config.get("use_smithery", False):
@@ -3575,10 +3575,7 @@ class WolfChatSetup(tk.Tk):
             
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:
-                if not self.exa_key_var.get():
-                    messagebox.showerror("Validation Error", "Exa API Key is required when Exa server is enabled")
-                    return
-                
+                # Allow empty API key - will be handled at runtime
                 if self.exa_type_var.get() == "local" and not self.exa_path_var.get():
                     messagebox.showerror("Validation Error", "Exa Server Path is required for local server type")
                     return
