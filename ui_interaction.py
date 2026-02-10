@@ -435,6 +435,14 @@ UI_ELEMENT_MEDIUM_CONFIDENCE = 0.75  # 中優先級 UI 元素（position icons�
 UI_ELEMENT_LOW_CONFIDENCE = 0.7  # 低優先級 UI 元素（copy menu, profile option 等）
 UI_ELEMENT_LAST_RESORT_CONFIDENCE = 0.4  # 最後手段的極低信心度
 
+# Position Icon Multi-Strategy Detection Constants
+POSITION_ICON_HIGH_CONFIDENCE = 0.80        # Primary threshold (dual-method overlap or single high-conf)
+POSITION_ICON_GRAY_CONFIDENCE = 0.72        # Grayscale method minimum
+POSITION_ICON_CLAHE_CONFIDENCE = 0.70       # CLAHE method minimum
+POSITION_ICON_FALLBACK_CONFIDENCE = 0.65    # Last resort threshold
+POSITION_ICON_MAX_DISTANCE = 50             # Max pixels from bubble center (spatial validation)
+POSITION_ICON_OVERLAP_DISTANCE = 8          # Distance for considering dual-method matches as same position
+
 # ============================================================
 # 第四組：時間延遲配置（秒）
 # ============================================================
@@ -761,6 +769,174 @@ class DetectionModule:
         except Exception as e:
             print(f"Error finding template raw '{template_key}' ({template_path}): {e}")
             return []
+
+    def _detect_position_icon_multi_strategy(self, search_region: Tuple[int, int, int, int],
+                                             bubble_center: Tuple[int, int],
+                                             max_distance: int = POSITION_ICON_MAX_DISTANCE) -> Optional[Dict[str, Any]]:
+        """
+        Multi-strategy position icon detection using grayscale + CLAHE + spatial validation.
+        Returns dict with 'name', 'coords', 'confidence', 'method', 'distance' or None if not found.
+        Mirrors keyword detection strategy (lines 1189-1269).
+        """
+        position_templates = {
+            'DEVELOPMENT': 'development_pos',
+            'INTERIOR': 'interior_pos',
+            'SCIENCE': 'science_pos',
+            'SECURITY': 'security_pos',
+            'STRATEGY': 'strategy_pos',
+            'ADMINISTRATOR': 'administrator_pos',
+            'MILITARY': 'military_pos'
+        }
+
+        # Capture screen region once
+        try:
+            screenshot = pyautogui.screenshot(region=search_region)
+            img_bgr = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            img_clahe = self._apply_clahe(img_gray)
+        except Exception as e:
+            print(f"[Position Detection] Error capturing/preprocessing screen: {e}")
+            return None
+
+        if img_clahe is None:
+            print("[Position Detection] CLAHE preprocessing failed, using grayscale only")
+            img_clahe = img_gray
+
+        region_x, region_y = search_region[0], search_region[1]
+
+        gray_results = []
+        clahe_results = []
+
+        # Process each template
+        for name, template_key in position_templates.items():
+            template_path = self.templates.get(template_key)
+            if not template_path or not os.path.exists(template_path):
+                if template_path and template_path not in self._warned_paths:
+                    print(f"[Position Detection] Template not found: {template_path}")
+                    self._warned_paths.add(template_path)
+                continue
+
+            try:
+                template_bgr = cv2.imread(template_path)
+                if template_bgr is None:
+                    print(f"[Position Detection] Failed to load template: {template_path}")
+                    continue
+
+                template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+                template_clahe = self._apply_clahe(template_gray)
+
+                if template_clahe is None:
+                    print(f"[Position Detection] CLAHE preprocessing failed for {name}")
+                    continue
+
+                h, w = template_gray.shape[:2]
+
+                # Grayscale matching
+                try:
+                    gray_res = cv2.matchTemplate(img_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(gray_res)
+
+                    if max_val >= POSITION_ICON_GRAY_CONFIDENCE:
+                        center_x = region_x + max_loc[0] + w // 2
+                        center_y = region_y + max_loc[1] + h // 2
+
+                        # Spatial validation
+                        dist = math.sqrt((center_x - bubble_center[0])**2 +
+                                       (center_y - bubble_center[1])**2)
+
+                        if dist <= max_distance:
+                            gray_results.append({
+                                'name': name,
+                                'coords': (center_x, center_y),
+                                'confidence': float(max_val),
+                                'distance': dist
+                            })
+                except cv2.error as e:
+                    print(f"[Position Detection] Grayscale matching error for {name}: {e}")
+                except Exception as e:
+                    print(f"[Position Detection] Unexpected error in grayscale matching for {name}: {e}")
+
+                # CLAHE matching
+                try:
+                    clahe_res = cv2.matchTemplate(img_clahe, template_clahe, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(clahe_res)
+
+                    if max_val >= POSITION_ICON_CLAHE_CONFIDENCE:
+                        center_x = region_x + max_loc[0] + w // 2
+                        center_y = region_y + max_loc[1] + h // 2
+
+                        # Spatial validation
+                        dist = math.sqrt((center_x - bubble_center[0])**2 +
+                                       (center_y - bubble_center[1])**2)
+
+                        if dist <= max_distance:
+                            clahe_results.append({
+                                'name': name,
+                                'coords': (center_x, center_y),
+                                'confidence': float(max_val),
+                                'distance': dist
+                            })
+                except cv2.error as e:
+                    print(f"[Position Detection] CLAHE matching error for {name}: {e}")
+                except Exception as e:
+                    print(f"[Position Detection] Unexpected error in CLAHE matching for {name}: {e}")
+
+            except Exception as e:
+                print(f"[Position Detection] Error processing template {name}: {e}")
+                continue
+
+        # Selection Strategy (mirroring keyword detection lines 1189-1269)
+        if not gray_results and not clahe_results:
+            print("[Position Detection] No positions found by either method")
+            return None
+
+        # Strategy 1: High-confidence single method
+        best_gray = max(gray_results, key=lambda x: x['confidence']) if gray_results else None
+        best_clahe = max(clahe_results, key=lambda x: x['confidence']) if clahe_results else None
+
+        if best_gray and not best_clahe and best_gray['confidence'] >= POSITION_ICON_HIGH_CONFIDENCE:
+            print(f"[Position Detection] High-confidence Gray: {best_gray['name']} (conf={best_gray['confidence']:.3f})")
+            return {**best_gray, 'method': 'gray_high'}
+
+        if best_clahe and not best_gray and best_clahe['confidence'] >= POSITION_ICON_HIGH_CONFIDENCE:
+            print(f"[Position Detection] High-confidence CLAHE: {best_clahe['name']} (conf={best_clahe['confidence']:.3f})")
+            return {**best_clahe, 'method': 'clahe_high'}
+
+        # Strategy 2: Overlapping results
+        for gray_match in gray_results:
+            for clahe_match in clahe_results:
+                if gray_match['name'] == clahe_match['name']:
+                    coord_dist = math.sqrt((gray_match['coords'][0] - clahe_match['coords'][0])**2 +
+                                         (gray_match['coords'][1] - clahe_match['coords'][1])**2)
+
+                    if coord_dist < POSITION_ICON_OVERLAP_DISTANCE:
+                        combined_conf = (gray_match['confidence'] + clahe_match['confidence']) / 2
+                        avg_coords = (
+                            (gray_match['coords'][0] + clahe_match['coords'][0]) // 2,
+                            (gray_match['coords'][1] + clahe_match['coords'][1]) // 2
+                        )
+                        avg_dist = (gray_match['distance'] + clahe_match['distance']) / 2
+
+                        print(f"[Position Detection] Dual overlap: {gray_match['name']} (conf={combined_conf:.3f}, coord_dist={coord_dist:.1f}px)")
+                        return {
+                            'name': gray_match['name'],
+                            'coords': avg_coords,
+                            'confidence': combined_conf,
+                            'distance': avg_dist,
+                            'method': 'dual_overlap'
+                        }
+
+        # Strategy 3: Fallback to best single result
+        all_results = gray_results + clahe_results
+        if all_results:
+            best_overall = max(all_results, key=lambda x: x['confidence'])
+            if best_overall['confidence'] >= POSITION_ICON_FALLBACK_CONFIDENCE:
+                method = 'gray_fallback' if best_overall in gray_results else 'clahe_fallback'
+                print(f"[Position Detection] Fallback: {best_overall['name']} (conf={best_overall['confidence']:.3f}, method={method})")
+                return {**best_overall, 'method': method}
+
+        print(f"[Position Detection] No results above fallback threshold ({POSITION_ICON_FALLBACK_CONFIDENCE})")
+        return None
 
     def find_elements(self, template_keys: List[str], confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None) -> Dict[str, List[Tuple[int, int]]]:
         """Find multiple templates by their keys. Returns center coordinates."""
@@ -2175,33 +2351,27 @@ def remove_user_position(detector: DetectionModule,
         return _return_result("failed", "ui_operation_failed", "Invalid search region calculated for position icons")
         
     search_region = (search_region_x_start, search_region_y_start, search_region_width, search_region_height)
+    bubble_top_center = (bubble_x + bubble_w // 2, bubble_y)
+
     print(f"Searching for position icons in region: {search_region}")
 
-    position_templates = {
-        'DEVELOPMENT': POS_DEV_IMG, 'INTERIOR': POS_INT_IMG, 'SCIENCE': POS_SCI_IMG,
-        'SECURITY': POS_SEC_IMG, 'STRATEGY': POS_STR_IMG, 'ADMINISTRATOR': POS_ADM_IMG,
-        'MILITARY': POS_MIL_IMG
-    }
-    found_positions = []
-    position_icon_confidence = 0.75 # Slightly increased confidence (was 0.75)
-    for name, path in position_templates.items():
-        # Use unique keys for detector templates
-        locations = detector._find_template(name.lower() + '_pos', confidence=position_icon_confidence, region=search_region)
-        for loc in locations:
-            found_positions.append({'name': name, 'coords': loc, 'path': path})
+    # Use multi-strategy detection
+    position_result = detector._detect_position_icon_multi_strategy(
+        search_region=search_region,
+        bubble_center=bubble_top_center,
+        max_distance=50
+    )
 
-    if not found_positions:
+    if position_result is None:
         print("Error: No position icons found near the trigger bubble.")
         return _return_result("failed", "no_position_found", "User does not have any position assigned")
 
-    # Find the closest one to the bubble's top-center
-    bubble_top_center_x = bubble_x + bubble_w // 2
-    bubble_top_center_y = bubble_y
-    closest_position = min(found_positions, key=lambda p:
-                           (p['coords'][0] - bubble_top_center_x)**2 + (p['coords'][1] - bubble_top_center_y)**2)
-
-    target_position_name = closest_position['name']
-    print(f"Found pending position: |{target_position_name}| at {closest_position['coords']}")
+    target_position_name = position_result['name']
+    position_coords = position_result['coords']
+    print(f"Found position: {target_position_name} at {position_coords} "
+          f"(confidence={position_result['confidence']:.3f}, "
+          f"method={position_result['method']}, "
+          f"distance={position_result['distance']:.1f}px)")
 
     # 2. Click user avatar (offset from *compensated* bubble coordinates for accurate clicking)
     # --- MODIFIED: Use compensated coordinates for avatar clicks ---
