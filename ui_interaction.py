@@ -1467,10 +1467,12 @@ class DetectionModule:
         """
         Enhanced keyword detection with adaptive thresholds and verification.
         """
-        # Wait for UI stability first
-        if not self.wait_for_ui_stability(region):
-            return None
-        
+        # Wait for UI stability, but proceed with detection even if timeout occurs.
+        # Bottom bubbles are adjacent to the chat input box (blinking cursor, dynamic UI),
+        # which causes stability checks to repeatedly fail. The verify_detection_result
+        # already provides robustness via 3 consistent attempts, so aborting here is unnecessary.
+        self.wait_for_ui_stability(region)
+
         # Use verification on the regular dual method
         return self.verify_detection_result(
             lambda r: self.find_keyword_dual_method(r), region
