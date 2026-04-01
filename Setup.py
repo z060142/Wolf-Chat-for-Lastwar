@@ -418,13 +418,51 @@ def load_current_config():
                 
             # Extract MCP_SERVERS (more complex parsing)
             try:
-                servers_section = re.search(r'MCP_SERVERS\s*=\s*{(.+?)}(?=\n\n)', config_content, re.DOTALL)
+                servers_section = re.search(r'MCP_SERVERS\s*=\s*{(.+?)\n}(?=\n)', config_content, re.DOTALL)
                 if servers_section:
                     servers_text = servers_section.group(1)
-                    
-                    # Extract and parse each server definition
-                    server_blocks = re.findall(r'"([^"]+)":\s*{(.+?)}(?=,\s*"|,?\s*})', servers_text, re.DOTALL)
-                    
+
+                    # Parse each server by looking for top-level entries only
+                    # Top-level entries start at beginning of line with 4 spaces
+                    server_blocks = []
+
+                    # Pattern: line starts with 4 spaces, then "server_name": {
+                    top_level_pattern = r'^\s{4}"([^"]+)":\s*\{'
+
+                    # Split by lines and find top-level server definitions
+                    lines = servers_text.split('\n')
+                    current_server = None
+                    current_content = []
+                    brace_count = 0
+
+                    for line in lines:
+                        # Check if this is a top-level server definition
+                        match = re.match(top_level_pattern, line)
+                        if match and brace_count == 0:
+                            # Save previous server if any
+                            if current_server:
+                                server_blocks.append((current_server, '\n'.join(current_content)))
+
+                            # Start new server
+                            current_server = match.group(1)
+                            current_content = []
+                            # Count braces in this line
+                            brace_count = line.count('{') - line.count('}')
+                        elif current_server is not None:
+                            # Continue collecting content for current server
+                            current_content.append(line)
+                            brace_count += line.count('{') - line.count('}')
+
+                            # If braces are balanced, server block is complete
+                            if brace_count == 0:
+                                server_blocks.append((current_server, '\n'.join(current_content)))
+                                current_server = None
+                                current_content = []
+
+                    # Don't forget the last server if loop ended
+                    if current_server and current_content:
+                        server_blocks.append((current_server, '\n'.join(current_content)))
+
                     for server_name, server_block in server_blocks:
                         if server_name not in config_data["MCP_SERVERS"]:
                             config_data["MCP_SERVERS"][server_name] = {"enabled": True}
@@ -470,9 +508,66 @@ def load_current_config():
                             # It's a standard Python server
                             pass
                         
-                        # For custom servers, store the raw configuration
+                        # For custom servers, parse and normalize the configuration
                         if server_name not in ["exa", "chroma", "position-tool"]:
+                            # Store raw config for display in UI
                             config_data["MCP_SERVERS"][server_name]["raw_config"] = server_block
+
+                            # Try to parse the configuration with error tolerance
+                            try:
+                                # Clean up the server_block for parsing
+                                # Remove leading/trailing whitespace and fix common issues
+                                cleaned_block = server_block.strip()
+
+                                # Attempt to create a valid Python dict string
+                                dict_str = "{" + cleaned_block + "}"
+
+                                # Fix common JSON/Python formatting issues
+                                # 1. Replace single quotes with double quotes (but not in escaped strings)
+                                # 2. Add missing commas between items
+                                # 3. Remove trailing commas before closing braces
+
+                                # Try ast.literal_eval first (safest)
+                                try:
+                                    import ast
+                                    parsed_config = ast.literal_eval(dict_str)
+                                except:
+                                    # Fallback: manual parsing with regex
+                                    parsed_config = {}
+
+                                    # Parse command
+                                    command_match = re.search(r'"command":\s*"([^"]+)"', server_block)
+                                    if command_match:
+                                        parsed_config["command"] = command_match.group(1)
+
+                                    # Parse args array
+                                    args_match = re.search(r'"args":\s*\[(.*?)\]', server_block, re.DOTALL)
+                                    if args_match:
+                                        args_str = args_match.group(1)
+                                        args_list = re.findall(r'"([^"]+)"', args_str)
+                                        parsed_config["args"] = args_list
+
+                                    # Parse env object
+                                    env_match = re.search(r'"env":\s*\{(.*?)\}', server_block, re.DOTALL)
+                                    if env_match:
+                                        env_str = env_match.group(1)
+                                        env_dict = {}
+                                        env_pairs = re.findall(r'"([^"]+)":\s*"([^"]*)"', env_str)
+                                        for key, value in env_pairs:
+                                            env_dict[key] = value
+                                        parsed_config["env"] = env_dict
+
+                                # Store parsed values
+                                if "command" in parsed_config:
+                                    config_data["MCP_SERVERS"][server_name]["command"] = parsed_config["command"]
+                                if "args" in parsed_config:
+                                    config_data["MCP_SERVERS"][server_name]["args"] = parsed_config["args"]
+                                if "env" in parsed_config:
+                                    config_data["MCP_SERVERS"][server_name]["env"] = parsed_config["env"]
+
+                            except Exception as e:
+                                print(f"Warning: Could not parse custom server '{server_name}' config: {e}")
+                                # Keep raw_config for manual editing
             except Exception as e:
                 print(f"Error parsing MCP_SERVERS section: {e}")
                 import traceback
@@ -695,17 +790,46 @@ def generate_config_file(config_data, env_data):
                     f.write(system_prompt)
                     f.write("\"\"\"\n")
             
-            # Handle custom server - just write as raw JSON
+            # Handle custom server - write properly formatted configuration
             elif server_name not in ["exa", "chroma", "position-tool"]:
-                if "raw_config" in server_config:
-                    f.write(server_config["raw_config"])
-                    # Add system prompt for custom servers
-                    system_prompt = server_config.get("system_prompt", "").strip()
-                    if system_prompt:
-                        f.write(",\n        \"system_prompt\": \"\"\"")
-                        f.write(system_prompt)
-                        f.write("\"\"\"")
-                    f.write("\n")
+                # Write command
+                command = server_config.get("command", "")
+                if command:
+                    f.write(f"        \"command\": \"{command}\",\n")
+
+                # Write args
+                args = server_config.get("args", [])
+                if args:
+                    f.write("        \"args\": [\n")
+                    for i, arg in enumerate(args):
+                        # Escape quotes and backslashes in arg values
+                        escaped_arg = arg.replace('\\', '\\\\').replace('"', '\\"')
+                        if i < len(args) - 1:
+                            f.write(f"            \"{escaped_arg}\",\n")
+                        else:
+                            f.write(f"            \"{escaped_arg}\"\n")
+                    f.write("        ],\n")
+
+                # Write env (optional)
+                env = server_config.get("env", {})
+                if env:
+                    f.write("        \"env\": {\n")
+                    env_items = list(env.items())
+                    for i, (key, value) in enumerate(env_items):
+                        # Escape quotes in env values
+                        escaped_value = value.replace('"', '\\"')
+                        if i < len(env_items) - 1:
+                            f.write(f"            \"{key}\": \"{escaped_value}\",\n")
+                        else:
+                            f.write(f"            \"{key}\": \"{escaped_value}\"\n")
+                    f.write("        },\n")
+
+                # Add system prompt for custom servers
+                system_prompt = server_config.get("system_prompt", "").strip()
+                if system_prompt:
+                    f.write("        \"system_prompt\": \"\"\"")
+                    f.write(system_prompt)
+                    f.write("\"\"\"\n")
             
             f.write("    },\n")
         
@@ -751,10 +875,6 @@ def generate_config_file(config_data, env_data):
         f.write(f"GAME_WINDOW_WIDTH = {game_config['GAME_WINDOW_WIDTH']}\n")
         f.write(f"GAME_WINDOW_HEIGHT = {game_config['GAME_WINDOW_HEIGHT']}\n")
         f.write(f"MONITOR_INTERVAL_SECONDS = {game_config['MONITOR_INTERVAL_SECONDS']}\n\n")
-
-        # --- Add explicit print before writing Chroma section ---
-        print("DEBUG: Writing ChromaDB Memory Configuration section...")
-        # --- End explicit print ---
 
         # Write ChromaDB Memory Configuration
         f.write("# =============================================================================\n")
@@ -829,7 +949,10 @@ class WolfChatSetup(tk.Tk):
         self.env_data = load_env_file()
         self.config_data = load_current_config()
         self.remote_data = load_remote_config() # Load new remote config
-        
+
+        # Track last selected server for auto-save
+        self._last_selected_server = None
+
         # Create the notebook for tabs
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
@@ -3075,21 +3198,114 @@ class WolfChatSetup(tk.Tk):
             if server_name not in ("exa", "chroma", "position-tool"):
                 self.servers_listbox.insert(tk.END, server_name)
     
+    def save_current_server_to_memory(self):
+        """Save current server UI state to config_data (without writing to file)"""
+        # Get the currently selected server from the last selection
+        if not hasattr(self, '_last_selected_server'):
+            return
+
+        server_name = self._last_selected_server
+
+        # Only save custom servers
+        if server_name not in ("exa", "chroma", "position-tool") and server_name:
+            if server_name in self.config_data.get("MCP_SERVERS", {}):
+                try:
+                    # Get current name (might be renamed)
+                    new_name = self.custom_name_var.get().strip()
+                    if not new_name:
+                        return
+
+                    # Handle rename
+                    if new_name != server_name:
+                        if new_name in self.config_data["MCP_SERVERS"]:
+                            # Name conflict, don't save
+                            return
+                        self.config_data["MCP_SERVERS"][new_name] = self.config_data["MCP_SERVERS"][server_name].copy()
+                        del self.config_data["MCP_SERVERS"][server_name]
+                        server_name = new_name
+
+                    # Update enabled state
+                    self.config_data["MCP_SERVERS"][server_name]["enabled"] = self.custom_enable_var.get()
+
+                    # Update raw_config
+                    raw_config_input = self.custom_config_text.get("1.0", tk.END).strip()
+                    self.config_data["MCP_SERVERS"][server_name]["raw_config"] = raw_config_input
+
+                    # Try to parse and update structured fields
+                    try:
+                        dict_str = "{" + raw_config_input + "}"
+                        dict_str = dict_str.replace('\u201c', '"').replace('\u201d', '"')
+                        dict_str = dict_str.replace('\u2018', "'").replace('\u2019', "'")
+
+                        import ast
+                        try:
+                            parsed_config = ast.literal_eval(dict_str)
+                        except:
+                            parsed_config = {}
+                            command_match = re.search(r'"command":\s*"([^"]+)"', raw_config_input)
+                            if command_match:
+                                parsed_config["command"] = command_match.group(1)
+                            args_match = re.search(r'"args":\s*\[(.*?)\]', raw_config_input, re.DOTALL)
+                            if args_match:
+                                args_list = re.findall(r'"([^"]+)"', args_match.group(1))
+                                if args_list:
+                                    parsed_config["args"] = args_list
+                            env_match = re.search(r'"env":\s*\{(.*?)\}', raw_config_input, re.DOTALL)
+                            if env_match:
+                                env_dict = {}
+                                env_pairs = re.findall(r'"([^"]+)":\s*"([^"]*)"', env_match.group(1))
+                                for key, value in env_pairs:
+                                    env_dict[key] = value
+                                if env_dict:
+                                    parsed_config["env"] = env_dict
+
+                        if "command" in parsed_config:
+                            self.config_data["MCP_SERVERS"][server_name]["command"] = parsed_config["command"]
+                        if "args" in parsed_config:
+                            self.config_data["MCP_SERVERS"][server_name]["args"] = parsed_config["args"]
+                        if "env" in parsed_config:
+                            self.config_data["MCP_SERVERS"][server_name]["env"] = parsed_config["env"]
+                        elif "env" in self.config_data["MCP_SERVERS"][server_name]:
+                            del self.config_data["MCP_SERVERS"][server_name]["env"]
+
+                    except Exception as e:
+                        # Silent error during auto-save, will be caught during final save validation
+                        pass
+
+                    # Update system prompt
+                    custom_prompt = self.custom_system_prompt_text.get("1.0", tk.END).strip()
+                    self.config_data["MCP_SERVERS"][server_name]["system_prompt"] = custom_prompt
+
+                    # Update listbox if name changed
+                    if server_name != self._last_selected_server:
+                        self.update_servers_list()
+                        self._last_selected_server = server_name
+
+                except Exception as e:
+                    # Silent error during auto-save
+                    pass
+
     def on_server_select(self, event):
         """Handle server selection from the listbox"""
+        # First, save the current server's UI state to memory
+        self.save_current_server_to_memory()
+
         selection = self.servers_listbox.curselection()
         if not selection:
             return
-        
+
         selected_server = self.servers_listbox.get(selection[0])
-        
+
+        # Update last selected server for next auto-save
+        self._last_selected_server = selected_server
+
         # Hide all settings frames
         self.empty_settings_label.pack_forget()
         self.exa_frame.pack_forget()
         self.chroma_frame.pack_forget()
         self.position_tool_frame.pack_forget()
         self.custom_frame.pack_forget()
-        
+
         # Show the selected server's settings frame
         if selected_server == "exa":
             self.exa_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -3107,16 +3323,41 @@ class WolfChatSetup(tk.Tk):
                 server_config = self.config_data["MCP_SERVERS"][selected_server]
                 self.custom_name_var.set(selected_server)
                 self.custom_enable_var.set(server_config.get("enabled", True))
-                
-                if "raw_config" in server_config:
-                    self.custom_config_text.delete("1.0", tk.END)
-                    self.custom_config_text.insert("1.0", server_config["raw_config"])
-                
+
+                # Load or reconstruct raw_config for display
+                if "raw_config" in server_config and server_config["raw_config"]:
+                    # Use existing raw_config
+                    raw_config_display = server_config["raw_config"]
+                else:
+                    # Reconstruct from parsed fields
+                    raw_config_parts = []
+
+                    if "command" in server_config:
+                        raw_config_parts.append(f'        "command": "{server_config["command"]}"')
+
+                    if "args" in server_config:
+                        args = server_config["args"]
+                        args_str = ',\n            '.join([f'"{arg}"' for arg in args])
+                        raw_config_parts.append(f'        "args": [\n            {args_str}\n        ]')
+
+                    if "env" in server_config:
+                        env = server_config["env"]
+                        env_items = [f'"{k}": "{v}"' for k, v in env.items()]
+                        env_str = ',\n            '.join(env_items)
+                        raw_config_parts.append(f'        "env": {{\n            {env_str}\n        }}')
+
+                    raw_config_display = ',\n'.join(raw_config_parts)
+                    # Update the stored raw_config
+                    server_config["raw_config"] = raw_config_display
+
+                self.custom_config_text.delete("1.0", tk.END)
+                self.custom_config_text.insert("1.0", raw_config_display)
+
                 # Load system prompt for custom server
                 system_prompt = server_config.get("system_prompt", "")
                 self.custom_system_prompt_text.delete("1.0", tk.END)
                 self.custom_system_prompt_text.insert("1.0", system_prompt)
-            
+
             self.custom_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             self.remove_btn.config(state=tk.NORMAL)  # Can remove custom servers
     
@@ -3183,8 +3424,12 @@ class WolfChatSetup(tk.Tk):
     def save_settings(self, show_success_message=True): # Added optional param
         """Save all settings to config.py, .env, and remote_config.json files"""
         try:
+            # First, save any currently edited custom server to memory
+            # This ensures "what you see is what you get"
+            self.save_current_server_to_memory()
+
             # Update config data from UI (for config.py and .env)
-            
+
             # API settings
             self.config_data["OPENAI_API_BASE_URL"] = self.api_url_var.get()
             self.config_data["LLM_MODEL"] = self.model_var.get()
@@ -3257,40 +3502,22 @@ class WolfChatSetup(tk.Tk):
                 return
             self.config_data["MCP_SERVERS"]["position-tool"]["system_prompt"] = position_tool_prompt
             
-            # Custom server - check if one is currently selected
-            selection = self.servers_listbox.curselection()
-            if selection:
-                selected_server = self.servers_listbox.get(selection[0])
-                if selected_server not in ("exa", "chroma", "position-tool"):
-                    # Update custom server settings
-                    new_name = self.custom_name_var.get().strip()
-                    
-                    if not new_name:
-                        messagebox.showerror("Error", "Custom server name cannot be empty")
+            # Validate all custom servers before saving
+            for server_name, server_config in self.config_data.get("MCP_SERVERS", {}).items():
+                if server_name not in ("exa", "chroma", "position-tool"):
+                    # Validate that command exists
+                    if "command" not in server_config or not server_config["command"]:
+                        messagebox.showerror("Error", f"Custom server '{server_name}' is missing 'command' field")
                         return
-                    
-                    # Handle name change
-                    if new_name != selected_server:
-                        if new_name in self.config_data["MCP_SERVERS"]:
-                            messagebox.showerror("Error", f"Server name '{new_name}' already exists")
+
+                    # Validate system prompt
+                    system_prompt = server_config.get("system_prompt", "")
+                    if system_prompt:
+                        is_valid, error_message = self.validate_system_prompt(system_prompt)
+                        if not is_valid:
+                            messagebox.showerror("Error", f"Custom server '{server_name}' system prompt validation failed: {error_message}")
                             return
-                        
-                        # Copy config and delete old entry
-                        self.config_data["MCP_SERVERS"][new_name] = self.config_data["MCP_SERVERS"][selected_server].copy()
-                        del self.config_data["MCP_SERVERS"][selected_server]
-                    
-                    # Update other settings
-                    self.config_data["MCP_SERVERS"][new_name]["enabled"] = self.custom_enable_var.get()
-                    self.config_data["MCP_SERVERS"][new_name]["raw_config"] = self.custom_config_text.get("1.0", tk.END).strip()
-                    
-                    # Save custom server system prompt
-                    custom_prompt = self.custom_system_prompt_text.get("1.0", tk.END).strip()
-                    is_valid, error_message = self.validate_system_prompt(custom_prompt)
-                    if not is_valid:
-                        messagebox.showerror("Error", f"Custom server system prompt validation failed: {error_message}")
-                        return
-                    self.config_data["MCP_SERVERS"][new_name]["system_prompt"] = custom_prompt
-            
+
             # Game window settings
             self.config_data["GAME_WINDOW_CONFIG"] = {
                 "WINDOW_TITLE": self.window_title_var.get(),

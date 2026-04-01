@@ -8,7 +8,9 @@
 openai
 
 # MCP (Modular Capability Provider) framework
-mcp
+# Updated to version 1.25.0 (2026-01) for timeout fixes and stability improvements
+# Changelog: https://github.com/modelcontextprotocol/python-sdk/releases
+mcp>=1.25.0
 
 # Python environment configuration
 python-dotenv
