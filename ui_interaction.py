@@ -2352,8 +2352,8 @@ def remove_user_position(detector: DetectionModule,
         print(f"Error: Invalid search region calculated for position icons: width={search_region_width}, height={search_region_height}")
         return _return_result("failed", "ui_operation_failed", "Invalid search region calculated for position icons")
         
-    search_region = (search_region_x_start, search_region_y_start, search_region_width, search_region_height)
-    bubble_top_center = (bubble_x + bubble_w // 2, bubble_y)
+    search_region = (int(search_region_x_start), int(search_region_y_start), int(search_region_width), int(search_region_height))
+    bubble_top_center = (int(bubble_x + bubble_w // 2), int(bubble_y))
 
     print(f"Searching for position icons in region: {search_region}")
 
