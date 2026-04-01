@@ -39,19 +39,89 @@ def get_embedding_function():
     return _embedding_function
 
 def initialize_chroma_client():
-    """Initializes and connects to ChromaDB"""
+    """Initializes and connects to ChromaDB with retry mechanism"""
     global _client
-    try:
-        # Ensure Chroma directory exists
-        os.makedirs(config.CHROMA_DATA_DIR, exist_ok=True)
 
-        # New method (for v1.0.6+)
-        _client = chromadb.PersistentClient(path=config.CHROMA_DATA_DIR)
-        print(f"Successfully connected to ChromaDB ({config.CHROMA_DATA_DIR})")
-        return True
-    except Exception as e:
-        print(f"Failed to connect to ChromaDB: {e}")
-        return False
+    # Ensure Chroma directory exists
+    os.makedirs(config.CHROMA_DATA_DIR, exist_ok=True)
+
+    # Retry configuration
+    max_retries = 3
+    retry_delay = 1.0  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            # Create client with explicit settings for better stability
+            settings = Settings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+                is_persistent=True
+            )
+
+            _client = chromadb.PersistentClient(
+                path=config.CHROMA_DATA_DIR,
+                settings=settings
+            )
+
+            # Verify initialization by attempting to list collections
+            # This ensures the database is fully initialized and responsive
+            try:
+                _ = _client.list_collections()
+                print(f"Successfully connected to ChromaDB ({config.CHROMA_DATA_DIR})")
+
+                # Ensure all required collections exist (warm up the database)
+                _ensure_required_collections()
+
+                return True
+            except Exception as verify_error:
+                print(f"ChromaDB client created but verification failed: {verify_error}")
+                raise verify_error
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"ChromaDB initialization attempt {attempt + 1}/{max_retries} failed: {e}")
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print(f"Failed to connect to ChromaDB after {max_retries} attempts: {e}")
+                import traceback
+                print(f"Full error traceback:\n{traceback.format_exc()}")
+                return False
+
+    return False
+
+def _ensure_required_collections():
+    """
+    Ensures all required collections exist during initialization.
+    This helps ChromaDB fully initialize the database structure.
+    """
+    global _client
+    if not _client:
+        return
+
+    required_collections = [
+        config.CONVERSATIONS_COLLECTION,
+        config.BOT_MEMORY_COLLECTION,
+        config.PROFILES_COLLECTION
+    ]
+
+    print("Ensuring required collections exist...")
+    emb_func = get_embedding_function()
+
+    if emb_func is None:
+        print("Warning: Cannot ensure collections exist - embedding function not available")
+        return
+
+    for collection_name in required_collections:
+        try:
+            _client.get_or_create_collection(
+                name=collection_name,
+                embedding_function=emb_func
+            )
+            print(f"  ✓ Collection '{collection_name}' ready")
+        except Exception as e:
+            print(f"  ✗ Warning: Could not ensure collection '{collection_name}': {e}")
 
 def get_collection(collection_name):
     """Gets or creates a collection"""

@@ -10,6 +10,7 @@ from openai import AsyncOpenAI, OpenAIError
 from mcp import ClientSession # Type hinting
 import config
 import mcp_client # To call MCP tools
+from utils.json_helper import safe_json_loads, validate_json_schema
 
 # --- Debug 配置 ---
 # 要關閉 debug 功能，只需將此變數設置為 False 或註釋掉該行
@@ -252,6 +253,15 @@ def get_system_prompt(
     - Never use asterisk actions (*does something*)
     - Deliver information directly in natural dialogue
     - Stay in character while providing accurate information
+
+    **OUTPUT FORMAT:**
+    You MUST respond ONLY in this exact JSON format:
+    ```json
+    {{
+        "dialogue": "Your spoken response (REQUIRED - conversational words only)",
+        "thoughts": "Internal analysis (optional, e.g., 'The user seems confused, I should...')"
+    }}
+    ```
     """
 
     return system_prompt
@@ -300,9 +310,13 @@ def parse_structured_response(response_content: str) -> dict:
             json_str = json_match.group(1).strip() # Add .strip() here
             # REMOVED DEBUG LOGS FROM HERE
             try: # Correctly placed try block for parsing extracted string
-                parsed_json = json.loads(json_str)
+                parsed_json = safe_json_loads(
+                    json_str,
+                    default={"valid_response": False, "dialogue": ""},
+                    expected_type=dict
+                )
                 # REMOVED DEBUG LOGS FROM HERE
-                if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
+                if parsed_json and validate_json_schema(parsed_json, ["dialogue"]):
                     # REMOVED DEBUG LOGS FROM HERE
                     # 清理 dialogue 中的非對話內容
                     dialogue_content = parsed_json.get("dialogue", "")
@@ -339,9 +353,13 @@ def parse_structured_response(response_content: str) -> dict:
         try:
             content_to_parse_directly = cleaned_content.strip()
             # REMOVED DEBUG LOGS FROM HERE
-            parsed_json = json.loads(content_to_parse_directly) # Add .strip()
+            parsed_json = safe_json_loads(
+                content_to_parse_directly,
+                default={"valid_response": False, "dialogue": ""},
+                expected_type=dict
+            )
             # REMOVED DEBUG LOGS FROM HERE
-            if isinstance(parsed_json, dict) and "dialogue" in parsed_json:
+            if parsed_json and validate_json_schema(parsed_json, ["dialogue"]):
                 # REMOVED DEBUG LOGS FROM HERE
                 # 清理 dialogue 中的非對話內容
                 dialogue_content = parsed_json.get("dialogue", "")
@@ -398,7 +416,7 @@ def parse_structured_response(response_content: str) -> dict:
             # REMOVED DEBUG LOGS FROM HERE
             # 嘗試修復可能的JSON錯誤
             fixed_commands_str = commands_str.replace("'", '"').replace('\n', ' ')
-            commands = json.loads(fixed_commands_str)
+            commands = safe_json_loads(fixed_commands_str, default=[], expected_type=list)
             if isinstance(commands, list):
                 default_result["commands"] = commands
                 print(f"Extracted {len(commands)} commands via regex.") # Simplified print
@@ -429,7 +447,7 @@ def parse_structured_response(response_content: str) -> dict:
             if not json_content.endswith('}'):
                 json_content = json_content + '}'
             # REMOVED DEBUG LOGS FROM HERE
-            parsed_data = json.loads(json_content)
+            parsed_data = safe_json_loads(json_content, default={}, expected_type=dict)
             
             # 獲取對話內容
             if "dialogue" in parsed_data:
@@ -482,6 +500,56 @@ def parse_structured_response(response_content: str) -> dict:
     
     # REMOVED DEBUG LOGS FROM HERE
     return default_result
+
+
+async def repair_json_format(malformed_content: str) -> str | None:
+    """
+    使用LLM將格式錯誤的回應重新格式化為正確的JSON格式。
+    這是一個輕量級的修復調用，只負責格式化，不改變內容語義。
+
+    Args:
+        malformed_content: 格式錯誤的原始LLM回應
+
+    Returns:
+        修復後的JSON字符串，如果修復失敗則返回None
+    """
+    if not client:
+        print("Warning: LLM client not initialized, cannot repair JSON format")
+        return None
+
+    repair_prompt = f"""Reformat this content into the required JSON format.
+
+Content:
+```
+{malformed_content}
+```
+
+Output this exact JSON structure only:
+```json
+{{
+    "dialogue": "main response text here",
+    "thoughts": "internal thoughts or empty string"
+}}
+```"""
+
+    try:
+        print("Attempting to repair malformed JSON format...")
+        response = await client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[
+                {"role": "user", "content": repair_prompt}
+            ],
+            temperature=0  # 使用0溫度保證穩定輸出
+        )
+
+        repaired_content = response.choices[0].message.content
+        print(f"JSON repair attempt completed. Result length: {len(repaired_content) if repaired_content else 0}")
+
+        return repaired_content
+
+    except Exception as e:
+        print(f"Error during JSON format repair: {e}")
+        return None
 
 
 def _format_mcp_tools_for_openai(mcp_tools: list) -> list:
@@ -597,9 +665,9 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
         A list of message dictionaries for the OpenAI API.
     """
     # Limits
-    SAME_SENDER_LIMIT = 5  # Last 5 interactions (user + bot response = 1 interaction)
-    OTHER_SENDER_LIMIT = 5 # Last 5 interactions from other users (user + bot response = 1 interaction)
-    FULL_TOOL_RESULTS_LIMIT = 2  # Include full tool results for the 2 most recent interactions
+    SAME_SENDER_LIMIT = 4  # Last 5 interactions (user + bot response = 1 interaction)
+    OTHER_SENDER_LIMIT = 3 # Last 5 interactions from other users (user + bot response = 1 interaction)
+    FULL_TOOL_RESULTS_LIMIT = 1  # Include full tool results for the 1 most recent interaction from current sender only
 
     relevant_history = []
     same_sender_interactions = 0
@@ -635,7 +703,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
         is_current_sender = (speaker_type == 'user' and speaker_name == current_sender_name)
 
         # Helper function to format bot response with tool info
-        def format_bot_response(bot_entry_idx):
+        def format_bot_response(bot_entry_idx, is_response_to_current_sender=False):
             nonlocal full_tool_results_count
             bot_entry = history[bot_entry_idx]
             if len(bot_entry) >= 5:
@@ -647,8 +715,8 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
             bot_formatted_timestamp = bot_timestamp.strftime("%Y-%m-%d %H:%M:%S")
             tool_status = _format_tool_info_status(bot_tool_info)
 
-            # For the most recent N interactions (any user), include full tool results
-            if full_tool_results_count < FULL_TOOL_RESULTS_LIMIT and bot_tool_info:
+            # Only include full tool results for current sender's interactions (limited to FULL_TOOL_RESULTS_LIMIT)
+            if is_response_to_current_sender and full_tool_results_count < FULL_TOOL_RESULTS_LIMIT and bot_tool_info:
                 tool_results_full = _format_tool_results_full(bot_tool_info)
                 bot_formatted_content = f"[{bot_formatted_timestamp}] {bot_speaker_name} {tool_status}: {bot_message}\n<previous_tool_results>\n{tool_results_full}\n</previous_tool_results>"
                 full_tool_results_count += 1
@@ -663,7 +731,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
                 relevant_history.append(api_message) # Append user message with timestamp
                 # Check for preceding bot response
                 if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
-                     relevant_history.append(format_bot_response(i-1))
+                     relevant_history.append(format_bot_response(i-1, is_response_to_current_sender=True))
 
                 same_sender_interactions += 1
         elif speaker_type == 'user': # Message from a different user
@@ -672,7 +740,7 @@ def _build_context_messages(current_sender_name: str, history: list[tuple], syst
                 relevant_history.append(api_message) # Append other user message with timestamp
                 # Check for preceding bot response to other users too
                 if i > 0 and history[i-1][1] == 'bot': # Check speaker_type at index 1
-                     relevant_history.append(format_bot_response(i-1))
+                     relevant_history.append(format_bot_response(i-1, is_response_to_current_sender=False))
                 other_sender_messages += 1
         # Bot responses are handled when processing the user message they replied to.
 
@@ -925,6 +993,36 @@ async def get_llm_response(
         print(f"DEBUG: Attempt {attempt_count} - initial parsed_response dict: {parsed_response}")
         # --- End Debug Logs ---
 
+        # --- JSON Format Repair Attempt ---
+        # If initial parsing failed and we have content to work with, try to repair the format
+        if not parsed_response.get("valid_response") and content_to_parse and content_to_parse.strip():
+            print(f"INFO: Initial JSON parsing failed (Attempt {attempt_count}). Attempting format repair...")
+            debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Initiating Format Repair",
+                      f"Original content length: {len(content_to_parse)}")
+
+            repaired_content = await repair_json_format(content_to_parse)
+
+            if repaired_content:
+                print(f"INFO: Format repair returned content. Re-parsing...")
+                debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Repair Result",
+                          f"Repaired content:\n{repaired_content}")
+
+                # Re-parse the repaired content
+                repaired_parsed = parse_structured_response(repaired_content)
+
+                if repaired_parsed.get("valid_response"):
+                    print(f"SUCCESS: Format repair successful! Valid response obtained.")
+                    parsed_response = repaired_parsed  # Use the repaired version
+                    debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Repair Success",
+                              f"Repaired parsed response: {repaired_parsed}")
+                else:
+                    print(f"WARNING: Format repair did not yield valid response. Will try other fallbacks...")
+                    debug_log(f"LLM Request #{request_id} - Attempt {attempt_count} - Repair Failed",
+                              "Repaired content still could not be parsed as valid")
+            else:
+                print(f"WARNING: Format repair returned no content. Will try other fallbacks...")
+        # --- End JSON Format Repair ---
+
         # Check if we need to generate a synthetic response
         if all_tool_results and not parsed_response.get("valid_response"):
             print(f"INFO: Tools were used but LLM response was invalid/empty. Generating synthetic response (Attempt {attempt_count})...")
@@ -1003,7 +1101,7 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
                   f"Tool: {function_name}\nID: {tool_call_id}\nArgs: {function_args_str}")
 
     try:
-        function_args = json.loads(function_args_str)
+        function_args = safe_json_loads(function_args_str, default={}, expected_type=dict)
         print(f"Parsed arguments (dictionary): {function_args}")
 
         # Argument Type Correction for web_search

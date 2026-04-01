@@ -344,6 +344,8 @@ POS_INT_IMG = os.path.join(TEMPLATE_DIR, "positions", "interior.png")
 POS_SCI_IMG = os.path.join(TEMPLATE_DIR, "positions", "science.png")
 POS_SEC_IMG = os.path.join(TEMPLATE_DIR, "positions", "security.png")
 POS_STR_IMG = os.path.join(TEMPLATE_DIR, "positions", "strategy.png")
+POS_ADM_IMG = os.path.join(TEMPLATE_DIR, "positions", "administrator.png")
+POS_MIL_IMG = os.path.join(TEMPLATE_DIR, "positions", "military.png")
 
 # Capitol Page Elements
 CAPITOL_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "capitol_#11.png")
@@ -353,11 +355,15 @@ POS_BTN_INT_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_interior.png")
 POS_BTN_SCI_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_science.png")
 POS_BTN_SEC_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_security.png")
 POS_BTN_STR_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_strategy.png")
+POS_BTN_ADM_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_administrator.png")
+POS_BTN_MIL_IMG = os.path.join(TEMPLATE_DIR, "capitol", "position_military.png")
 PAGE_DEV_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_DEVELOPMENT.png")
 PAGE_INT_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_INTERIOR.png")
 PAGE_SCI_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_SCIENCE.png")
 PAGE_SEC_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_SECURITY.png")
 PAGE_STR_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_STRATEGY.png")
+PAGE_ADM_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_administrator.png")
+PAGE_MIL_IMG = os.path.join(TEMPLATE_DIR, "capitol", "page_military.png")
 DISMISS_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "dismiss.png")
 CONFIRM_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "confirm.png")
 CLOSE_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "capitol", "close_button.png")
@@ -365,32 +371,143 @@ BACK_ARROW_IMG = os.path.join(TEMPLATE_DIR, "capitol", "black_arrow_down.png")
 REPLY_BUTTON_IMG = os.path.join(TEMPLATE_DIR, "reply_button.png") # Added for reply functionality
 
 
-# --- Operation Parameters (Consider moving to config.py) ---
-CHAT_INPUT_REGION = None # Example: (100, 800, 500, 50)
-CHAT_INPUT_CENTER_X = 400
-CHAT_INPUT_CENTER_Y = 1280
-SCREENSHOT_REGION = (70, 50, 800, 1365) # Updated region
-CONFIDENCE_THRESHOLD = 0.9 # Increased threshold for corner matching
-STATE_CONFIDENCE_THRESHOLD = 0.9
-AVATAR_OFFSET_X = -50 # Original offset, used for non-reply interactions like position removal
-AVATAR_OFFSET_Y = 15  # Vertical offset for non-reply interactions, as requested
-# AVATAR_OFFSET_X_RELOCATED = -50 # Replaced by specific reply offsets
-AVATAR_OFFSET_X_REPLY = -45 # Horizontal offset for avatar click after re-location (for reply context)
-AVATAR_OFFSET_Y_REPLY = 10  # Vertical offset for avatar click after re-location (for reply context)
-AVATAR_EXTENSION_PX = 120  # Extended pixels to the left for avatar inclusion in screenshots
-BUBBLE_RELOCATE_CONFIDENCE = 0.8 # Reduced confidence for finding the bubble snapshot (was 0.9)
-BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6 # Lower confidence for fallback attempts
-BBOX_SIMILARITY_TOLERANCE = 10
-RECENT_TEXT_HISTORY_MAXLEN = 5 # This state likely belongs in the coordinator
-DEDUPLICATION_WINDOW_SIZE = 4 # 統一控制圖片去重和文字去重的滾動視窗大小
+# ==============================================================================
+# 參數配置區 - UI Interaction Module
+# ==============================================================================
+# 所有可調整的參數集中在此區域，方便維護和修改
+# 修改此區域的參數後，請測試相關功能以確保正常運作
+# ==============================================================================
 
-# --- New Constants for Dual Method ---
-CLAHE_CLIP_LIMIT = 2.0  # CLAHE enhancement parameter
-CLAHE_TILE_SIZE = (8, 8)  # CLAHE grid size
-MATCH_DISTANCE_THRESHOLD = 10  # Threshold for considering detections as overlapping (pixels)
-DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.87 # Confidence threshold for individual methods in dual mode
-DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD = 0.85 # Threshold for accepting single method result directly
-DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD = 0.8 # Threshold for accepting single method result in fallback
+# ============================================================
+# 第一組：偵測區域配置（螢幕座標）
+# ============================================================
+# 主要截圖區域 - 用於整體 UI 偵測
+SCREENSHOT_REGION = (70, 50, 800, 1365)  # (x, y, width, height)
+
+# 對話泡泡偵測區域 - 分別用於不同的偵測方法
+BUBBLE_DETECTION_REGION_TEMPLATE = (200, 330, 680, 1215)  # 用於模板匹配
+BUBBLE_DETECTION_REGION_COLOR = (200, 270, 680, 1215)     # 用於顏色偵測
+
+# 經濟模式監控區域 - 用於閒置時的變化偵測
+ECO_MODE_REGION = (90, 550, 610, 200)  # 經濟模式固定監控區域
+
+# 聊天輸入框區域與座標
+CHAT_INPUT_REGION = None  # 保留供未來使用
+CHAT_INPUT_CENTER_X = 400   # 輸入框中心 X 座標
+CHAT_INPUT_CENTER_Y = 1280  # 輸入框中心 Y 座標
+
+# ============================================================
+# 第二組：偏移量配置（像素）
+# ============================================================
+# 頭像點擊偏移 - 用於非回覆互動（如移除職位）
+AVATAR_OFFSET_X = -50  # 相對於泡泡的水平偏移
+AVATAR_OFFSET_Y = 15   # 相對於泡泡的垂直偏移
+
+# 頭像點擊偏移 - 用於回覆情境
+AVATAR_OFFSET_X_REPLY = -45  # 回覆時的水平偏移
+AVATAR_OFFSET_Y_REPLY = 10   # 回覆時的垂直偏移
+
+# 泡泡截圖擴展 - 向左擴展以包含頭像
+AVATAR_EXTENSION_PX = 120  # 擴展像素數
+
+# 回覆關鍵字的額外 Y 軸偏移
+REPLY_KEYWORD_Y_OFFSET = 15  # 回覆關鍵字時的額外垂直偏移
+
+# ============================================================
+# 第三組：信心度閾值配置（0.0-1.0）
+# ============================================================
+# 主要信心度閾值
+CONFIDENCE_THRESHOLD = 0.9  # 角落匹配的預設信心度
+STATE_CONFIDENCE_THRESHOLD = 0.9  # 狀態偵測的信心度
+
+# 泡泡重定位信心度
+BUBBLE_RELOCATE_CONFIDENCE = 0.8  # 尋找泡泡快照的信心度
+BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6  # 備用低信心度
+
+# 雙方法偵測信心度（CLAHE + Grayscale）
+DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.87  # 雙方法個別閾值
+DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD = 0.85  # 高信心度直接接受
+DUAL_METHOD_FALLBACK_CONFIDENCE_THRESHOLD = 0.8  # 備用閾值
+
+# UI 元素偵測信心度（用於各種 UI 按鈕和選項）
+UI_ELEMENT_HIGH_CONFIDENCE = 0.8  # 高優先級 UI 元素（chat_option, capitol_button 等）
+UI_ELEMENT_MEDIUM_CONFIDENCE = 0.75  # 中優先級 UI 元素（position icons）
+UI_ELEMENT_LOW_CONFIDENCE = 0.7  # 低優先級 UI 元素（copy menu, profile option 等）
+UI_ELEMENT_LAST_RESORT_CONFIDENCE = 0.4  # 最後手段的極低信心度
+
+# ============================================================
+# 第四組：時間延遲配置（秒）
+# ============================================================
+# 基礎操作延遲
+DELAY_CLICK_SHORT = 0.05  # 短暫點擊後延遲
+DELAY_CLICK_MEDIUM = 0.1  # 中等點擊後延遲
+DELAY_CLICK_LONG = 0.15   # 較長點擊後延遲
+
+# UI 回應等待時間
+DELAY_UI_RESPONSE = 0.2   # 等待 UI 回應
+DELAY_UI_PASTE = 0.4      # 貼上操作後延遲
+DELAY_UI_MENU = 0.1       # 選單操作後延遲
+DELAY_UI_ESC = 0.05       # ESC 按鍵後延遲
+
+# 流程控制延遲
+DELAY_PROFILE_PAGE = 0.2  # 等待個人資料頁面載入
+DELAY_CAPITOL_PAGE = 0.2  # 等待國會頁面載入
+DELAY_POSITION_PAGE = 0.4  # 等待職位頁面載入
+DELAY_CONFIRMATION = 0.4  # 等待確認對話框
+DELAY_ACTION_COMPLETE = 0.05  # 等待動作完成
+
+# 循環與重試延遲
+DELAY_BUBBLE_SCAN_INTERVAL = 1.5  # 泡泡掃描間隔
+DELAY_ERROR_RETRY = 0.5  # 錯誤後重試延遲
+DELAY_MAJOR_ERROR_RETRY = 3  # 重大錯誤後重試延遲
+DELAY_GAME_RESTART_WAIT = 30  # 遊戲重啟後等待時間
+
+# ============================================================
+# 第五組：容差與閾值配置
+# ============================================================
+# 邊界框相似度容差
+BBOX_SIMILARITY_TOLERANCE = 10  # 像素容差
+
+# 座標距離閾值
+MATCH_DISTANCE_THRESHOLD = 10  # 視為重疊的閾值（像素）
+COORDINATE_TOLERANCE = 10  # 座標相似度容差
+
+# 去重視窗大小
+DEDUPLICATION_WINDOW_SIZE = 4  # 圖片和文字去重的滾動視窗大小
+RECENT_TEXT_HISTORY_MAXLEN = 5  # 近期文字歷史最大長度
+
+# ============================================================
+# 第六組：圖像處理參數
+# ============================================================
+# CLAHE 增強參數
+CLAHE_CLIP_LIMIT = 2.0  # CLAHE 對比度限制
+CLAHE_TILE_SIZE = (8, 8)  # CLAHE 網格大小
+
+# ============================================================
+# 第七組：經濟模式與穩定性配置
+# ============================================================
+# 經濟模式參數
+ECO_MODE_THRESHOLD = 2  # 觸發經濟模式的無新泡泡循環次數
+ECO_MODE_INTERVAL = 1.5  # 經濟模式的檢測間隔（秒）
+ECO_MODE_WAKEUP_INTERVAL = 300  # 5 分鐘強制喚醒間隔（秒）
+ECO_MODE_CHANGE_THRESHOLD = 2.0  # 2% 的像素變化閾值
+
+# UI 穩定性參數
+UI_STABILITY_TIMEOUT = 0.5  # UI 穩定性最大等待時間
+UI_STABILITY_DURATION = 0.1  # 需要的穩定持續時間
+VERIFICATION_ATTEMPTS = 3  # 驗證嘗試次數
+
+# ============================================================
+# 第八組：導航與其他參數
+# ============================================================
+# 導航重試參數
+MAIN_SCREEN_MAX_CLICKS = 5  # 主畫面最大點擊次數
+MAIN_SCREEN_RETURN_X = 600  # 返回聊天室的 X 座標
+MAIN_SCREEN_RETURN_Y = 1300  # 返回聊天室的 Y 座標
+
+# ==============================================================================
+# 參數配置區結束
+# ==============================================================================
 
 # --- Helper Functions for Extended Screenshot ---
 def capture_extended_bubble_screenshot(bubble_region_tuple, extension_left=AVATAR_EXTENSION_PX):
@@ -538,10 +655,10 @@ class DetectionModule:
         # --- End Dual Method Specific Initialization ---
         
         # Enhanced reliability settings (optimized for game UI responsiveness)
-        self.ui_stability_timeout = 0.5  # Maximum wait time for UI stability (reduced for gaming)
-        self.ui_stability_duration = 0.1  # Required stable duration (games are fast)
-        self.verification_attempts = 3   # Number of verification attempts
-        self.coordinate_tolerance = 10   # Pixel tolerance for coordinate similarity
+        self.ui_stability_timeout = UI_STABILITY_TIMEOUT  # Maximum wait time for UI stability
+        self.ui_stability_duration = UI_STABILITY_DURATION  # Required stable duration
+        self.verification_attempts = VERIFICATION_ATTEMPTS  # Number of verification attempts
+        self.coordinate_tolerance = COORDINATE_TOLERANCE  # Pixel tolerance for coordinate similarity
 
         # Load color configuration if color detection is enabled
         self.bubble_colors = []
@@ -553,12 +670,12 @@ class DetectionModule:
         # 經濟模式相關變數
         self.eco_mode_enabled = False
         self.no_new_bubbles_count = 0  # 連續無新泡泡的循環次數
-        self.eco_mode_threshold = 2    # 觸發經濟模式的閾值
-        self.eco_mode_interval = 1.5   # 經濟模式的檢測間隔（秒）
-        self.eco_mode_region = (90, 550, 610, 200)  # 固定監控區域 (x, y, width, height)
+        self.eco_mode_threshold = ECO_MODE_THRESHOLD  # 觸發經濟模式的閾值
+        self.eco_mode_interval = ECO_MODE_INTERVAL  # 經濟模式的檢測間隔（秒）
+        self.eco_mode_region = ECO_MODE_REGION  # 固定監控區域
         self.last_eco_screenshot = None  # 上次經濟模式截圖的numpy array
         self.eco_mode_start_time = None  # 經濟模式開始時間
-        self.eco_mode_wakeup_interval = 300  # 5分鐘強制喚醒間隔（秒）
+        self.eco_mode_wakeup_interval = ECO_MODE_WAKEUP_INTERVAL  # 強制喚醒間隔（秒）
         
         print(f"DetectionModule initialized. Color Detection: {'Enabled' if self.use_color_detection else 'Disabled'}. Dual Keyword Method: {'Enabled' if self.use_dual_method else 'Disabled'}")
 
@@ -687,7 +804,7 @@ class DetectionModule:
         regular_tl_keys = ['corner_tl', 'corner_tl_type2', 'corner_tl_type3', 'corner_tl_type4'] # Added type4
         regular_br_keys = ['corner_br', 'corner_br_type2', 'corner_br_type3', 'corner_br_type4'] # Added type4
 
-        bubble_detection_region = (200, 330, 680, 1200) # Define the specific region for bubbles
+        bubble_detection_region = BUBBLE_DETECTION_REGION_TEMPLATE  # 使用模板匹配專用區域
         print(f"DEBUG: Using specific region for bubble corner detection: {bubble_detection_region}")
 
         all_regular_tl_boxes = []
@@ -784,8 +901,8 @@ class DetectionModule:
         """
         all_bubbles_info = []
 
-        # Define the specific region for bubble detection (same as template matching)
-        bubble_detection_region = (200, 270, 680, 1200)
+        # Define the specific region for bubble detection (顏色偵測專用區域)
+        bubble_detection_region = BUBBLE_DETECTION_REGION_COLOR
         print(f"Using bubble color detection region: {bubble_detection_region}")
 
         try:
@@ -2062,7 +2179,8 @@ def remove_user_position(detector: DetectionModule,
 
     position_templates = {
         'DEVELOPMENT': POS_DEV_IMG, 'INTERIOR': POS_INT_IMG, 'SCIENCE': POS_SCI_IMG,
-        'SECURITY': POS_SEC_IMG, 'STRATEGY': POS_STR_IMG
+        'SECURITY': POS_SEC_IMG, 'STRATEGY': POS_STR_IMG, 'ADMINISTRATOR': POS_ADM_IMG,
+        'MILITARY': POS_MIL_IMG
     }
     found_positions = []
     position_icon_confidence = 0.75 # Slightly increased confidence (was 0.75)
@@ -2120,7 +2238,8 @@ def remove_user_position(detector: DetectionModule,
     # 5. Find and Click Corresponding Position Button
     position_button_templates = {
         'DEVELOPMENT': 'pos_btn_dev', 'INTERIOR': 'pos_btn_int', 'SCIENCE': 'pos_btn_sci',
-        'SECURITY': 'pos_btn_sec', 'STRATEGY': 'pos_btn_str'
+        'SECURITY': 'pos_btn_sec', 'STRATEGY': 'pos_btn_str', 'ADMINISTRATOR': 'pos_btn_adm',
+        'MILITARY': 'pos_btn_mil'
     }
     target_button_key = position_button_templates.get(target_position_name)
     if not target_button_key:
@@ -2140,7 +2259,8 @@ def remove_user_position(detector: DetectionModule,
     # 6. Verify Position Page
     position_page_templates = {
         'DEVELOPMENT': 'page_dev', 'INTERIOR': 'page_int', 'SCIENCE': 'page_sci',
-        'SECURITY': 'page_sec', 'STRATEGY': 'page_str'
+        'SECURITY': 'page_sec', 'STRATEGY': 'page_str', 'ADMINISTRATOR': 'page_adm',
+        'MILITARY': 'page_mil'
     }
     target_page_key = position_page_templates.get(target_position_name)
     if not target_page_key:
@@ -2288,13 +2408,16 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
         'world_chat': WORLD_CHAT_IMG, 'private_chat': PRIVATE_CHAT_IMG,
         # Position templates
         'development_pos': POS_DEV_IMG, 'interior_pos': POS_INT_IMG, 'science_pos': POS_SCI_IMG,
-        'security_pos': POS_SEC_IMG, 'strategy_pos': POS_STR_IMG,
+        'security_pos': POS_SEC_IMG, 'strategy_pos': POS_STR_IMG, 'administrator_pos': POS_ADM_IMG,
+        'military_pos': POS_MIL_IMG,
         # Capitol templates
         'capitol_button': CAPITOL_BUTTON_IMG, 'president_title': PRESIDENT_TITLE_IMG,
         'pos_btn_dev': POS_BTN_DEV_IMG, 'pos_btn_int': POS_BTN_INT_IMG, 'pos_btn_sci': POS_BTN_SCI_IMG,
-        'pos_btn_sec': POS_BTN_SEC_IMG, 'pos_btn_str': POS_BTN_STR_IMG,
+        'pos_btn_sec': POS_BTN_SEC_IMG, 'pos_btn_str': POS_BTN_STR_IMG, 'pos_btn_adm': POS_BTN_ADM_IMG,
+        'pos_btn_mil': POS_BTN_MIL_IMG,
         'page_dev': PAGE_DEV_IMG, 'page_int': PAGE_INT_IMG, 'page_sci': PAGE_SCI_IMG,
-        'page_sec': PAGE_SEC_IMG, 'page_str': PAGE_STR_IMG,
+        'page_sec': PAGE_SEC_IMG, 'page_str': PAGE_STR_IMG, 'page_adm': PAGE_ADM_IMG,
+        'page_mil': PAGE_MIL_IMG,
         'dismiss_button': DISMISS_BUTTON_IMG, 'confirm_button': CONFIRM_BUTTON_IMG,
         'close_button': CLOSE_BUTTON_IMG, 'back_arrow': BACK_ARROW_IMG,
         'reply_button': REPLY_BUTTON_IMG,

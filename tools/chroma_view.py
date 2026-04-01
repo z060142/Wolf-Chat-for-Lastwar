@@ -18,6 +18,9 @@ import logging
 from typing import List, Dict, Any, Optional, Union, Tuple
 import inspect # 用於檢查函數簽名，判斷是否支持混合搜索
 import re # 新增導入 for ID parsing in UI
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
+from utils.json_helper import safe_json_loads
 
 class ChromaDBReader:
     """ChromaDB備份讀取器的主數據模型"""
@@ -1081,7 +1084,7 @@ class ChromaDBReaderUI:
                 pass # 允許空查詢文本
             
             try:
-                metadata_filter = json.loads(metadata_filter_text) if metadata_filter_text else None
+                metadata_filter = safe_json_loads(metadata_filter_text, default=None, expected_type=dict) if metadata_filter_text else None
             except json.JSONDecodeError:
                 messagebox.showerror("錯誤", "元數據過濾條件必須是有效的 JSON 格式")
                 return

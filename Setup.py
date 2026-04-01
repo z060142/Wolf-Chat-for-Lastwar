@@ -28,6 +28,7 @@ import datetime
 import schedule
 import psutil
 import random # Added for exponential backoff jitter
+from utils.json_helper import safe_json_loads
 import urllib3 # Added for SSL warning suppression
 import game_manager # Added for new game monitoring module
 
@@ -297,7 +298,7 @@ def load_current_config():
     
     config_data = {
         "OPENAI_API_BASE_URL": "",
-        "LLM_MODEL": "deepseek/deepseek-chat-v3-0324",
+        "LLM_MODEL": "moonshotai/kimi-k2.5",
         "EXTRA_API_PARAMS": {},
         "MCP_SERVERS": {
             "exa": {
@@ -360,7 +361,7 @@ def load_current_config():
                         config_data["EXTRA_API_PARAMS"] = ast.literal_eval(extra_params_str)
                     except (ValueError, SyntaxError):
                         # Fallback to JSON parsing
-                        config_data["EXTRA_API_PARAMS"] = json.loads(extra_params_str)
+                        config_data["EXTRA_API_PARAMS"] = safe_json_loads(extra_params_str, default={}, expected_type=dict)
             except (json.JSONDecodeError, Exception) as e:
                 print(f"Warning: Could not parse EXTRA_API_PARAMS: {e}")
                 config_data["EXTRA_API_PARAMS"] = {}
@@ -630,12 +631,12 @@ def load_current_config():
                  profile_model_val = profile_model_match.group(1).strip()
                  if profile_model_val == "LLM_MODEL":
                      # If it refers to LLM_MODEL, use the already parsed LLM_MODEL value
-                     config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324") # Fallback if LLM_MODEL wasn't parsed
+                     config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5") # Fallback if LLM_MODEL wasn't parsed
                  else:
                      config_data["MEMORY_PROFILE_MODEL"] = profile_model_val
             else:
                  # Default to LLM_MODEL if not found
-                 config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+                 config_data["MEMORY_PROFILE_MODEL"] = config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5")
 
 
             summary_model_match = re.search(r'MEMORY_SUMMARY_MODEL\s*=\s*["\'](.+?)["\']', config_content)
@@ -888,10 +889,10 @@ def generate_config_file(config_data, env_data):
         f.write(f"PRELOAD_RELATED_MEMORIES = {preload_memories}\n\n")
 
         f.write("# Collection Names (used for both local access and MCP tool calls)\n")
-        profiles_col = config_data.get('PROFILES_COLLECTION', 'user_profiles')
+        profiles_col = config_data.get('PROFILES_COLLECTION', 'wolfhart_memory')
         f.write(f"PROFILES_COLLECTION = \"{profiles_col}\"\n")
 
-        conversations_col = config_data.get('CONVERSATIONS_COLLECTION', 'conversations')
+        conversations_col = config_data.get('CONVERSATIONS_COLLECTION', 'wolfhart_memory')
         f.write(f"CONVERSATIONS_COLLECTION = \"{conversations_col}\"\n")
 
         bot_memory_col = config_data.get('BOT_MEMORY_COLLECTION', 'wolfhart_memory')
@@ -2038,7 +2039,7 @@ class WolfChatSetup(tk.Tk):
         model_label = ttk.Label(model_frame, text="LLM Model:", width=15)
         model_label.pack(side=tk.LEFT, padx=(0, 5))
         
-        self.model_var = tk.StringVar(value="deepseek/deepseek-chat-v3-0324")
+        self.model_var = tk.StringVar(value="moonshotai/kimi-k2.5")
         self.model_entry = ttk.Entry(model_frame, textvariable=self.model_var)
         self.model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
@@ -2095,7 +2096,7 @@ class WolfChatSetup(tk.Tk):
             return True
 
         try:
-            json.loads(content)
+            safe_json_loads(content, raise_on_error=True)
             self.extra_params_status_var.set("✓ Valid JSON")
             return True
         except json.JSONDecodeError as e:
@@ -2169,8 +2170,8 @@ class WolfChatSetup(tk.Tk):
         # Enable checkbox
         enable_frame = ttk.Frame(self.exa_frame)
         enable_frame.pack(fill=tk.X, pady=5)
-        
-        self.exa_enable_var = tk.BooleanVar(value=True)
+
+        self.exa_enable_var = tk.BooleanVar(value=False)
         enable_cb = ttk.Checkbutton(enable_frame, text="Enable Exa Server", variable=self.exa_enable_var)
         enable_cb.pack(anchor=tk.W)
         
@@ -2611,7 +2612,7 @@ class WolfChatSetup(tk.Tk):
         conv_col_label = ttk.Label(conv_col_frame, text="Conversations Collection:", width=20)
         conv_col_label.pack(side=tk.LEFT, padx=(0, 5))
 
-        self.conversations_collection_var = tk.StringVar(value="conversations")
+        self.conversations_collection_var = tk.StringVar(value="wolfhart_memory")
         conv_col_entry = ttk.Entry(conv_col_frame, textvariable=self.conversations_collection_var)
         conv_col_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -2710,7 +2711,7 @@ class WolfChatSetup(tk.Tk):
         profile_model_label.pack(side=tk.LEFT, padx=(0, 5))
         # Initialize with a sensible default, will be overwritten by update_ui_from_data
         # Use config_data which is loaded in __init__
-        profile_model_default = self.config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324")
+        profile_model_default = self.config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5")
         self.profile_model_var = tk.StringVar(value=profile_model_default) 
         profile_model_entry = ttk.Entry(profile_model_frame, textvariable=self.profile_model_var)
         profile_model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -2959,7 +2960,7 @@ class WolfChatSetup(tk.Tk):
             # API Tab
             self.api_url_var.set(self.config_data.get("OPENAI_API_BASE_URL", ""))
             self.api_key_var.set(self.env_data.get("OPENAI_API_KEY", ""))
-            self.model_var.set(self.config_data.get("LLM_MODEL", "deepseek/deepseek-chat-v3-0324"))
+            self.model_var.set(self.config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5"))
 
             # Extra API Parameters
             extra_params = self.config_data.get("EXTRA_API_PARAMS", {})
@@ -2971,7 +2972,7 @@ class WolfChatSetup(tk.Tk):
             # Exa settings
             if "exa" in self.config_data.get("MCP_SERVERS", {}):
                 exa_config = self.config_data["MCP_SERVERS"]["exa"]
-                self.exa_enable_var.set(exa_config.get("enabled", True))
+                self.exa_enable_var.set(exa_config.get("enabled", False))
                 self.exa_key_var.set(self.env_data.get("EXA_API_KEY", ""))
                 
                 if exa_config.get("use_smithery", False):
@@ -3035,8 +3036,8 @@ class WolfChatSetup(tk.Tk):
             # Memory Settings
             self.preload_profiles_var.set(self.config_data.get("ENABLE_PRELOAD_PROFILES", True))
             self.related_memories_var.set(self.config_data.get("PRELOAD_RELATED_MEMORIES", 2))
-            self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "user_profiles")) # Default was user_profiles
-            self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "conversations"))
+            self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "wolfhart_memory")) # Default was wolfhart_memory
+            self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "wolfhart_memory"))
             self.bot_memory_collection_var.set(self.config_data.get("BOT_MEMORY_COLLECTION", "wolfhart_memory"))
             # Embedding Model Name for Memory Settings Tab
             if hasattr(self, 'embedding_model_name_var'):
@@ -3441,7 +3442,7 @@ class WolfChatSetup(tk.Tk):
                 if not self.validate_extra_params():
                     return  # Validation failed, don't save
                 try:
-                    self.config_data["EXTRA_API_PARAMS"] = json.loads(extra_params_text)
+                    self.config_data["EXTRA_API_PARAMS"] = safe_json_loads(extra_params_text, default={}, expected_type=dict)
                 except json.JSONDecodeError:
                     messagebox.showerror("Error", "Failed to parse extra API parameters JSON")
                     return
@@ -3574,10 +3575,7 @@ class WolfChatSetup(tk.Tk):
             
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:
-                if not self.exa_key_var.get():
-                    messagebox.showerror("Validation Error", "Exa API Key is required when Exa server is enabled")
-                    return
-                
+                # Allow empty API key - will be handled at runtime
                 if self.exa_type_var.get() == "local" and not self.exa_path_var.get():
                     messagebox.showerror("Validation Error", "Exa Server Path is required for local server type")
                     return

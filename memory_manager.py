@@ -16,6 +16,7 @@ import schedule
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Callable
 from functools import wraps
+from utils.json_helper import safe_json_loads
 
 # import chromadb # No longer directly needed by ChromaDBManager
 # from chromadb.utils import embedding_functions # No longer directly needed by ChromaDBManager
@@ -228,8 +229,8 @@ class MemoryGenerator:
             else:
                 # Try parsing directly
                 profile_json_str = profile_text
-            
-            profile_json = json.loads(profile_json_str)
+
+            profile_json = safe_json_loads(profile_json_str, default={}, expected_type=dict)
             
             # After parsing the initial JSON response
             content_str = json.dumps(profile_json["content"], ensure_ascii=False)
@@ -256,7 +257,7 @@ class MemoryGenerator:
                     profile_json_str = json_match.group(1)
                 else:
                     profile_json_str = condensed_text
-                profile_json = json.loads(profile_json_str)
+                profile_json = safe_json_loads(profile_json_str, default={}, expected_type=dict)
                 content_str = json.dumps(profile_json["content"], ensure_ascii=False) # Recalculate content_str
 
             profile_json["metadata"]["word_count"] = len(content_str)
@@ -329,8 +330,8 @@ class MemoryGenerator:
             else:
                 # Try parsing directly
                 summary_json_str = summary_text
-            
-            summary_json = json.loads(summary_json_str)
+
+            summary_json = safe_json_loads(summary_json_str, default={}, expected_type=dict)
             
             # Add or update word count
             summary_json["metadata"]["word_count"] = len(summary_json["content"])
@@ -555,7 +556,7 @@ class ChromaDBManager:
                     "id": profile_id,
                     "type": "user_profile",
                     "username": username,
-                    "content": json.loads(doc_content),
+                    "content": safe_json_loads(doc_content, default={}, expected_type=dict),
                     "last_updated": "", # Will be populated from metadata if exists
                     "metadata": {}
                 }
