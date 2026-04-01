@@ -4,6 +4,7 @@
 llm_debug.log
 config.py
 config.py.bak
+!wolf-memory/wolf_memory/config.py
 simple_bubble_dedup.json
 __pycache__/
 debug_screenshots/
