@@ -2694,58 +2694,42 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     
                     if snapshot:
                         print(f"UI Thread: Snapshot available, attempting position removal...")
-                        removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
-                        
-                        # Process detailed result information
-                        if removal_result["status"] == "success":
-                            result = {
-                                "status": "success",
-                                "message": "Position removal completed successfully",
-                                "position_name": "Unknown Position",  # Can be improved with UI recognition in future
-                                "user_name": user_context if user_context else "Unknown User",
-                                "execution_time": datetime.datetime.now().isoformat(),
-                                "request_id": request_id
-                            }
-                            print(f"UI Thread: Position removal successful: {result}")
-                        else:
-                            # Handle different failure types
-                            error_type = removal_result.get("error_type", "unknown")
-                            base_message = removal_result.get("message", "Unknown error occurred")
-                            
-                            # Reset lock for certain failure types that allow retry (DISABLED)
-                            # if error_type in ["ui_operation_failed", "unknown"]:
-                            #     main.position_removal_used = False
-                            #     print(f"UI Thread: Position removal lock reset due to technical failure ({error_type})")
-                            
-                            if error_type == "no_position_found":
-                                user_message = "Target user does not have any position assigned"
-                            elif error_type == "ui_operation_failed":
-                                user_message = f"UI operation failed: {base_message}"
-                            else:
-                                user_message = f"Operation failed: {base_message}"
-                            
-                            result = {
-                                "status": "failed",
-                                "error_type": error_type,
-                                "message": user_message,
-                                "user_name": user_context if user_context else "Unknown User", 
-                                "execution_time": datetime.datetime.now().isoformat(),
-                                "request_id": request_id
-                            }
-                            print(f"UI Thread: Position removal failed ({error_type}): {result}")
                     else:
-                        # Reset lock for missing snapshot (technical issue) (DISABLED)
-                        # main.position_removal_used = False
-                        # print(f"UI Thread: Position removal lock reset due to missing snapshot data")
-                        
+                        print(f"UI Thread: Snapshot missing, remove_user_position will attempt recovery from bubble_region...")
+                    removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+
+                    # Process detailed result information
+                    if removal_result["status"] == "success":
                         result = {
-                            "status": "error",
-                            "message": "Missing essential UI positioning data (bubble snapshot)",
+                            "status": "success",
+                            "message": "Position removal completed successfully",
+                            "position_name": "Unknown Position",  # Can be improved with UI recognition in future
                             "user_name": user_context if user_context else "Unknown User",
                             "execution_time": datetime.datetime.now().isoformat(),
                             "request_id": request_id
                         }
-                        print(f"UI Thread: Missing snapshot data: {result}")
+                        print(f"UI Thread: Position removal successful: {result}")
+                    else:
+                        # Handle different failure types
+                        error_type = removal_result.get("error_type", "unknown")
+                        base_message = removal_result.get("message", "Unknown error occurred")
+
+                        if error_type == "no_position_found":
+                            user_message = "Target user does not have any position assigned"
+                        elif error_type == "ui_operation_failed":
+                            user_message = f"UI operation failed: {base_message}"
+                        else:
+                            user_message = f"Operation failed: {base_message}"
+
+                        result = {
+                            "status": "failed",
+                            "error_type": error_type,
+                            "message": user_message,
+                            "user_name": user_context if user_context else "Unknown User",
+                            "execution_time": datetime.datetime.now().isoformat(),
+                            "request_id": request_id
+                        }
+                        print(f"UI Thread: Position removal failed ({error_type}): {result}")
                     
                     # 改進：優先使用文件系統回傳結果（MCP通訊）
                     if is_mcp_request and request_id:
