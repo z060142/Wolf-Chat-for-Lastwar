@@ -1,0 +1,4 @@
+ollama
+mcp
+requests
+python-frontmatter

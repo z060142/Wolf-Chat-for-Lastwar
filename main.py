@@ -47,6 +47,106 @@ import llm_interaction
 import ui_interaction
 import chroma_client
 import subprocess # Import subprocess module
+
+
+# ---------------------------------------------------------------------------
+# Wolf Memory Client (subprocess communication)
+# ---------------------------------------------------------------------------
+class WolfMemoryClient:
+    """
+    Manages the wolf-memory subprocess and communicates via JSON over stdin/stdout.
+    Fails silently so that wolf-chat continues operating even if wolf-memory is unavailable.
+    """
+    def __init__(self):
+        self._proc = None
+        self._lock = threading.Lock()
+
+    def start(self):
+        """Start the wolf-memory subprocess."""
+        import sys, os
+        memory_script = os.path.join(os.path.dirname(__file__), "wolf-memory", "main.py")
+        if not os.path.exists(memory_script):
+            logger.warning("[WolfMemory] wolf-memory/main.py not found, memory system disabled.")
+            return
+
+        env = os.environ.copy()
+        if hasattr(config, 'WOLF_MEMORY_BACKEND'):
+            env['WOLF_MEMORY_BACKEND'] = config.WOLF_MEMORY_BACKEND
+        if hasattr(config, 'WOLF_MEMORY_HOST'):
+            env['OLLAMA_HOST'] = config.WOLF_MEMORY_HOST
+        if hasattr(config, 'WOLF_MEMORY_MODEL'):
+            env['WOLF_MEMORY_MODEL'] = config.WOLF_MEMORY_MODEL
+
+        try:
+            self._proc = subprocess.Popen(
+                [sys.executable, memory_script, "--mode", "subprocess"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                env=env,
+            )
+            logger.info("[WolfMemory] Subprocess started.")
+        except Exception as e:
+            logger.error(f"[WolfMemory] Failed to start subprocess: {e}")
+            self._proc = None
+
+    def _send(self, action: str, params: dict) -> dict | None:
+        if not self._proc or self._proc.poll() is not None:
+            return None
+        with self._lock:
+            try:
+                import json as _json
+                line = _json.dumps({"action": action, "params": params}, ensure_ascii=False) + "\n"
+                self._proc.stdin.write(line)
+                self._proc.stdin.flush()
+                response_line = self._proc.stdout.readline()
+                if response_line:
+                    return _json.loads(response_line)
+            except Exception as e:
+                logger.error(f"[WolfMemory] Communication error: {e}")
+        return None
+
+    def query_user(self, username: str) -> dict | None:
+        """Query memory for a user. Returns data dict or None on failure."""
+        result = self._send("query_user", {"username": username})
+        if result and result.get("status") == "ok":
+            return result.get("data")
+        return None
+
+    def record_interaction(self, username: str, user_input: str,
+                           bot_thoughts: str, bot_output: str,
+                           timestamp: str | None = None) -> None:
+        """Record a conversation interaction (fire-and-forget, errors are logged)."""
+        params = {
+            "username": username,
+            "user_input": user_input,
+            "bot_thoughts": bot_thoughts,
+            "bot_output": bot_output,
+        }
+        if timestamp:
+            params["timestamp"] = timestamp
+        self._send("record_interaction", params)
+
+    def terminate(self):
+        """Terminate the wolf-memory subprocess."""
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.stdin.close()
+                self._proc.terminate()
+                self._proc.wait(timeout=5)
+                logger.info("[WolfMemory] Subprocess terminated.")
+            except Exception as e:
+                logger.warning(f"[WolfMemory] Error terminating subprocess: {e}")
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+
+
+wolf_memory_client = WolfMemoryClient()
+# ---------------------------------------------------------------------------
 import signal
 import platform
 import atexit
@@ -764,6 +864,9 @@ async def shutdown():
     print("[SHUTDOWN] Force terminating MCP servers as safety net...")
     terminate_all_mcp_servers()
 
+    # 3b. Terminate wolf-memory subprocess
+    wolf_memory_client.terminate()
+
     # 4. Clean up MCP communication files
     try:
         for file_path in [COMMAND_FILE, RESULT_FILE, HEARTBEAT_FILE, CHAT_CONTEXT_FILE]:
@@ -952,6 +1055,10 @@ async def run_main_with_exit_stack():
         # 2. Initialize Memory System (after loading config, before main loop)
         memory_system_active = initialize_memory_system()
 
+        # 2b. Start wolf-memory subprocess (if enabled)
+        if getattr(config, 'WOLF_MEMORY_ENABLED', False):
+            wolf_memory_client.start()
+
         # 3. Initialize MCP Connections Asynchronously
         await initialize_mcp_connections()
 
@@ -1118,24 +1225,36 @@ async def run_main_with_exit_stack():
             user_profile = None
             related_memories = []
             bot_knowledge = []
+            wolf_memory_data = None
             memory_retrieval_time = 0
 
-            # If memory system is active and preloading is enabled
-            if memory_system_active and hasattr(config, 'ENABLE_PRELOAD_PROFILES') and config.ENABLE_PRELOAD_PROFILES:
+            # Wolf Memory: query user context
+            if getattr(config, 'WOLF_MEMORY_ENABLED', False):
+                try:
+                    memory_start_time = time.time()
+                    wolf_memory_data = await loop.run_in_executor(
+                        None, wolf_memory_client.query_user, sender_name
+                    )
+                    memory_retrieval_time = time.time() - memory_start_time
+                    if wolf_memory_data and wolf_memory_data.get("found"):
+                        logger.info(f"[WolfMemory] User context loaded for '{sender_name}' in {memory_retrieval_time:.3f}s")
+                    else:
+                        logger.info(f"[WolfMemory] No existing memory for '{sender_name}' (new user or empty profile)")
+                except Exception as mem_err:
+                    logger.error(f"[WolfMemory] query_user failed: {mem_err}")
+                    wolf_memory_data = None
+
+            # Legacy ChromaDB memory preloading (only if wolf-memory is disabled)
+            elif memory_system_active and hasattr(config, 'ENABLE_PRELOAD_PROFILES') and config.ENABLE_PRELOAD_PROFILES:
                 try:
                     memory_start_time = time.time()
 
-                    # Get event loop for parallel execution
                     loop = asyncio.get_event_loop()
-
-                    # Prepare parallel tasks
                     tasks = []
 
-                    # Task 1: Get user profile
                     profile_task = loop.run_in_executor(None, chroma_client.get_entity_profile, sender_name)
                     tasks.append(profile_task)
 
-                    # Task 2: Preload related memories if configured
                     if hasattr(config, 'PRELOAD_RELATED_MEMORIES') and config.PRELOAD_RELATED_MEMORIES > 0:
                         memories_task = loop.run_in_executor(
                             None,
@@ -1143,39 +1262,30 @@ async def run_main_with_exit_stack():
                         )
                         tasks.append(memories_task)
                     else:
-                        tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
+                        tasks.append(asyncio.sleep(0, result=[]))
 
-                    # Task 3: Prepare bot knowledge retrieval based on message content
                     key_game_terms = ["capital_position", "capital_administrator_role", "server_hierarchy",
                                      "last_war", "winter_war", "excavations", "blueprints",
                                      "honor_points", "golden_eggs", "diamonds"]
-
-                    # Check if message contains these keywords
                     found_terms = [term for term in key_game_terms if term.lower() in bubble_text.lower()]
 
                     if found_terms:
-                        # Create task for knowledge retrieval (limit to 2 terms)
                         def get_knowledge():
                             knowledge = []
                             for term in found_terms[:2]:
                                 term_knowledge = chroma_client.get_bot_knowledge(term, limit=2)
                                 knowledge.extend(term_knowledge)
                             return knowledge
-
                         knowledge_task = loop.run_in_executor(None, get_knowledge)
                         tasks.append(knowledge_task)
                     else:
-                        tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
+                        tasks.append(asyncio.sleep(0, result=[]))
 
-                    # Execute all tasks in parallel with error handling
                     results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                    # Process results
                     user_profile = results[0] if not isinstance(results[0], Exception) else None
                     related_memories = results[1] if not isinstance(results[1], Exception) else []
                     bot_knowledge = results[2] if not isinstance(results[2], Exception) else []
 
-                    # Log any exceptions
                     task_names = ["profile", "memories", "knowledge"]
                     for i, result in enumerate(results):
                         if isinstance(result, Exception):
@@ -1189,7 +1299,6 @@ async def run_main_with_exit_stack():
 
                 except Exception as mem_err:
                     logger.error(f"Error during memory retrieval: {mem_err}")
-                    # Clear all memory data on error to avoid using partial data
                     user_profile = None
                     related_memories = []
                     bot_knowledge = []
@@ -1212,10 +1321,11 @@ async def run_main_with_exit_stack():
                     mcp_sessions=active_mcp_sessions,
                     available_mcp_tools=all_discovered_mcp_tools,
                     persona_details=wolfhart_persona_details,
-                    user_profile=user_profile,                # Added: Pass user profile
-                    related_memories=related_memories,        # Added: Pass related memories
-                    bot_knowledge=bot_knowledge,              # Added: Pass bot knowledge
-                    ui_context=ui_context                     # Added: Pass UI context
+                    user_profile=user_profile,                # Legacy ChromaDB profile
+                    related_memories=related_memories,        # Legacy ChromaDB memories
+                    bot_knowledge=bot_knowledge,              # Legacy ChromaDB knowledge
+                    wolf_memory=wolf_memory_data,             # Wolf Memory structured data
+                    ui_context=ui_context                     # UI context
                 )
 
                 # Extract dialogue content
@@ -1321,6 +1431,21 @@ async def run_main_with_exit_stack():
                         bot_thoughts=thoughts # Pass the extracted thoughts
                     )
                     # --- End Log interaction ---
+
+                    # --- Wolf Memory: record interaction ---
+                    if getattr(config, 'WOLF_MEMORY_ENABLED', False):
+                        interaction_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                        await loop.run_in_executor(
+                            None,
+                            lambda: wolf_memory_client.record_interaction(
+                                username=sender_name,
+                                user_input=bubble_text,
+                                bot_thoughts=thoughts or "",
+                                bot_output=bot_dialogue,
+                                timestamp=interaction_timestamp,
+                            )
+                        )
+                    # --- End Wolf Memory record ---
 
                     print("Sending 'send_reply' command to UI thread...")
                     command_to_send = {'action': 'send_reply', 'text': bot_dialogue}

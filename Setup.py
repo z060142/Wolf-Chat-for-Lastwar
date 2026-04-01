@@ -327,9 +327,13 @@ def load_current_config():
             "GAME_WINDOW_HEIGHT": 1070,
             "MONITOR_INTERVAL_SECONDS": 5
         },
-        "DEDUPLICATION_WINDOW_SIZE": 4
+        "DEDUPLICATION_WINDOW_SIZE": 4,
+        "WOLF_MEMORY_ENABLED": False,
+        "WOLF_MEMORY_BACKEND": "ollama",
+        "WOLF_MEMORY_HOST": "http://localhost:11434",
+        "WOLF_MEMORY_MODEL": "qwen3-coder-next:cloud",
     }
-    
+
     if os.path.exists("config.py"):
         try:
             with open("config.py", 'r', encoding='utf-8') as f:
@@ -643,6 +647,22 @@ def load_current_config():
             if summary_model_match:
                 config_data["MEMORY_SUMMARY_MODEL"] = summary_model_match.group(1)
 
+            # Extract Wolf Memory settings
+            wm_enabled_match = re.search(r'WOLF_MEMORY_ENABLED\s*=\s*(True|False)', config_content)
+            if wm_enabled_match:
+                config_data["WOLF_MEMORY_ENABLED"] = wm_enabled_match.group(1) == "True"
+
+            wm_backend_match = re.search(r'WOLF_MEMORY_BACKEND\s*=\s*["\'](.+?)["\']', config_content)
+            if wm_backend_match:
+                config_data["WOLF_MEMORY_BACKEND"] = wm_backend_match.group(1)
+
+            wm_host_match = re.search(r'WOLF_MEMORY_HOST\s*=\s*["\'](.+?)["\']', config_content)
+            if wm_host_match:
+                config_data["WOLF_MEMORY_HOST"] = wm_host_match.group(1)
+
+            wm_model_match = re.search(r'WOLF_MEMORY_MODEL\s*=\s*["\'](.+?)["\']', config_content)
+            if wm_model_match:
+                config_data["WOLF_MEMORY_MODEL"] = wm_model_match.group(1)
 
         except Exception as e:
             print(f"Error reading config.py: {e}")
@@ -932,6 +952,19 @@ def generate_config_file(config_data, env_data):
         f.write("# Embedding model for ChromaDB\n")
         f.write(f"EMBEDDING_MODEL_NAME = \"{embedding_model_name}\"\n")
 
+        # Write Wolf Memory Configuration
+        f.write("\n# =============================================================================\n")
+        f.write("# Wolf Memory Configuration\n")
+        f.write("# =============================================================================\n")
+        wm_enabled = config_data.get('WOLF_MEMORY_ENABLED', False)
+        f.write(f"WOLF_MEMORY_ENABLED = {str(wm_enabled)}\n")
+        wm_backend = config_data.get('WOLF_MEMORY_BACKEND', 'ollama')
+        f.write(f"WOLF_MEMORY_BACKEND = \"{wm_backend}\"\n")
+        wm_host = config_data.get('WOLF_MEMORY_HOST', 'http://localhost:11434')
+        f.write(f"WOLF_MEMORY_HOST = \"{wm_host}\"\n")
+        wm_model = config_data.get('WOLF_MEMORY_MODEL', 'qwen3-coder-next:cloud')
+        f.write(f"WOLF_MEMORY_MODEL = \"{wm_model}\"\n")
+        f.write("# API key is read from OLLAMA_API_KEY environment variable\n")
 
     print("Generated config.py file successfully")
 
@@ -962,9 +995,10 @@ class WolfChatSetup(tk.Tk):
         self.create_api_tab()
         self.create_mcp_tab()
         self.create_game_tab()
-        self.create_memory_tab() 
-        self.create_memory_management_tab() # Add memory management tab
-        self.create_management_tab() # New tab for combined management
+        self.create_memory_tab()
+        self.create_memory_management_tab()
+        self.create_wolf_memory_tab()
+        self.create_management_tab()
 
         # Create bottom buttons
         self.create_bottom_buttons()
@@ -1130,7 +1164,97 @@ class WolfChatSetup(tk.Tk):
         self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
 
         self.update_scheduler_button_states(True) # Set initial scheduler button state
-    
+
+    def create_wolf_memory_tab(self):
+        """Create the Wolf Memory configuration tab"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Wolf Memory")
+
+        canvas = tk.Canvas(tab)
+        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        main_frame = ttk.Frame(canvas, padding=10)
+        canvas_window = canvas.create_window((0, 0), window=main_frame, anchor="nw")
+
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        def on_canvas_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        main_frame.bind("<Configure>", on_frame_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+
+        # Header
+        ttk.Label(main_frame, text="Wolf Memory Settings", font=("", 12, "bold")).pack(anchor=tk.W, pady=(0, 10))
+
+        # Enable toggle
+        enable_frame = ttk.LabelFrame(main_frame, text="Enable / Disable")
+        enable_frame.pack(fill=tk.X, pady=5)
+
+        self.wolf_memory_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            enable_frame,
+            text="Enable Wolf Memory (replaces ChromaDB memory system)",
+            variable=self.wolf_memory_enabled_var,
+        ).pack(anchor=tk.W, padx=10, pady=8)
+
+        # LLM Backend
+        backend_frame = ttk.LabelFrame(main_frame, text="LLM Backend")
+        backend_frame.pack(fill=tk.X, pady=5)
+
+        self.wolf_memory_backend_var = tk.StringVar(value="ollama")
+        backend_row = ttk.Frame(backend_frame)
+        backend_row.pack(fill=tk.X, padx=10, pady=8)
+        ttk.Label(backend_row, text="Backend:", width=18).pack(side=tk.LEFT)
+        ttk.Radiobutton(backend_row, text="ollama (SDK)", variable=self.wolf_memory_backend_var, value="ollama").pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Radiobutton(backend_row, text="requests (HTTP)", variable=self.wolf_memory_backend_var, value="requests").pack(side=tk.LEFT)
+
+        # Ollama Host
+        host_frame = ttk.LabelFrame(main_frame, text="Ollama Connection")
+        host_frame.pack(fill=tk.X, pady=5)
+
+        host_row = ttk.Frame(host_frame)
+        host_row.pack(fill=tk.X, padx=10, pady=(8, 4))
+        ttk.Label(host_row, text="Ollama Host:", width=18).pack(side=tk.LEFT)
+        self.wolf_memory_host_var = tk.StringVar(value="http://localhost:11434")
+        ttk.Entry(host_row, textvariable=self.wolf_memory_host_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        api_key_row = ttk.Frame(host_frame)
+        api_key_row.pack(fill=tk.X, padx=10, pady=(4, 8))
+        ttk.Label(api_key_row, text="API Key:", width=18).pack(side=tk.LEFT)
+        self.wolf_memory_api_key_var = tk.StringVar(value="")
+        ttk.Entry(api_key_row, textvariable=self.wolf_memory_api_key_var, show="*").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(host_frame, text="Saved to OLLAMA_API_KEY in .env", foreground="gray").pack(anchor=tk.W, padx=10, pady=(0, 6))
+
+        # Model
+        model_frame = ttk.LabelFrame(main_frame, text="Model")
+        model_frame.pack(fill=tk.X, pady=5)
+
+        model_row = ttk.Frame(model_frame)
+        model_row.pack(fill=tk.X, padx=10, pady=8)
+        ttk.Label(model_row, text="Model Name:", width=18).pack(side=tk.LEFT)
+        self.wolf_memory_model_var = tk.StringVar(value="qwen3-coder-next:cloud")
+        model_entry = ttk.Entry(model_row, textvariable=self.wolf_memory_model_var)
+        model_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Info box
+        info_frame = ttk.LabelFrame(main_frame, text="Information")
+        info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        info_text = (
+            "Wolf Memory replaces the ChromaDB memory system with an AI-driven Markdown-based memory.\n\n"
+            "When enabled:\n"
+            "  - wolf-memory/main.py runs as a subprocess alongside wolf-chat\n"
+            "  - User context is retrieved via query_user before each conversation\n"
+            "  - Each interaction is recorded via record_interaction after the bot replies\n"
+            "  - An internal LLM (Ollama) maintains persona profiles and conversation summaries\n\n"
+            "The 'ollama' backend uses the ollama Python SDK.\n"
+            "The 'requests' backend makes direct HTTP calls (no extra dependencies)."
+        )
+        ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700).pack(padx=10, pady=10, anchor=tk.W)
+
     def create_management_tab(self):
         """Create the Bot and Game Management tab"""
         tab = ttk.Frame(self.notebook)
@@ -3044,6 +3168,14 @@ class WolfChatSetup(tk.Tk):
                 self.embedding_model_name_var.set(self.config_data.get("EMBEDDING_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"))
 
 
+            # Wolf Memory Tab Settings
+            if hasattr(self, 'wolf_memory_enabled_var'):
+                self.wolf_memory_enabled_var.set(self.config_data.get("WOLF_MEMORY_ENABLED", False))
+                self.wolf_memory_backend_var.set(self.config_data.get("WOLF_MEMORY_BACKEND", "ollama"))
+                self.wolf_memory_host_var.set(self.config_data.get("WOLF_MEMORY_HOST", "http://localhost:11434"))
+                self.wolf_memory_model_var.set(self.config_data.get("WOLF_MEMORY_MODEL", "qwen3-coder-next:cloud"))
+                self.wolf_memory_api_key_var.set(self.env_data.get("OLLAMA_API_KEY", ""))
+
             # Memory Management Tab Settings
             if hasattr(self, 'backup_hour_var'): # Check if UI elements for memory management tab exist
                 self.backup_hour_var.set(self.config_data.get("MEMORY_BACKUP_HOUR", 0))
@@ -3573,6 +3705,16 @@ class WolfChatSetup(tk.Tk):
             # if hasattr(self, 'enable_remote_control_var'):
             #     self.config_data["ENABLE_REMOTE_CONTROL"] = self.enable_remote_control_var.get()
             
+            # Wolf Memory settings
+            if hasattr(self, 'wolf_memory_enabled_var'):
+                self.config_data["WOLF_MEMORY_ENABLED"] = self.wolf_memory_enabled_var.get()
+                self.config_data["WOLF_MEMORY_BACKEND"] = self.wolf_memory_backend_var.get()
+                self.config_data["WOLF_MEMORY_HOST"] = self.wolf_memory_host_var.get()
+                self.config_data["WOLF_MEMORY_MODEL"] = self.wolf_memory_model_var.get()
+                api_key = self.wolf_memory_api_key_var.get().strip()
+                if api_key:
+                    self.env_data["OLLAMA_API_KEY"] = api_key
+
             # Validate critical settings
             if "exa" in self.config_data["MCP_SERVERS"] and self.config_data["MCP_SERVERS"]["exa"]["enabled"]:
                 # Allow empty API key - will be handled at runtime
