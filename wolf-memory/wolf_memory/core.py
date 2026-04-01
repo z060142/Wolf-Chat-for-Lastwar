@@ -129,10 +129,26 @@ def _archive_window() -> None:
         {
             "role": "system",
             "content": (
-                "You are a memory archivist. "
-                "Summarise the following chat log concisely. "
-                "Include: who participated, what they did, and anything notable. "
-                "Write in plain text, no bullet headers needed."
+                "You are archiving a completed conversation session for a chatbot. "
+                "The bot operates inside a game chat environment and maintains a persona. "
+                "The log contains exchanges between the bot and multiple different users.\n\n"
+                "## Input format\n"
+                "Each entry is prefixed with a username, e.g. '[timestamp] User (Alice): ...' "
+                "and '[timestamp] Bot Dialogue: ...'. "
+                "Bot Thoughts lines show internal reasoning and are included for context.\n\n"
+                "## Output requirements\n"
+                "Write a session summary covering:\n"
+                "1. Which users participated and a one-line description of each.\n"
+                "2. The overall tone and dynamic of the session.\n"
+                "3. Anything significant that happened — notable requests, recurring topics, "
+                "unusual behaviour, or events worth remembering in future sessions. "
+                "Skip routine greetings and unremarkable small talk.\n\n"
+                "## Constraints\n"
+                "- Maximum 1500 characters.\n"
+                "- Plain prose only. No bullet points, no headers, no preamble.\n"
+                "- Write from the bot's perspective as the observer.\n"
+                "- Write in English only. You may quote specific phrases from the log verbatim "
+                "if they are distinctive or worth preserving, but all surrounding text must be English."
             ),
         },
         {"role": "user", "content": window_text},
@@ -155,22 +171,54 @@ def _update_persona(username: str) -> None:
         {
             "role": "system",
             "content": (
-                f"You are updating a character profile for '{username}'. "
-                "Read the full conversation log and the existing profile. "
-                "Update the profile to reflect recent interactions. "
-                "Emphasise recent behaviour; let old details fade if not reinforced. "
-                "Include: (1) commentary on their interaction style, "
-                "(2) recent activities, "
-                "(3) people they interact with or mention and the relationship status, "
-                "(4) notable events with timestamps (ignore position-removal requests). "
-                "Write in plain text."
+                "You are a character analyst writing a portrait of a person "
+                "based on their observed behaviour in chat. "
+                "Your output will be read by the bot before a live conversation "
+                "so it knows who it is talking to — not what happened, but who this person is.\n\n"
+                "Treat all conversation data as raw material. "
+                "Do not narrate or summarise individual exchanges. "
+                "Instead, draw conclusions about the person as a whole: "
+                "their personality, their patterns, their tendencies.\n\n"
+                "## Structure\n"
+                "Write exactly four sections with these headings:\n\n"
+                "**Interaction Style**\n"
+                "How does this person communicate? Describe their characteristic tone, "
+                "language habits, and the way they engage — as a stable pattern, "
+                "not as a reaction to specific events. "
+                "Write strictly from the bot's point of view as the one receiving this person. "
+                "Do not mention what the bot says or does in response.\n\n"
+                "**What They Come Here For**\n"
+                "What does this person seem to want from these interactions? "
+                "What do they talk about, initiate, or keep returning to? "
+                "Write as a synthesis — a characterisation of their interests and intent, "
+                "not a list of topics.\n\n"
+                "**People & Relationships**\n"
+                "Only record actual game players — identified by their in-game usernames. "
+                "The qualifying condition is observed interaction: "
+                "this user and the other person must have visibly engaged with each other in the log. "
+                "A mere mention ('your dad', 'someone', 'a friend') does not qualify. "
+                "Hypothetical references, third-party gossip, and unnamed figures must be excluded. "
+                "For each person recorded, write one line describing the nature of the interaction.\n\n"
+                "**Anchor Memories**\n"
+                "Two or three moments that are genuinely distinctive or significant, "
+                "each with a timestamp. These should reveal something about the person "
+                "that the other sections cannot capture. "
+                "Routine exchanges do not qualify. "
+                "Prefer existing anchor memories unless a new moment is clearly more revealing."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"## Existing profile\n{existing}\n\n"
-                f"## Full conversation log\n{window_text}"
+                f"Write a character portrait of '{username}' based on the following.\n\n"
+                f"The conversation log is a shared window containing multiple users. "
+                f"First identify all entries where '{username}' is speaking or directly involved, "
+                f"then use only those as your source material.\n\n"
+                f"Existing profile (carry forward what still holds true, revise what has changed):\n"
+                f"{existing}\n\n"
+                f"Conversation log (multiple users):\n{window_text}\n\n"
+                f"Output at most 2500 characters. "
+                f"Plain prose only. English only, except when quoting the user's own words verbatim."
             ),
         },
     ]
@@ -189,11 +237,26 @@ def _update_compact(username: str) -> None:
         {
             "role": "system",
             "content": (
-                f"You are summarising recent chat activity involving '{username}'. "
-                "Read the conversation log and produce a brief summary (3-6 sentences) "
-                "that answers: who is this person, what have they done recently, "
-                "and what is their current relationship with the bot. "
-                "This will be used as context during live conversations."
+                f"You are producing a compact memory note for the user '{username}' "
+                "to be injected as live context at the start of a conversation.\n\n"
+                "## Input format\n"
+                "The conversation log is a shared window containing exchanges between "
+                "the bot and multiple different users, interleaved chronologically. "
+                "Each entry is prefixed with a username, e.g. '[timestamp] User (Alice): ...' "
+                "and '[timestamp] Bot Dialogue: ...'. "
+                f"First, extract only the entries where '{username}' is the speaker "
+                "or is directly involved. Ignore all other users.\n\n"
+                "## Output requirements\n"
+                "Write 3 to 5 sentences covering:\n"
+                "1. Who this person is — their communication style and personality as the bot experiences it.\n"
+                "2. What they have been doing or discussing in recent interactions.\n"
+                "3. The current tone of the relationship — how they tend to engage with the bot.\n\n"
+                "## Constraints\n"
+                "- Maximum 500 characters.\n"
+                "- Plain prose only. No bullet points, no headers, no preamble.\n"
+                "- Write in English only. You may quote specific phrases from the log verbatim "
+                "if they are distinctive or worth preserving, but all surrounding text must be English.\n"
+                "- If this user has no entries in the log, output exactly: (no recent activity)"
             ),
         },
         {"role": "user", "content": window_text},
