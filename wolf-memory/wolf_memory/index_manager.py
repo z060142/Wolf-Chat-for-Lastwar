@@ -180,3 +180,64 @@ def get_all_dirty_users() -> list[str]:
         u for u, data in index.get("users", {}).items()
         if data.get("compact_dirty", False)
     ]
+
+
+def reconcile_on_startup() -> None:
+    """
+    Called once at subprocess startup.
+    Reconciles INDEX.json with the actual state of files on disk so that
+    counters and timestamps survive process restarts and crashes.
+
+    What it does:
+    - Syncs window_entry_count with the actual number of entries in window.md
+    - Registers any user directories found on disk that are missing from INDEX.json
+    - Syncs compact_last_updated from compact.md frontmatter (authoritative source)
+    - Marks compact_dirty=True for users whose compact.md is older than window.md
+      (ensures a refresh is scheduled even if the process died mid-update)
+    """
+    from . import storage  # local import to avoid circular at module level
+
+    with _lock:
+        index = load()
+
+        # 1. Sync window_entry_count from actual window.md content
+        actual_count = storage.count_window_entries(storage.read_window())
+        index["window_entry_count"] = actual_count
+
+        # 2. Discover users from disk
+        users = index.setdefault("users", {})
+        for user_dir in storage.USERS_DIR.iterdir() if storage.USERS_DIR.exists() else []:
+            if not user_dir.is_dir():
+                continue
+            username = user_dir.name
+            if username not in users:
+                users[username] = _default_user()
+
+        # 3. Sync compact_last_updated from compact.md frontmatter
+        window_mtime = (
+            storage.WINDOW_FILE.stat().st_mtime
+            if storage.WINDOW_FILE.exists() else 0
+        )
+        for username, user_data in users.items():
+            compact_post = storage.read_compact(username)
+            if compact_post:
+                ts_str = compact_post.metadata.get("updated_at")
+                if ts_str:
+                    user_data["compact_last_updated"] = ts_str
+                    # If window.md is newer than compact.md, mark dirty
+                    try:
+                        compact_ts = datetime.fromisoformat(ts_str).timestamp()
+                        if window_mtime > compact_ts:
+                            user_data["compact_dirty"] = True
+                    except ValueError:
+                        user_data["compact_dirty"] = True
+                else:
+                    user_data["compact_dirty"] = True
+            else:
+                # No compact.md exists yet — mark dirty so it gets created
+                user_data["compact_dirty"] = True
+
+        _save(index)
+    import sys
+    print(f"[WolfMemory] Startup reconciliation complete. window_entries={actual_count}, users={len(users)}",
+          file=sys.stderr, flush=True)

@@ -73,7 +73,8 @@ def get_system_prompt(
     user_profile: str | None = None,
     related_memories: list | None = None,
     bot_knowledge: list | None = None,
-    active_mcp_sessions: dict | None = None
+    active_mcp_sessions: dict | None = None,
+    wolf_memory: dict | None = None,
 ) -> str:
     """
     構建系統提示，包括預加載的用戶資料和對話記憶。
@@ -101,6 +102,21 @@ def get_system_prompt(
 
         Above is the profile information for your current conversation partner.
         Reference this information to personalize your responses appropriately without explicitly mentioning you have this data.
+        """
+
+    # Wolf Memory context (replaces ChromaDB user_profile + related_memories when enabled)
+    if wolf_memory and wolf_memory.get("found"):
+        persona_text = wolf_memory.get("persona", "")
+        compact_text = wolf_memory.get("compact_summary", "")
+        if persona_text or compact_text:
+            user_context = f"""
+        <user_memory>
+        {("## Persona Profile\n" + persona_text) if persona_text else ""}
+        {("## Recent Activity Summary\n" + compact_text) if compact_text else ""}
+        </user_memory>
+
+        The above is your memory of this conversation partner.
+        Use it to personalise your responses naturally without explicitly mentioning you have this data.
         """
 
     # 添加對話記憶部分
@@ -767,10 +783,11 @@ async def get_llm_response(
     mcp_sessions: dict[str, ClientSession],
     available_mcp_tools: list[dict],
     persona_details: str | None,
-    user_profile: str | None = None,         # 新增參數
-    related_memories: list | None = None,           # 新增參數
-    bot_knowledge: list | None = None,               # 新增參數
-    ui_context: dict | None = None                   # UI上下文數據（bubble_snapshot等）
+    user_profile: str | None = None,
+    related_memories: list | None = None,
+    bot_knowledge: list | None = None,
+    wolf_memory: dict | None = None,
+    ui_context: dict | None = None
 ) -> dict:
     """
     Gets a response from the LLM, handling the tool-calling loop and using persona info.
@@ -797,7 +814,8 @@ async def get_llm_response(
             user_profile=user_profile,
             related_memories=related_memories,
             bot_knowledge=bot_knowledge,
-            active_mcp_sessions=mcp_sessions
+            active_mcp_sessions=mcp_sessions,
+            wolf_memory=wolf_memory,
         )
         # System prompt is logged within _build_context_messages now
 

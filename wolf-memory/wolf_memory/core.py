@@ -250,6 +250,7 @@ def record_interaction(
     """
     Append a conversation entry to the shared window and trigger background jobs.
     """
+    import sys
     if not timestamp:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -259,6 +260,9 @@ def record_interaction(
         lines.append(f"[{timestamp}] Bot Thoughts: {bot_thoughts}")
     lines.append(f"[{timestamp}] Bot Dialogue: {bot_output}")
     entry = "\n".join(lines)
+
+    print(f"[WolfMemory] record_interaction: username={username}, entry_len={len(entry)}",
+          file=sys.stderr, flush=True)
 
     # Append and get new count
     new_count = storage.append_to_window(entry)

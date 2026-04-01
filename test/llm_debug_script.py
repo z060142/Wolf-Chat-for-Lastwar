@@ -12,12 +12,22 @@ from contextlib import AsyncExitStack
 # Assume these modules are in the parent directory or accessible via PYTHONPATH
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import argparse
 import config
 import mcp_client
 import llm_interaction
-import chroma_client # <-- 新增導入
+import chroma_client
+from wolf_memory_bridge import WolfMemoryClient
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
+
+# --- Parse CLI args ---
+_arg_parser = argparse.ArgumentParser(add_help=False)
+_arg_parser.add_argument("--test-memory", action="store_true",
+    help="Use an isolated memories_test/ directory so debug sessions don't pollute real memory.")
+_args, _ = _arg_parser.parse_known_args()
+
+wolf_memory_client = WolfMemoryClient()
 
 # --- Global Variables ---
 active_mcp_sessions: dict[str, ClientSession] = {}
@@ -135,7 +145,7 @@ async def initialize_mcp_connections():
 
 # --- Cleanup Function (Adapted from main.py) ---
 async def shutdown():
-    """Gracefully closes MCP connections."""
+    """Gracefully closes MCP connections and wolf-memory subprocess."""
     global shutdown_requested
     if not shutdown_requested:
         print("Shutdown initiated.")
@@ -150,6 +160,7 @@ async def shutdown():
     finally:
         active_mcp_sessions.clear()
         all_discovered_mcp_tools.clear()
+        wolf_memory_client.terminate()
         print("Cleanup completed.")
 
 # --- Get Username Function ---
@@ -170,13 +181,31 @@ async def debug_loop():
     # 1. Load Persona
     load_persona_from_file()
 
-    # 2. Initialize ChromaDB
-    print("\n--- Initializing ChromaDB ---")
-    if not chroma_client.initialize_chroma_client():
-        print("Warning: ChromaDB initialization failed. Memory functions may not work.")
+    # 2. Initialize memory system
+    if getattr(config, 'WOLF_MEMORY_ENABLED', False):
+        # Determine data directory
+        if _args.test_memory:
+            _wm_base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wolf-memory")
+            _data_dir = os.path.join(_wm_base, "memories_test")
+            print(f"\n--- Starting Wolf Memory subprocess [TEST MODE: {_data_dir}] ---")
+        else:
+            _data_dir = ""
+            print("\n--- Starting Wolf Memory subprocess ---")
+
+        wolf_memory_client.start(
+            backend=getattr(config, 'WOLF_MEMORY_BACKEND', ''),
+            host=getattr(config, 'WOLF_MEMORY_HOST', ''),
+            model=getattr(config, 'WOLF_MEMORY_MODEL', ''),
+            data_dir=_data_dir,
+        )
+        print("---------------------------------------")
     else:
-        print("ChromaDB initialized successfully.")
-    print("-----------------------------")
+        print("\n--- Initializing ChromaDB ---")
+        if not chroma_client.initialize_chroma_client():
+            print("Warning: ChromaDB initialization failed. Memory functions may not work.")
+        else:
+            print("ChromaDB initialized successfully.")
+        print("-----------------------------")
 
     # 3. Initialize MCP
     await initialize_mcp_connections()
@@ -217,24 +246,35 @@ async def debug_loop():
 
             print(f"\n{config.PERSONA_NAME} is thinking...")
 
-            # --- Pre-fetch ChromaDB data ---
-            print(f"Fetching ChromaDB data for '{user_name}'...")
-            user_profile_data = chroma_client.get_entity_profile(user_name)
-            related_memories_data = chroma_client.get_related_memories(user_name, topic=user_input, limit=5) # Use user input as topic hint
-            # bot_knowledge_data = chroma_client.get_bot_knowledge(concept=user_input, limit=3) # Optional: Fetch bot knowledge based on input
-            print("ChromaDB data fetch complete.")
+            # --- Pre-fetch memory data ---
+            user_profile_data = None
+            related_memories_data = []
+            wolf_memory_data = None
+
+            if getattr(config, 'WOLF_MEMORY_ENABLED', False):
+                print(f"[WolfMemory] Querying memory for '{user_name}'...")
+                wolf_memory_data = wolf_memory_client.query_user(user_name)
+                if wolf_memory_data and wolf_memory_data.get("found"):
+                    print("[WolfMemory] User memory found.")
+                else:
+                    print("[WolfMemory] No existing memory for this user.")
+            else:
+                print(f"Fetching ChromaDB data for '{user_name}'...")
+                user_profile_data = chroma_client.get_entity_profile(user_name)
+                related_memories_data = chroma_client.get_related_memories(user_name, topic=user_input, limit=5)
+                print("ChromaDB data fetch complete.")
             # --- End Pre-fetch ---
 
             # Call LLM interaction function, passing fetched data
             bot_response_data = await llm_interaction.get_llm_response(
                 current_sender_name=user_name,
-                history=list(conversation_history), # Pass history
+                history=list(conversation_history),
                 mcp_sessions=active_mcp_sessions,
                 available_mcp_tools=all_discovered_mcp_tools,
                 persona_details=wolfhart_persona_details,
-                user_profile=user_profile_data,         # Pass fetched profile
-                related_memories=related_memories_data, # Pass fetched memories
-                # bot_knowledge=bot_knowledge_data      # Optional: Pass fetched knowledge
+                user_profile=user_profile_data,
+                related_memories=related_memories_data,
+                wolf_memory=wolf_memory_data,
             )
 
             # Print the full response structure for debugging
@@ -257,9 +297,21 @@ async def debug_loop():
             if bot_dialogue:
                 print(f"\n{config.PERSONA_NAME}: {bot_dialogue}")
                 if valid_response:
-                     # Add valid bot response to history
-                     timestamp = datetime.datetime.now()
-                     conversation_history.append((timestamp, 'bot', config.PERSONA_NAME, bot_dialogue))
+                    timestamp = datetime.datetime.now()
+                    conversation_history.append((timestamp, 'bot', config.PERSONA_NAME, bot_dialogue))
+
+                    # --- Wolf Memory: record interaction ---
+                    if getattr(config, 'WOLF_MEMORY_ENABLED', False):
+                        print("[WolfMemory] Recording interaction...")
+                        wolf_memory_client.record_interaction(
+                            username=user_name,
+                            user_input=user_input,
+                            bot_thoughts=thoughts or "",
+                            bot_output=bot_dialogue,
+                            timestamp=timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                        )
+                        print("[WolfMemory] Interaction recorded.")
+                    # --- End Wolf Memory record ---
                 else:
                     print("(Note: LLM marked this dialogue as potentially invalid/incomplete)")
             else:

@@ -53,7 +53,7 @@ def parse_ollama_stream(
             yield TextChunk(content)
 
         # Tool calls (Ollama delivers these as complete objects in a single chunk)
-        for tc in msg.get("tool_calls", []):
+        for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {})
             name = fn.get("name", "")
             args = fn.get("arguments", {})
@@ -95,7 +95,7 @@ def parse_requests_stream(
         if content:
             yield TextChunk(content)
 
-        for tc in msg.get("tool_calls", []):
+        for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {})
             name = fn.get("name", "")
             args = fn.get("arguments", {})

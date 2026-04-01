@@ -47,106 +47,9 @@ import llm_interaction
 import ui_interaction
 import chroma_client
 import subprocess # Import subprocess module
-
-
-# ---------------------------------------------------------------------------
-# Wolf Memory Client (subprocess communication)
-# ---------------------------------------------------------------------------
-class WolfMemoryClient:
-    """
-    Manages the wolf-memory subprocess and communicates via JSON over stdin/stdout.
-    Fails silently so that wolf-chat continues operating even if wolf-memory is unavailable.
-    """
-    def __init__(self):
-        self._proc = None
-        self._lock = threading.Lock()
-
-    def start(self):
-        """Start the wolf-memory subprocess."""
-        import sys, os
-        memory_script = os.path.join(os.path.dirname(__file__), "wolf-memory", "main.py")
-        if not os.path.exists(memory_script):
-            logger.warning("[WolfMemory] wolf-memory/main.py not found, memory system disabled.")
-            return
-
-        env = os.environ.copy()
-        if hasattr(config, 'WOLF_MEMORY_BACKEND'):
-            env['WOLF_MEMORY_BACKEND'] = config.WOLF_MEMORY_BACKEND
-        if hasattr(config, 'WOLF_MEMORY_HOST'):
-            env['OLLAMA_HOST'] = config.WOLF_MEMORY_HOST
-        if hasattr(config, 'WOLF_MEMORY_MODEL'):
-            env['WOLF_MEMORY_MODEL'] = config.WOLF_MEMORY_MODEL
-
-        try:
-            self._proc = subprocess.Popen(
-                [sys.executable, memory_script, "--mode", "subprocess"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                env=env,
-            )
-            logger.info("[WolfMemory] Subprocess started.")
-        except Exception as e:
-            logger.error(f"[WolfMemory] Failed to start subprocess: {e}")
-            self._proc = None
-
-    def _send(self, action: str, params: dict) -> dict | None:
-        if not self._proc or self._proc.poll() is not None:
-            return None
-        with self._lock:
-            try:
-                import json as _json
-                line = _json.dumps({"action": action, "params": params}, ensure_ascii=False) + "\n"
-                self._proc.stdin.write(line)
-                self._proc.stdin.flush()
-                response_line = self._proc.stdout.readline()
-                if response_line:
-                    return _json.loads(response_line)
-            except Exception as e:
-                logger.error(f"[WolfMemory] Communication error: {e}")
-        return None
-
-    def query_user(self, username: str) -> dict | None:
-        """Query memory for a user. Returns data dict or None on failure."""
-        result = self._send("query_user", {"username": username})
-        if result and result.get("status") == "ok":
-            return result.get("data")
-        return None
-
-    def record_interaction(self, username: str, user_input: str,
-                           bot_thoughts: str, bot_output: str,
-                           timestamp: str | None = None) -> None:
-        """Record a conversation interaction (fire-and-forget, errors are logged)."""
-        params = {
-            "username": username,
-            "user_input": user_input,
-            "bot_thoughts": bot_thoughts,
-            "bot_output": bot_output,
-        }
-        if timestamp:
-            params["timestamp"] = timestamp
-        self._send("record_interaction", params)
-
-    def terminate(self):
-        """Terminate the wolf-memory subprocess."""
-        if self._proc and self._proc.poll() is None:
-            try:
-                self._proc.stdin.close()
-                self._proc.terminate()
-                self._proc.wait(timeout=5)
-                logger.info("[WolfMemory] Subprocess terminated.")
-            except Exception as e:
-                logger.warning(f"[WolfMemory] Error terminating subprocess: {e}")
-                try:
-                    self._proc.kill()
-                except Exception:
-                    pass
-
+from wolf_memory_bridge import WolfMemoryClient
 
 wolf_memory_client = WolfMemoryClient()
-# ---------------------------------------------------------------------------
 import signal
 import platform
 import atexit
@@ -1057,7 +960,11 @@ async def run_main_with_exit_stack():
 
         # 2b. Start wolf-memory subprocess (if enabled)
         if getattr(config, 'WOLF_MEMORY_ENABLED', False):
-            wolf_memory_client.start()
+            wolf_memory_client.start(
+                backend=getattr(config, 'WOLF_MEMORY_BACKEND', ''),
+                host=getattr(config, 'WOLF_MEMORY_HOST', ''),
+                model=getattr(config, 'WOLF_MEMORY_MODEL', ''),
+            )
 
         # 3. Initialize MCP Connections Asynchronously
         await initialize_mcp_connections()

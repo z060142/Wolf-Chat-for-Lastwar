@@ -31,3 +31,7 @@ activate_venv.bat
 
 # Requirements hash for dependency tracking
 .requirements_hash
+
+# Wolf Memory runtime data
+wolf-memory/memories/
+wolf-memory/memories_test/

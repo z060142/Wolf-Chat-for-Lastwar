@@ -8,6 +8,10 @@
 # ============================================================
 # OpenAI API client for LLM interaction
 openai==1.70.0
+ollama
+mcp
+python-frontmatter
+
 
 # MCP (Modular Capability Provider) framework
 # Updated to version 1.25.0 (2026-01) for timeout fixes and stability improvements

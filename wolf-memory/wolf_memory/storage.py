@@ -67,6 +67,7 @@ def append_to_window(entry: str) -> int:
     Append a conversation entry to window.md.
     Returns the new total entry count.
     """
+    import sys
     _ensure_dir(MEMORIES_DIR)
     current = read_window()
 
@@ -76,7 +77,10 @@ def append_to_window(entry: str) -> int:
         new_content = entry.strip() + "\n"
 
     WINDOW_FILE.write_text(new_content, encoding="utf-8")
-    return count_window_entries(new_content)
+    count = count_window_entries(new_content)
+    print(f"[WolfMemory] append_to_window: wrote {len(new_content)} bytes, count={count}, path={WINDOW_FILE}",
+          file=sys.stderr, flush=True)
+    return count
 
 
 def reset_window(opening_summary: str = "") -> None:
