@@ -46,6 +46,8 @@ import llm_interaction
 # Import UI module
 import ui_interaction
 import chroma_client
+# Wolf Memory subprocess client
+from wolf_memory_client import wolf_memory
 import subprocess # Import subprocess module
 import signal
 import platform
@@ -773,6 +775,9 @@ async def shutdown():
     except Exception as cleanup_error:
         print(f"Warning: Error cleaning MCP files: {cleanup_error}")
 
+    # 5. Stop Wolf Memory subprocess
+    wolf_memory.stop()
+
     # Clear global dictionaries after cleanup
     active_mcp_sessions.clear()
     all_discovered_mcp_tools.clear()
@@ -952,6 +957,13 @@ async def run_main_with_exit_stack():
         # 2. Initialize Memory System (after loading config, before main loop)
         memory_system_active = initialize_memory_system()
 
+        # 2b. Start Wolf Memory subprocess
+        wolf_memory_active = wolf_memory.start()
+        if wolf_memory_active:
+            print("Wolf Memory subprocess started.")
+        else:
+            print("Wolf Memory subprocess not available, continuing without it.")
+
         # 3. Initialize MCP Connections Asynchronously
         await initialize_mcp_connections()
 
@@ -1114,6 +1126,25 @@ async def run_main_with_exit_stack():
             print(f"Added user message from {sender_name} to history at {timestamp}.")
             # --- End Add user message ---
 
+            # --- Wolf Memory: query user before LLM ---
+            wolf_memory_context = ""
+            if wolf_memory_active:
+                wm_data = await wolf_memory.query_user(sender_name)
+                if wm_data.get("found"):
+                    profile_summary = wm_data.get("profile", {}).get("summary", "")
+                    recent = wm_data.get("recent_interactions", [])
+                    parts = []
+                    if profile_summary:
+                        parts.append(f"[Wolf Memory Profile] {profile_summary}")
+                    if recent:
+                        recent_lines = "\n".join(
+                            r.get("raw", "").strip() for r in recent[:5] if r.get("raw")
+                        )
+                        if recent_lines:
+                            parts.append(f"[Wolf Memory Recent Interactions]\n{recent_lines}")
+                    wolf_memory_context = "\n\n".join(parts)
+            # --- End Wolf Memory query ---
+
             # --- Memory Preloading ---
             user_profile = None
             related_memories = []
@@ -1205,6 +1236,15 @@ async def run_main_with_exit_stack():
                 }
                 print(f"Main: Prepared UI context - snapshot: {bubble_snapshot is not None}, region: {bubble_region}, search_area: {search_area is not None}")
                 
+                # Merge wolf-memory context into user_profile string
+                merged_user_profile = user_profile or ""
+                if wolf_memory_context:
+                    merged_user_profile = (
+                        (merged_user_profile + "\n\n" + wolf_memory_context).strip()
+                        if merged_user_profile
+                        else wolf_memory_context
+                    )
+
                 # Get LLM response, passing preloaded memory data and UI context
                 bot_response_data = await llm_interaction.get_llm_response(
                     current_sender_name=sender_name,
@@ -1212,7 +1252,7 @@ async def run_main_with_exit_stack():
                     mcp_sessions=active_mcp_sessions,
                     available_mcp_tools=all_discovered_mcp_tools,
                     persona_details=wolfhart_persona_details,
-                    user_profile=user_profile,                # Added: Pass user profile
+                    user_profile=merged_user_profile,         # Merged: chroma + wolf-memory
                     related_memories=related_memories,        # Added: Pass related memories
                     bot_knowledge=bot_knowledge,              # Added: Pass bot knowledge
                     ui_context=ui_context                     # Added: Pass UI context
@@ -1321,6 +1361,18 @@ async def run_main_with_exit_stack():
                         bot_thoughts=thoughts # Pass the extracted thoughts
                     )
                     # --- End Log interaction ---
+
+                    # --- Wolf Memory: record interaction ---
+                    if wolf_memory_active:
+                        interaction_ts = timestamp.strftime("%Y-%m-%dT%H:%M:%S")
+                        asyncio.ensure_future(wolf_memory.record_interaction(
+                            username=sender_name,
+                            timestamp=interaction_ts,
+                            user_input=bubble_text,
+                            bot_thoughts=thoughts,
+                            bot_output=bot_dialogue,
+                        ))
+                    # --- End Wolf Memory record ---
 
                     print("Sending 'send_reply' command to UI thread...")
                     command_to_send = {'action': 'send_reply', 'text': bot_dialogue}
