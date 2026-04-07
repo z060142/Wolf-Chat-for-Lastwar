@@ -1131,8 +1131,24 @@ async def run_main_with_exit_stack():
                     # Prepare parallel tasks
                     tasks = []
 
-                    # Task 1: Get user profile
-                    profile_task = loop.run_in_executor(None, chroma_client.get_entity_profile, sender_name)
+                    # Task 1: Get user profile (from Wolfina Wiki if enabled, else ChromaDB)
+                    def fetch_user_profile(username):
+                        if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+                            try:
+                                import urllib.request
+                                import json as _json
+                                url = f"{config.WOLFINA_WIKI_HOST}/wolfchat/user/{urllib.request.quote(username)}"
+                                req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                                with urllib.request.urlopen(req, timeout=5) as resp:
+                                    data = _json.loads(resp.read().decode())
+                                    summary = data.get("summary", "")
+                                    if summary and "No data found" not in summary:
+                                        return summary
+                            except Exception as wiki_err:
+                                logger.warning(f"Wiki profile fetch failed for {username}, falling back to ChromaDB: {wiki_err}")
+                        return chroma_client.get_entity_profile(username)
+
+                    profile_task = loop.run_in_executor(None, fetch_user_profile, sender_name)
                     tasks.append(profile_task)
 
                     # Task 2: Preload related memories if configured
@@ -1321,6 +1337,31 @@ async def run_main_with_exit_stack():
                         bot_thoughts=thoughts # Pass the extracted thoughts
                     )
                     # --- End Log interaction ---
+
+                    # --- Push to Wolfina Wiki (fire-and-forget) ---
+                    if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+                        async def _push_to_wiki(username, user_msg, bot_name, bot_msg, bot_thoughts):
+                            try:
+                                import urllib.request
+                                import json as _json
+                                ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                raw = (
+                                    f"[{ts}] User ({username}): {user_msg}\n"
+                                    f"[{ts}] Bot ({bot_name}) Thoughts: {bot_thoughts or ''}\n"
+                                    f"[{ts}] Bot ({bot_name}) Dialogue: {bot_msg}\n"
+                                )
+                                payload = _json.dumps({"raw_log": raw, "session_id": username}).encode()
+                                req = urllib.request.Request(
+                                    f"{config.WOLFINA_WIKI_HOST}/wolfchat/conversation",
+                                    data=payload,
+                                    headers={"Content-Type": "application/json"},
+                                    method="POST"
+                                )
+                                await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=5).close())
+                            except Exception as wiki_push_err:
+                                logger.debug(f"Wiki conversation push failed: {wiki_push_err}")
+                        asyncio.create_task(_push_to_wiki(sender_name, bubble_text, config.PERSONA_NAME, bot_dialogue, thoughts))
+                    # --- End Push to Wolfina Wiki ---
 
                     print("Sending 'send_reply' command to UI thread...")
                     command_to_send = {'action': 'send_reply', 'text': bot_dialogue}

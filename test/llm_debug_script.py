@@ -217,12 +217,28 @@ async def debug_loop():
 
             print(f"\n{config.PERSONA_NAME} is thinking...")
 
-            # --- Pre-fetch ChromaDB data ---
-            print(f"Fetching ChromaDB data for '{user_name}'...")
-            user_profile_data = chroma_client.get_entity_profile(user_name)
-            related_memories_data = chroma_client.get_related_memories(user_name, topic=user_input, limit=5) # Use user input as topic hint
-            # bot_knowledge_data = chroma_client.get_bot_knowledge(concept=user_input, limit=3) # Optional: Fetch bot knowledge based on input
-            print("ChromaDB data fetch complete.")
+            # --- Pre-fetch user profile (Wiki or ChromaDB) ---
+            def fetch_user_profile_debug(username):
+                if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+                    try:
+                        import urllib.request
+                        import json as _json
+                        url = f"{config.WOLFINA_WIKI_HOST}/wolfchat/user/{urllib.request.quote(username)}"
+                        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                        with urllib.request.urlopen(req, timeout=5) as resp:
+                            data = _json.loads(resp.read().decode())
+                            summary = data.get("summary", "")
+                            if summary and "No data found" not in summary:
+                                print(f"[Wiki] Got profile for '{username}' (cached={data.get('cached')})")
+                                return summary
+                    except Exception as wiki_err:
+                        print(f"[Wiki] Profile fetch failed, falling back to ChromaDB: {wiki_err}")
+                return chroma_client.get_entity_profile(username)
+
+            print(f"Fetching user profile for '{user_name}'...")
+            user_profile_data = fetch_user_profile_debug(user_name)
+            related_memories_data = chroma_client.get_related_memories(user_name, topic=user_input, limit=5)
+            print("Profile fetch complete.")
             # --- End Pre-fetch ---
 
             # Call LLM interaction function, passing fetched data
@@ -260,6 +276,33 @@ async def debug_loop():
                      # Add valid bot response to history
                      timestamp = datetime.datetime.now()
                      conversation_history.append((timestamp, 'bot', config.PERSONA_NAME, bot_dialogue))
+
+                     # --- Push to Wolfina Wiki (fire-and-forget) ---
+                     if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+                         async def _push_wiki(username, user_msg, bot_msg, bot_thoughts):
+                             try:
+                                 import urllib.request
+                                 import json as _json
+                                 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                 raw = (
+                                     f"[{ts}] User ({username}): {user_msg}\n"
+                                     f"[{ts}] Bot ({config.PERSONA_NAME}) Thoughts: {bot_thoughts or ''}\n"
+                                     f"[{ts}] Bot ({config.PERSONA_NAME}) Dialogue: {bot_msg}\n"
+                                 )
+                                 payload = _json.dumps({"raw_log": raw, "session_id": username}).encode()
+                                 req = urllib.request.Request(
+                                     f"{config.WOLFINA_WIKI_HOST}/wolfchat/conversation",
+                                     data=payload,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST"
+                                 )
+                                 loop = asyncio.get_event_loop()
+                                 await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=5).close())
+                                 print("[Wiki] Conversation pushed successfully.")
+                             except Exception as e:
+                                 print(f"[Wiki] Push failed: {e}")
+                         await _push_wiki(user_name, user_input, bot_dialogue, thoughts)
+                     # --- End Push to Wolfina Wiki ---
                 else:
                     print("(Note: LLM marked this dialogue as potentially invalid/incomplete)")
             else:
