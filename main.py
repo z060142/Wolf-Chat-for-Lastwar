@@ -882,7 +882,29 @@ async def initialize_mcp_connections():
         #           print(f"Exception caught when connecting to Server '{server_key}': {result}")
     print("\n--- All MCP connection initialization attempts completed ---")
     print(f"Total discovered MCP tools: {len(all_discovered_mcp_tools)}.")
-    # Removed print statement for active sessions
+
+    # Inject local wiki_query tool if Wiki memory is enabled
+    if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+        all_discovered_mcp_tools.append({
+            "name": "wiki_query",
+            "description": "Query the Wolfina Wiki memory system for information about a player or topic. Use this when you need more context beyond what's already in the conversation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The username, topic, or question to look up"
+                    },
+                    "max_words": {
+                        "type": "integer",
+                        "description": "Maximum words in the response (default: 300)"
+                    }
+                },
+                "required": ["query"]
+            },
+            "_server_key": "local"
+        })
+        print("Injected local tool: wiki_query")
 
 
 # --- Load Persona Function (with corrected syntax) ---

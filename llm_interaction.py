@@ -160,6 +160,30 @@ def get_system_prompt(
 {chr(10).join(mcp_prompts)}
 """
 
+    # Wolfina Wiki query tool prompt (only when enabled)
+    if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+        wiki_tool_prompt = """
+=== WIKI MEMORY QUERY TOOL ===
+You have access to a `wiki_query` tool that lets you look up detailed information from the wiki memory system.
+
+- Use it when you need more context about a player or topic beyond what's already provided
+- The `query` field can be a username, a topic, or a question — it's flexible
+- Use it proactively if a player mentions something you'd like to know more about
+- Results are real-time and not cached
+
+Example usage: call `wiki_query` with `{"query": "SherefoxUwU"}` to get detailed info about that player.
+"""
+        if mcp_tools_prompt:
+            mcp_tools_prompt += wiki_tool_prompt
+        else:
+            mcp_tools_prompt = f"""
+=== MCP TOOL INVOCATION BASICS ===
+- Use the `tool_calls` mechanism when you need a little extra help to answer a question!
+- After using a tool, ALWAYS provide a sweet and helpful dialogue that incorporates the results naturally.
+
+{wiki_tool_prompt}
+"""
+
     # 檢查預載入資料 - 已移除 bot_knowledge 檢查
     has_preloaded_data = bool(user_profile or (related_memories and len(related_memories) > 0))
     
@@ -1118,43 +1142,65 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
 
     # Proceed only if args were parsed successfully
     if function_args is not None:
-        target_session = None; target_server_key = None
-        for tool_def in available_mcp_tools:
-            if isinstance(tool_def, dict) and tool_def.get('name') == function_name: target_server_key = tool_def.get('_server_key'); break
-        if target_server_key and target_server_key in mcp_sessions: target_session = mcp_sessions[target_server_key]
-        elif target_server_key: print(f"Error: No active session for '{target_server_key}'"); result_content = {"error": f"MCP session '{target_server_key}' not active"}
-        else: print(f"Error: Source server for tool '{function_name}' not found"); result_content = {"error": f"Source server not found for tool '{function_name}'"}
 
-        if target_session:
-            # 特殊處理：為 remove_user_position 工具注入 UI 上下文數據
-            if function_name == 'remove_user_position' and ui_context:
-                print(f"LLM Tool Call: Injecting UI context for {function_name}")
-                
-                # 將 UI 上下文數據注入到全域變數中，供 MCP 工具讀取
-                import __main__
-                if 'bubble_snapshot' in ui_context:
-                    __main__.bubble_snapshot = ui_context['bubble_snapshot']
-                    print(f"LLM Tool Call: Injected bubble_snapshot to main globals (type: {type(__main__.bubble_snapshot)})")
-                
-                if 'bubble_region' in ui_context:
-                    __main__.bubble_region = ui_context['bubble_region']
-                    print(f"LLM Tool Call: Injected bubble_region to main globals: {__main__.bubble_region}")
-                    
-                if 'search_area' in ui_context:
-                    __main__.search_area = ui_context['search_area']
-                    print(f"LLM Tool Call: Injected search_area to main globals: {__main__.search_area}")
-            
-            result_content = await mcp_client.call_mcp_tool(session=target_session, tool_name=function_name, arguments=function_args) # Use corrected args
-            if isinstance(result_content, dict) and 'error' in result_content: 
-                print(f"Tool '{function_name}' call returned error: {result_content['error']}")
-                if request_id:
-                    debug_log(f"LLM Request #{request_id} - Tool Call Error", 
-                              f"Tool: {function_name}\nError: {result_content['error']}")
-            elif request_id:
-                debug_log(f"LLM Request #{request_id} - Tool Call Success", 
-                          f"Tool: {function_name}\nResult: {json.dumps(result_content, ensure_ascii=False, indent=2)[:500]}..." 
-                          if isinstance(result_content, (dict, list)) and len(json.dumps(result_content)) > 500 
-                          else f"Tool: {function_name}\nResult: {result_content}")
+        # --- Local tool: wiki_query ---
+        if function_name == 'wiki_query':
+            try:
+                import urllib.request as _urlreq
+                import json as _json
+                wiki_host = getattr(config, 'WOLFINA_WIKI_HOST', 'http://localhost:8000')
+                payload = _json.dumps({
+                    "query": function_args.get("query", ""),
+                    "max_words": function_args.get("max_words", 300)
+                }).encode()
+                req = _urlreq.Request(
+                    f"{wiki_host}/wolfchat/query",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with _urlreq.urlopen(req, timeout=10) as resp:
+                    result_content = _json.loads(resp.read().decode())
+                print(f"wiki_query succeeded for query='{function_args.get('query')}'")
+            except Exception as e:
+                result_content = {"error": f"wiki_query failed: {e}"}
+                print(f"wiki_query error: {e}")
+
+        else:
+            # --- MCP tools ---
+            target_session = None; target_server_key = None
+            for tool_def in available_mcp_tools:
+                if isinstance(tool_def, dict) and tool_def.get('name') == function_name: target_server_key = tool_def.get('_server_key'); break
+            if target_server_key and target_server_key in mcp_sessions: target_session = mcp_sessions[target_server_key]
+            elif target_server_key: print(f"Error: No active session for '{target_server_key}'"); result_content = {"error": f"MCP session '{target_server_key}' not active"}
+            else: print(f"Error: Source server for tool '{function_name}' not found"); result_content = {"error": f"Source server not found for tool '{function_name}'"}
+
+            if target_session:
+                # 特殊處理：為 remove_user_position 工具注入 UI 上下文數據
+                if function_name == 'remove_user_position' and ui_context:
+                    print(f"LLM Tool Call: Injecting UI context for {function_name}")
+                    import __main__
+                    if 'bubble_snapshot' in ui_context:
+                        __main__.bubble_snapshot = ui_context['bubble_snapshot']
+                        print(f"LLM Tool Call: Injected bubble_snapshot to main globals (type: {type(__main__.bubble_snapshot)})")
+                    if 'bubble_region' in ui_context:
+                        __main__.bubble_region = ui_context['bubble_region']
+                        print(f"LLM Tool Call: Injected bubble_region to main globals: {__main__.bubble_region}")
+                    if 'search_area' in ui_context:
+                        __main__.search_area = ui_context['search_area']
+                        print(f"LLM Tool Call: Injected search_area to main globals: {__main__.search_area}")
+
+                result_content = await mcp_client.call_mcp_tool(session=target_session, tool_name=function_name, arguments=function_args)
+                if isinstance(result_content, dict) and 'error' in result_content:
+                    print(f"Tool '{function_name}' call returned error: {result_content['error']}")
+                    if request_id:
+                        debug_log(f"LLM Request #{request_id} - Tool Call Error",
+                                  f"Tool: {function_name}\nError: {result_content['error']}")
+                elif request_id:
+                    debug_log(f"LLM Request #{request_id} - Tool Call Success",
+                              f"Tool: {function_name}\nResult: {json.dumps(result_content, ensure_ascii=False, indent=2)[:500]}..."
+                              if isinstance(result_content, (dict, list)) and len(json.dumps(result_content)) > 500
+                              else f"Tool: {function_name}\nResult: {result_content}")
 
     # Format result content for LLM
     try:
