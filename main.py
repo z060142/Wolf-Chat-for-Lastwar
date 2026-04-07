@@ -51,8 +51,6 @@ import signal
 import platform
 import atexit
 import psutil  # For robust process management
-# Import position tool server for MCP integration
-import position_tool_server
 import json  # For file communication with MCP server
 import time   # For heartbeat timestamps
 # Conditionally import Windows-specific modules
@@ -906,6 +904,20 @@ async def initialize_mcp_connections():
         })
         print("Injected local tool: wiki_query")
 
+    # Always inject remove_user_position as a local tool (override any MCP-registered version)
+    all_discovered_mcp_tools[:] = [t for t in all_discovered_mcp_tools if t.get('name') != 'remove_user_position']
+    all_discovered_mcp_tools.append({
+        "name": "remove_user_position",
+        "description": "Remove the current position/title from the user who sent the message. Call this when the user requests to have their position removed. No parameters needed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        "_server_key": "local"
+    })
+    print("Injected local tool: remove_user_position")
+
 
 # --- Load Persona Function (with corrected syntax) ---
 def load_persona_from_file(filename="persona.json"):
@@ -1047,14 +1059,6 @@ async def run_main_with_exit_stack():
         print(f"Available tools: {len(all_discovered_mcp_tools)}")
         if wolfhart_persona_details: print("Persona data loaded.")
         else: print("Warning: Failed to load Persona data.")
-        
-        # 啟動MCP文件通訊監控（替代舊的回調機制）
-        try:
-            monitor_task = asyncio.create_task(monitor_mcp_commands())
-            print("MCP File Communication monitor started successfully.")
-        except Exception as e:
-            print(f"Warning: Failed to start MCP file communication monitor: {e}")
-            monitor_task = None
         
         print("F7: Clear History, F8: Pause/Resume, F9: Quit.")
 

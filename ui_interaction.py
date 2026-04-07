@@ -2355,7 +2355,7 @@ def remove_user_position(detector: DetectionModule,
     search_region = (search_region_x_start, search_region_y_start, search_region_width, search_region_height)
     bubble_top_center = (bubble_x + bubble_w // 2, bubble_y)
 
-    print(f"Searching for position icons in region: {search_region}")
+    print(f"Searching for position icons in region: {search_region}, bubble_top_center={bubble_top_center}")
 
     # Use multi-strategy detection
     position_result = detector._detect_position_icon_multi_strategy(

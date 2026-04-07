@@ -1143,8 +1143,32 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
     # Proceed only if args were parsed successfully
     if function_args is not None:
 
+        # --- Local tool: remove_user_position ---
+        if function_name == 'remove_user_position':
+            try:
+                import __main__
+                # Inject UI context into main globals so execute_position_removal_with_feedback can read them
+                if ui_context:
+                    if 'bubble_snapshot' in ui_context:
+                        __main__.bubble_snapshot = ui_context['bubble_snapshot']
+                        print(f"Local tool: Injected bubble_snapshot (type: {type(__main__.bubble_snapshot)})")
+                    if 'bubble_region' in ui_context:
+                        __main__.bubble_region = ui_context['bubble_region']
+                        print(f"Local tool: Injected bubble_region: {__main__.bubble_region}")
+                    if 'search_area' in ui_context:
+                        __main__.search_area = ui_context['search_area']
+                        print(f"Local tool: Injected search_area: {__main__.search_area}")
+                # Call the position removal callback directly
+                result_content = await __main__.execute_position_removal_with_feedback(
+                    'remove_position_with_feedback'
+                )
+                print(f"Local tool remove_user_position result: {result_content.get('status')}")
+            except Exception as e:
+                result_content = {"error": f"remove_user_position failed: {e}"}
+                print(f"Local tool remove_user_position error: {e}")
+
         # --- Local tool: wiki_query ---
-        if function_name == 'wiki_query':
+        elif function_name == 'wiki_query':
             try:
                 import urllib.request as _urlreq
                 import json as _json
