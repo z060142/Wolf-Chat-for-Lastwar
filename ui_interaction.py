@@ -2782,30 +2782,22 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         }
                         print(f"UI Thread: Missing snapshot data: {result}")
                     
-                    # 改進：優先使用文件系統回傳結果（MCP通訊）
-                    if is_mcp_request and request_id:
+                    # 回傳結果：優先使用 command 攜帶的一次性 queue
+                    result_queue = command_data.get('result_queue')
+                    if result_queue is not None:
                         try:
-                            # 直接寫入結果文件
-                            with open("position_result.json", 'w', encoding='utf-8') as f:
-                                json.dump(result, f, ensure_ascii=False, indent=2)
-                            print(f"UI Thread: Result written to file for MCP request {request_id}")
-                        except Exception as file_error:
-                            print(f"UI Thread: Error writing result file: {file_error}")
-                            # 備用：嘗試使用舊的queue方式
-                            try:
-                                import main
-                                main.position_result_queue.put(result)
-                                print("UI Thread: Fallback - Result sent via queue")
-                            except Exception as queue_error:
-                                print(f"UI Thread: Both file and queue methods failed: {queue_error}")
+                            result_queue.put(result)
+                            print(f"UI Thread: Result sent via result_queue")
+                        except Exception as qe:
+                            print(f"UI Thread: Error putting result to result_queue: {qe}")
                     else:
-                        # 非MCP請求或無request_id，使用舊方式
+                        # 備用：全域 position_result_queue
                         try:
                             import main
                             main.position_result_queue.put(result)
-                            print("UI Thread: Result sent back via legacy queue method")
+                            print("UI Thread: Result sent via global position_result_queue (fallback)")
                         except Exception as e:
-                            print(f"UI Thread: Error with legacy queue method: {e}")
+                            print(f"UI Thread: Error with fallback queue: {e}")
 
                 elif action == 'remove_position':
                     # Check position removal lock first (DISABLED)

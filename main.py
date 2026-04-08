@@ -461,13 +461,15 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
             print(f"MCP Callback: Using bubble_region: {bubble_region}")
             
             # 構造命令，重用現有的UI操作邏輯
+            # 使用一次性 queue 讓 UI thread 直接回傳結果，不需要 import main
+            result_callback_queue = ThreadSafeQueue()
             command_to_send = {
-                'action': 'remove_position_with_feedback',  # 新的action type
+                'action': 'remove_position_with_feedback',
                 'trigger_bubble_region': bubble_region,
                 'bubble_snapshot': bubble_snapshot if 'bubble_snapshot' in globals() else None,
                 'search_area': search_area if 'search_area' in globals() else None,
                 'user_context': user_context,
-                'mcp_request': False  # 現在是本地工具調用，不是MCP請求
+                'result_queue': result_callback_queue,  # UI thread 直接 put 到這裡
             }
             
             print("MCP Callback: Sending command to UI thread...")
@@ -476,8 +478,8 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
                 await asyncio.get_event_loop().run_in_executor(None, command_queue.put, command_to_send)
                 print("MCP Callback: Command sent to UI thread, waiting for result...")
                 
-                # 等待UI處理結果
-                result = await wait_for_ui_result(timeout=15)  # 給UI操作更長的超時時間
+                # 等待UI處理結果（從一次性 queue 讀取）
+                result = await wait_for_ui_result(timeout=15, result_queue=result_callback_queue)
                 print(f"MCP Callback: Received result: {result}")
                 return result
                 
@@ -509,18 +511,20 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
         print(f"MCP Callback: Unsupported action type: {error_result}")
         return error_result
 
-async def wait_for_ui_result(timeout: float = 10.0) -> dict:
+async def wait_for_ui_result(timeout: float = 10.0, result_queue: ThreadSafeQueue = None) -> dict:
     """
     等待UI線程返回的結果
-    
+
     Args:
         timeout: 超時時間（秒）
-    
+        result_queue: 一次性 queue，由 UI thread 直接 put 結果進來
+
     Returns:
         UI操作結果字典
     """
+    q = result_queue if result_queue is not None else position_result_queue
     start_time = asyncio.get_event_loop().time()
-    
+
     while True:
         current_time = asyncio.get_event_loop().time()
         if current_time - start_time > timeout:
@@ -529,11 +533,11 @@ async def wait_for_ui_result(timeout: float = 10.0) -> dict:
                 "message": f"UI操作超時（{timeout}秒），可能是UI識別失敗",
                 "execution_time": datetime.datetime.now().isoformat()
             }
-        
+
         try:
             # 非阻塞式檢查result queue
             result = await asyncio.get_event_loop().run_in_executor(
-                None, position_result_queue.get, False  # False = non-blocking
+                None, q.get, False  # False = non-blocking
             )
             return result
         except QueueEmpty:
