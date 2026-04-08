@@ -467,7 +467,7 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
                 'bubble_snapshot': bubble_snapshot if 'bubble_snapshot' in globals() else None,
                 'search_area': search_area if 'search_area' in globals() else None,
                 'user_context': user_context,
-                'mcp_request': True  # 標記這是來自MCP的請求
+                'mcp_request': False  # 現在是本地工具調用，不是MCP請求
             }
             
             print("MCP Callback: Sending command to UI thread...")

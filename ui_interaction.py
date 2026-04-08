@@ -777,7 +777,17 @@ class DetectionModule:
         Multi-strategy position icon detection using grayscale + CLAHE + spatial validation.
         Returns dict with 'name', 'coords', 'confidence', 'method', 'distance' or None if not found.
         Mirrors keyword detection strategy (lines 1189-1269).
+
+        Error returns (dict with error info):
+        - {'error': 'capture_failed'}: Screenshot capture failed
+        - {'error': 'preprocess_failed'}: Image preprocessing failed
+        - {'error': 'no_position_found'}: Detection ran but no position icon found
         """
+
+        # --- Defense: Sanitize inputs to native Python int ---
+        search_region = tuple(int(v) for v in search_region)
+        bubble_center = tuple(int(v) for v in bubble_center)
+
         position_templates = {
             'DEVELOPMENT': 'development_pos',
             'INTERIOR': 'interior_pos',
@@ -796,7 +806,11 @@ class DetectionModule:
             img_clahe = self._apply_clahe(img_gray)
         except Exception as e:
             print(f"[Position Detection] Error capturing/preprocessing screen: {e}")
-            return None
+            return {'error': 'capture_failed'}
+
+        if img_gray is None:
+            print("[Position Detection] Grayscale preprocessing failed")
+            return {'error': 'preprocess_failed'}
 
         if img_clahe is None:
             print("[Position Detection] CLAHE preprocessing failed, using grayscale only")
@@ -888,7 +902,7 @@ class DetectionModule:
         # Selection Strategy (mirroring keyword detection lines 1189-1269)
         if not gray_results and not clahe_results:
             print("[Position Detection] No positions found by either method")
-            return None
+            return {'error': 'no_position_found'}
 
         # Strategy 1: High-confidence single method
         best_gray = max(gray_results, key=lambda x: x['confidence']) if gray_results else None
@@ -936,7 +950,7 @@ class DetectionModule:
                 return {**best_overall, 'method': method}
 
         print(f"[Position Detection] No results above fallback threshold ({POSITION_ICON_FALLBACK_CONFIDENCE})")
-        return None
+        return {'error': 'no_position_found'}
 
     def find_elements(self, template_keys: List[str], confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None) -> Dict[str, List[Tuple[int, int]]]:
         """Find multiple templates by their keys. Returns center coordinates."""
@@ -2352,8 +2366,13 @@ def remove_user_position(detector: DetectionModule,
         print(f"Error: Invalid search region calculated for position icons: width={search_region_width}, height={search_region_height}")
         return _return_result("failed", "ui_operation_failed", "Invalid search region calculated for position icons")
         
-    search_region = (search_region_x_start, search_region_y_start, search_region_width, search_region_height)
-    bubble_top_center = (bubble_x + bubble_w // 2, bubble_y)
+    search_region = (
+        int(search_region_x_start),
+        int(search_region_y_start),
+        int(search_region_width),
+        int(search_region_height),
+    )
+    bubble_top_center = (int(bubble_x + bubble_w // 2), int(bubble_y))
 
     print(f"Searching for position icons in region: {search_region}, bubble_top_center={bubble_top_center}")
 
@@ -2367,6 +2386,22 @@ def remove_user_position(detector: DetectionModule,
     if position_result is None:
         print("Error: No position icons found near the trigger bubble.")
         return _return_result("failed", "no_position_found", "User does not have any position assigned")
+
+    # Handle error returns from detection
+    if isinstance(position_result, dict) and 'error' in position_result:
+        error_type = position_result.get('error')
+        if error_type == 'capture_failed':
+            print("Error: Failed to capture screen region for position detection.")
+            return _return_result("failed", "capture_failed", "Screen capture failed during position detection")
+        elif error_type == 'preprocess_failed':
+            print("Error: Failed to preprocess image for position detection.")
+            return _return_result("failed", "preprocess_failed", "Image preprocessing failed during position detection")
+        elif error_type == 'no_position_found':
+            print("Error: No position icons found near the trigger bubble.")
+            return _return_result("failed", "no_position_found", "User does not have any position assigned")
+        else:
+            print(f"Error: Unknown error from position detection: {error_type}")
+            return _return_result("failed", "ui_operation_failed", f"Unknown error in position detection: {error_type}")
 
     target_position_name = position_result['name']
     position_coords = position_result['coords']
