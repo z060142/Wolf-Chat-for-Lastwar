@@ -1380,7 +1380,7 @@ async def run_main_with_exit_stack():
                                     f"[{ts}] Bot ({bot_name}) Thoughts: {bot_thoughts or ''}\n"
                                     f"[{ts}] Bot ({bot_name}) Dialogue: {bot_msg}\n"
                                 )
-                                payload = _json.dumps({"raw_log": raw, "session_id": username}).encode()
+                                payload = _json.dumps({"raw_log": raw, "session_id": "wolfchat"}).encode()
                                 req = urllib.request.Request(
                                     f"{config.WOLFINA_WIKI_HOST}/wolfchat/conversation",
                                     data=payload,

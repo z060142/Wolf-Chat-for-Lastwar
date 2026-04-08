@@ -289,7 +289,7 @@ async def debug_loop():
                                      f"[{ts}] Bot ({config.PERSONA_NAME}) Thoughts: {bot_thoughts or ''}\n"
                                      f"[{ts}] Bot ({config.PERSONA_NAME}) Dialogue: {bot_msg}\n"
                                  )
-                                 payload = _json.dumps({"raw_log": raw, "session_id": username}).encode()
+                                 payload = _json.dumps({"raw_log": raw, "session_id": "wolfchat"}).encode()
                                  req = urllib.request.Request(
                                      f"{config.WOLFINA_WIKI_HOST}/wolfchat/conversation",
                                      data=payload,
