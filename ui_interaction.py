@@ -704,6 +704,30 @@ class DetectionModule:
             # Return original grayscale image on error
             return gray if 'gray' in locals() else image
 
+    def _prepare_icon_for_matching(self, gray_img, target_size: int = 16, edge_crop: int = 3):
+        """
+        Prepare a small icon image for robust matching:
+        1. Crop outer edge_crop pixels to remove aliasing artifacts
+        2. Resize to target_size x target_size for consistent scale
+
+        Designed for ~26x26px position icons where edge aliasing causes false negatives.
+        Apply identically to both template and screen crop before matchTemplate.
+        Returns processed image or None on failure.
+        """
+        if gray_img is None:
+            return None
+        try:
+            h, w = gray_img.shape[:2]
+            # Only crop if image is large enough
+            if h > edge_crop * 2 + 4 and w > edge_crop * 2 + 4:
+                gray_img = gray_img[edge_crop:h - edge_crop, edge_crop:w - edge_crop]
+            # Resize to fixed small size (smooths remaining aliasing)
+            resized = cv2.resize(gray_img, (target_size, target_size), interpolation=cv2.INTER_AREA)
+            return resized
+        except Exception as e:
+            print(f"[Icon Prep] Error preparing icon: {e}")
+            return None
+
     def _find_template(self, template_key: str, confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
         """Internal helper to find a template by its key using PyAutoGUI. Returns list of CENTER coordinates (absolute)."""
         template_path = self.templates.get(template_key)
@@ -820,6 +844,12 @@ class DetectionModule:
 
         gray_results = []
         clahe_results = []
+        scaled_results = []
+
+        # Pre-build downscaled search images for scaled matching (0.5x, INTER_AREA smooths aliasing)
+        SCALE = 0.5
+        img_gray_scaled = cv2.resize(img_gray, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_AREA)
+        img_clahe_scaled = cv2.resize(img_clahe, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_AREA)
 
         # Process each template
         for name, template_key in position_templates.items():
@@ -895,57 +925,101 @@ class DetectionModule:
                 except Exception as e:
                     print(f"[Position Detection] Unexpected error in CLAHE matching for {name}: {e}")
 
+                # Scaled matching: downsample both template and search image by 0.5x
+                # INTER_AREA acts as a low-pass filter, removing aliasing artifacts on small icons
+                try:
+                    t_scaled = cv2.resize(template_gray, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_AREA)
+                    sh, sw = t_scaled.shape[:2]
+                    if sh >= 1 and sw >= 1 and img_gray_scaled.shape[0] >= sh and img_gray_scaled.shape[1] >= sw:
+                        scaled_res = cv2.matchTemplate(img_gray_scaled, t_scaled, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(scaled_res)
+
+                        if max_val >= POSITION_ICON_GRAY_CONFIDENCE:
+                            # Scale coordinates back to original resolution
+                            center_x = region_x + int((max_loc[0] + sw // 2) / SCALE)
+                            center_y = region_y + int((max_loc[1] + sh // 2) / SCALE)
+
+                            dist = math.sqrt((center_x - bubble_center[0])**2 +
+                                           (center_y - bubble_center[1])**2)
+
+                            if dist <= max_distance:
+                                scaled_results.append({
+                                    'name': name,
+                                    'coords': (center_x, center_y),
+                                    'confidence': float(max_val),
+                                    'distance': dist
+                                })
+                except cv2.error as e:
+                    print(f"[Position Detection] Scaled matching error for {name}: {e}")
+                except Exception as e:
+                    print(f"[Position Detection] Unexpected error in scaled matching for {name}: {e}")
+
             except Exception as e:
                 print(f"[Position Detection] Error processing template {name}: {e}")
                 continue
 
-        # Selection Strategy (mirroring keyword detection lines 1189-1269)
-        if not gray_results and not clahe_results:
-            print("[Position Detection] No positions found by either method")
+        # Selection Strategy
+        if not gray_results and not clahe_results and not scaled_results:
+            print("[Position Detection] No positions found by any method")
             return {'error': 'no_position_found'}
 
         # Strategy 1: High-confidence single method
         best_gray = max(gray_results, key=lambda x: x['confidence']) if gray_results else None
         best_clahe = max(clahe_results, key=lambda x: x['confidence']) if clahe_results else None
+        best_scaled = max(scaled_results, key=lambda x: x['confidence']) if scaled_results else None
 
-        if best_gray and not best_clahe and best_gray['confidence'] >= POSITION_ICON_HIGH_CONFIDENCE:
+        if best_gray and not best_clahe and not best_scaled and best_gray['confidence'] >= POSITION_ICON_HIGH_CONFIDENCE:
             print(f"[Position Detection] High-confidence Gray: {best_gray['name']} (conf={best_gray['confidence']:.3f})")
             return {**best_gray, 'method': 'gray_high'}
 
-        if best_clahe and not best_gray and best_clahe['confidence'] >= POSITION_ICON_HIGH_CONFIDENCE:
+        if best_clahe and not best_gray and not best_scaled and best_clahe['confidence'] >= POSITION_ICON_HIGH_CONFIDENCE:
             print(f"[Position Detection] High-confidence CLAHE: {best_clahe['name']} (conf={best_clahe['confidence']:.3f})")
             return {**best_clahe, 'method': 'clahe_high'}
 
-        # Strategy 2: Overlapping results
-        for gray_match in gray_results:
-            for clahe_match in clahe_results:
-                if gray_match['name'] == clahe_match['name']:
-                    coord_dist = math.sqrt((gray_match['coords'][0] - clahe_match['coords'][0])**2 +
-                                         (gray_match['coords'][1] - clahe_match['coords'][1])**2)
+        if best_scaled and not best_gray and not best_clahe and best_scaled['confidence'] >= POSITION_ICON_HIGH_CONFIDENCE:
+            print(f"[Position Detection] High-confidence Scaled: {best_scaled['name']} (conf={best_scaled['confidence']:.3f})")
+            return {**best_scaled, 'method': 'scaled_high'}
 
-                    if coord_dist < POSITION_ICON_OVERLAP_DISTANCE:
-                        combined_conf = (gray_match['confidence'] + clahe_match['confidence']) / 2
-                        avg_coords = (
-                            (gray_match['coords'][0] + clahe_match['coords'][0]) // 2,
-                            (gray_match['coords'][1] + clahe_match['coords'][1]) // 2
-                        )
-                        avg_dist = (gray_match['distance'] + clahe_match['distance']) / 2
+        # Strategy 2: Overlapping results (any two methods agree on same name + nearby coords)
+        all_method_results = [
+            ('gray', gray_results),
+            ('clahe', clahe_results),
+            ('scaled', scaled_results),
+        ]
+        for i, (method_a, results_a) in enumerate(all_method_results):
+            for method_b, results_b in all_method_results[i+1:]:
+                for match_a in results_a:
+                    for match_b in results_b:
+                        if match_a['name'] == match_b['name']:
+                            coord_dist = math.sqrt((match_a['coords'][0] - match_b['coords'][0])**2 +
+                                                   (match_a['coords'][1] - match_b['coords'][1])**2)
+                            if coord_dist < POSITION_ICON_OVERLAP_DISTANCE:
+                                combined_conf = (match_a['confidence'] + match_b['confidence']) / 2
+                                avg_coords = (
+                                    (match_a['coords'][0] + match_b['coords'][0]) // 2,
+                                    (match_a['coords'][1] + match_b['coords'][1]) // 2
+                                )
+                                avg_dist = (match_a['distance'] + match_b['distance']) / 2
+                                print(f"[Position Detection] Overlap ({method_a}+{method_b}): {match_a['name']} (conf={combined_conf:.3f}, coord_dist={coord_dist:.1f}px)")
+                                return {
+                                    'name': match_a['name'],
+                                    'coords': avg_coords,
+                                    'confidence': combined_conf,
+                                    'distance': avg_dist,
+                                    'method': f'{method_a}_{method_b}_overlap'
+                                }
 
-                        print(f"[Position Detection] Dual overlap: {gray_match['name']} (conf={combined_conf:.3f}, coord_dist={coord_dist:.1f}px)")
-                        return {
-                            'name': gray_match['name'],
-                            'coords': avg_coords,
-                            'confidence': combined_conf,
-                            'distance': avg_dist,
-                            'method': 'dual_overlap'
-                        }
-
-        # Strategy 3: Fallback to best single result
-        all_results = gray_results + clahe_results
+        # Strategy 3: Fallback to best single result across all methods
+        all_results = gray_results + clahe_results + scaled_results
         if all_results:
             best_overall = max(all_results, key=lambda x: x['confidence'])
             if best_overall['confidence'] >= POSITION_ICON_FALLBACK_CONFIDENCE:
-                method = 'gray_fallback' if best_overall in gray_results else 'clahe_fallback'
+                if best_overall in gray_results:
+                    method = 'gray_fallback'
+                elif best_overall in clahe_results:
+                    method = 'clahe_fallback'
+                else:
+                    method = 'scaled_fallback'
                 print(f"[Position Detection] Fallback: {best_overall['name']} (conf={best_overall['confidence']:.3f}, method={method})")
                 return {**best_overall, 'method': method}
 
@@ -2356,8 +2430,8 @@ def remove_user_position(detector: DetectionModule,
     search_height_pixels = 50 # Search exactly 50 pixels above as requested
     search_region_y_end = bubble_y # Use re-located Y
     search_region_y_start = max(0, bubble_y - search_height_pixels) # Search 50 pixels above
-    search_region_x_start = max(0, bubble_x - 100) # Keep horizontal search wide
-    search_region_x_end = bubble_x + bubble_w + 100
+    search_region_x_start = max(0, bubble_x) # Use exact bubble width
+    search_region_x_end = bubble_x + bubble_w
     search_region_width = search_region_x_end - search_region_x_start
     search_region_height = search_region_y_end - search_region_y_start
     
