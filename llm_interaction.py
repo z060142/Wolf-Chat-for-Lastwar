@@ -344,11 +344,11 @@ def parse_structured_response(response_content: str) -> dict:
                     # REMOVED DEBUG LOGS FROM HERE
                     # 清理 dialogue 中的非對話內容
                     dialogue_content = parsed_json.get("dialogue", "")
-                    # 移除系統訊息如 [Processing...], [Executing...] 等
-                    dialogue_content = re.sub(r'\[.*?\]', '', dialogue_content)
+                    # 只移除明確的系統動作括號如 [Processing...], [Executing...] 等，避免刮掉正常對話
+                    dialogue_content = re.sub(r'\[(Processing|Executing|Initiating|Completing|System|Action|Done|Status)[^\]]*\]', '', dialogue_content, flags=re.IGNORECASE)
                     # 移除動作描述如 *adjusts glasses*, *nods* 等
                     dialogue_content = re.sub(r'\*[^*]*\*', '', dialogue_content)
-                    # 移除 Processing, Executing 等系統動作詞
+                    # 移除 Processing, Executing 等系統動作詞開頭的句子
                     dialogue_content = re.sub(r'\b(Processing|Executing|Initiating|Completing|The system will).*?\.', '', dialogue_content)
                     # 移除 markdown 格式
                     dialogue_content = re.sub(r'\*\*(.*?)\*\*', r'\1', dialogue_content)  # **bold** -> text
@@ -356,7 +356,7 @@ def parse_structured_response(response_content: str) -> dict:
                     # 移除換行符號，保持自然對話流
                     dialogue_content = re.sub(r'\n+', ' ', dialogue_content)
                     dialogue_content = dialogue_content.strip()
-                    
+
                     result = {
                         "commands": parsed_json.get("commands", []),
                         "valid_response": bool(dialogue_content.strip()), # Internal flag
@@ -387,11 +387,11 @@ def parse_structured_response(response_content: str) -> dict:
                 # REMOVED DEBUG LOGS FROM HERE
                 # 清理 dialogue 中的非對話內容
                 dialogue_content = parsed_json.get("dialogue", "")
-                # 移除系統訊息如 [Processing...], [Executing...] 等
-                dialogue_content = re.sub(r'\[.*?\]', '', dialogue_content)
+                # 只移除明確的系統動作括號如 [Processing...], [Executing...] 等，避免刮掉正常對話
+                dialogue_content = re.sub(r'\[(Processing|Executing|Initiating|Completing|System|Action|Done|Status)[^\]]*\]', '', dialogue_content, flags=re.IGNORECASE)
                 # 移除動作描述如 *adjusts glasses*, *nods* 等
                 dialogue_content = re.sub(r'\*[^*]*\*', '', dialogue_content)
-                # 移除 Processing, Executing 等系統動作詞
+                # 移除 Processing, Executing 等系統動作詞開頭的句子
                 dialogue_content = re.sub(r'\b(Processing|Executing|Initiating|Completing|The system will).*?\.', '', dialogue_content)
                 # 移除 markdown 格式
                 dialogue_content = re.sub(r'\*\*(.*?)\*\*', r'\1', dialogue_content)  # **bold** -> text
@@ -399,7 +399,7 @@ def parse_structured_response(response_content: str) -> dict:
                 # 移除換行符號，保持自然對話流
                 dialogue_content = re.sub(r'\n+', ' ', dialogue_content)
                 dialogue_content = dialogue_content.strip()
-                
+
                 result = {
                     "commands": parsed_json.get("commands", []),
                     "valid_response": bool(dialogue_content.strip()), # Internal flag, add strip() check
@@ -611,7 +611,46 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
     Creates a synthetic, caring response in Haato's character
     ONLY when the LLM uses tools but fails to provide a dialogue response.
     """
-    # List of caring responses in Haato's character (English)
+    # Check if position removal tool was used — provide context-appropriate response
+    tool_names = [t.get("name", "") for t in tool_results] if tool_results else []
+    if "remove_user_position" in tool_names:
+        # Try to determine success or failure from tool result content
+        is_success = True
+        for tool_result in tool_results:
+            if tool_result.get("name") == "remove_user_position":
+                try:
+                    result_data = json.loads(tool_result.get("content", "{}"))
+                    if result_data.get("status") == "error" or "error" in result_data:
+                        is_success = False
+                except Exception:
+                    pass
+                break
+
+        if is_success:
+            position_success_options = [
+                "Done! Your position has been removed~",
+                "All done! Position removed for you♡",
+                "Position removed! Let me know if you need anything else~",
+                "Got it! I've removed your position, meow~",
+                "Your position has been cleared! Anything else I can help with?♡",
+            ]
+            dialogue = random.choice(position_success_options)
+        else:
+            position_error_options = [
+                "Hmm, something went wrong with the position removal. Please try again~",
+                "I couldn't remove your position this time, sorry! Please try again♡",
+                "Position removal failed... Please try again or contact an officer, meow~",
+            ]
+            dialogue = random.choice(position_error_options)
+
+        synthetic_response = {
+            "dialogue": dialogue,
+            "commands": [],
+            "thoughts": "Auto-generated position removal response due to LLM failing to provide dialogue after tool use."
+        }
+        return json.dumps(synthetic_response, ensure_ascii=False)
+
+    # Generic fallback for other tools (e.g. web_search, wiki_query)
     dialogue_options = [
         "I found some information for you! Hope it helps, meow~♡",
         "Let me help you with that! I did my best to find what you need~",
@@ -631,17 +670,14 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
         "Ready to serve! I found what you were looking for~"
     ]
 
-    # Randomly select a response
     dialogue = random.choice(dialogue_options)
 
-    # Construct the structured response
     synthetic_response = {
         "dialogue": dialogue,
         "commands": [],
         "thoughts": "Auto-generated response due to LLM failing to provide dialogue after tool use. Reflects the character's established personality traits."
     }
 
-    # Return as a JSON string, as expected by the calling function
     return json.dumps(synthetic_response, ensure_ascii=False)
 
 
@@ -930,7 +966,13 @@ async def get_llm_response(
                 # 添加回應到消息歷史 (不論是否有工具調用)
                 # IMPORTANT: This modifies the 'messages' list within the attempt loop.
                 # This is okay because 'messages' is rebuilt at the start of each attempt.
-                messages.append(response_message.model_dump(exclude_unset=True))
+                dumped_msg = response_message.model_dump(exclude_unset=True)
+                # Remove content:null when tool_calls are present — many proxy providers
+                # reject or mishandle null content in assistant tool-call messages,
+                # causing empty/short responses in the subsequent cycle.
+                if dumped_msg.get('content') is None and 'tool_calls' in dumped_msg:
+                    dumped_msg.pop('content', None)
+                messages.append(dumped_msg)
 
                 # 如果沒有工具調用請求，則退出內循環，準備處理最終回應
                 if not tool_calls:
