@@ -623,7 +623,8 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
                     if result_data.get("status") == "error" or "error" in result_data:
                         is_success = False
                 except Exception:
-                    pass
+                    # Cannot determine outcome — fail safe to avoid falsely reporting success
+                    is_success = False
                 break
 
         if is_success:
@@ -1225,8 +1226,11 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
                     headers={"Content-Type": "application/json"},
                     method="POST"
                 )
-                with _urlreq.urlopen(req, timeout=10) as resp:
-                    result_content = _json.loads(resp.read().decode())
+                def _do_request():
+                    with _urlreq.urlopen(req, timeout=10) as resp:
+                        return resp.read()
+                resp_data = await asyncio.get_event_loop().run_in_executor(None, _do_request)
+                result_content = _json.loads(resp_data.decode())
                 print(f"wiki_query succeeded for query='{function_args.get('query')}'")
             except Exception as e:
                 result_content = {"error": f"wiki_query failed: {e}"}

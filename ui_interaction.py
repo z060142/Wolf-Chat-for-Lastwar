@@ -2457,11 +2457,8 @@ def remove_user_position(detector: DetectionModule,
         max_distance=50
     )
 
-    if position_result is None:
-        print("Error: No position icons found near the trigger bubble.")
-        return _return_result("failed", "no_position_found", "User does not have any position assigned")
-
     # Handle error returns from detection
+    # Note: _detect_position_icon_multi_strategy always returns a dict (success or {'error': ...}), never None
     if isinstance(position_result, dict) and 'error' in position_result:
         error_type = position_result.get('error')
         if error_type == 'capture_failed':
