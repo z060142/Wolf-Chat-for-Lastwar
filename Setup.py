@@ -314,6 +314,8 @@ def load_current_config():
                 "enabled": True
             }
         },
+        "ENABLE_WIKI_MEMORY": False,
+        "WOLFINA_WIKI_HOST": "http://localhost:8000",
         "ENABLE_CHAT_LOGGING": True,
         "LOG_DIR": "chat_logs",
         "GAME_WINDOW_CONFIG": {
@@ -365,6 +367,15 @@ def load_current_config():
             except (json.JSONDecodeError, Exception) as e:
                 print(f"Warning: Could not parse EXTRA_API_PARAMS: {e}")
                 config_data["EXTRA_API_PARAMS"] = {}
+
+            # Extract Wiki memory settings
+            wiki_memory_match = re.search(r'ENABLE_WIKI_MEMORY\s*=\s*(True|False)', config_content)
+            if wiki_memory_match:
+                config_data["ENABLE_WIKI_MEMORY"] = (wiki_memory_match.group(1) == "True")
+
+            wiki_host_match = re.search(r'WOLFINA_WIKI_HOST\s*=\s*["\'](.+?)["\']', config_content)
+            if wiki_host_match:
+                config_data["WOLFINA_WIKI_HOST"] = wiki_host_match.group(1)
 
             # Extract logging settings
             chat_logging_match = re.search(r'ENABLE_CHAT_LOGGING\s*=\s*(True|False)', config_content)
@@ -852,6 +863,14 @@ def generate_config_file(config_data, env_data):
         f.write("# =============================================================================\n")
         f.write("MCP_CONFIRM_TOOL_EXECUTION = False  # True: Confirm before execution, False: Execute automatically\n\n")
         
+        f.write("# =============================================================================\n")
+        f.write("# Wolfina Wiki Memory Integration\n")
+        f.write("# =============================================================================\n")
+        enable_wiki = config_data.get('ENABLE_WIKI_MEMORY', False)
+        f.write(f"ENABLE_WIKI_MEMORY = {str(enable_wiki)}\n")
+        wiki_host = config_data.get('WOLFINA_WIKI_HOST', 'http://localhost:8000')
+        f.write(f"WOLFINA_WIKI_HOST = \"{wiki_host}\"\n\n")
+
         f.write("# =============================================================================\n")
         f.write("# Chat Logging Configuration\n")
         f.write("# =============================================================================\n")
@@ -2663,6 +2682,25 @@ class WolfChatSetup(tk.Tk):
         embedding_model_info.pack(anchor=tk.W, padx=10, pady=(0,5))
 
 
+        # Wolfina Wiki Integration Frame
+        wiki_frame = ttk.LabelFrame(main_frame, text="Wolfina Wiki Integration")
+        wiki_frame.pack(fill=tk.X, pady=10)
+
+        self.enable_wiki_memory_var = tk.BooleanVar(value=False)
+        wiki_cb = ttk.Checkbutton(wiki_frame, text="Enable Wolfina Wiki memory (replaces ChromaDB user profile lookup)",
+                                  variable=self.enable_wiki_memory_var)
+        wiki_cb.pack(anchor=tk.W, padx=10, pady=(5, 2))
+
+        wiki_host_frame = ttk.Frame(wiki_frame)
+        wiki_host_frame.pack(fill=tk.X, pady=5, padx=10)
+
+        wiki_host_label = ttk.Label(wiki_host_frame, text="Wiki Host URL:", width=20)
+        wiki_host_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.wolfina_wiki_host_var = tk.StringVar(value="http://localhost:8000")
+        wiki_host_entry = ttk.Entry(wiki_host_frame, textvariable=self.wolfina_wiki_host_var)
+        wiki_host_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # Information box
         info_frame = ttk.LabelFrame(main_frame, text="Information")
         info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -2671,7 +2709,8 @@ class WolfChatSetup(tk.Tk):
             "• Pre-loading user profiles will speed up responses by fetching data before LLM calls\n"
             "• Collection names must match your ChromaDB configuration\n"
             "• The bot will automatically use pre-loaded data if available\n"
-            "• If data isn't found locally, the bot will fall back to using tool calls"
+            "• If data isn't found locally, the bot will fall back to using tool calls\n"
+            "• Wolfina Wiki: when enabled, user profile is fetched from Wiki API instead of ChromaDB"
         )
 
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
@@ -3036,6 +3075,10 @@ class WolfChatSetup(tk.Tk):
             # Memory Settings
             self.preload_profiles_var.set(self.config_data.get("ENABLE_PRELOAD_PROFILES", True))
             self.related_memories_var.set(self.config_data.get("PRELOAD_RELATED_MEMORIES", 2))
+            if hasattr(self, 'enable_wiki_memory_var'):
+                self.enable_wiki_memory_var.set(self.config_data.get("ENABLE_WIKI_MEMORY", False))
+            if hasattr(self, 'wolfina_wiki_host_var'):
+                self.wolfina_wiki_host_var.set(self.config_data.get("WOLFINA_WIKI_HOST", "http://localhost:8000"))
             self.profiles_collection_var.set(self.config_data.get("PROFILES_COLLECTION", "wolfhart_memory")) # Default was wolfhart_memory
             self.conversations_collection_var.set(self.config_data.get("CONVERSATIONS_COLLECTION", "wolfhart_memory"))
             self.bot_memory_collection_var.set(self.config_data.get("BOT_MEMORY_COLLECTION", "wolfhart_memory"))
@@ -3538,6 +3581,10 @@ class WolfChatSetup(tk.Tk):
             # Save memory settings
             self.config_data["ENABLE_PRELOAD_PROFILES"] = self.preload_profiles_var.get()
             self.config_data["PRELOAD_RELATED_MEMORIES"] = self.related_memories_var.get()
+            if hasattr(self, 'enable_wiki_memory_var'):
+                self.config_data["ENABLE_WIKI_MEMORY"] = self.enable_wiki_memory_var.get()
+            if hasattr(self, 'wolfina_wiki_host_var'):
+                self.config_data["WOLFINA_WIKI_HOST"] = self.wolfina_wiki_host_var.get()
             self.config_data["PROFILES_COLLECTION"] = self.profiles_collection_var.get()
             self.config_data["CONVERSATIONS_COLLECTION"] = self.conversations_collection_var.get()
             self.config_data["BOT_MEMORY_COLLECTION"] = self.bot_memory_collection_var.get()

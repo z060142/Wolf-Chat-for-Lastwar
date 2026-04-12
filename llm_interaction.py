@@ -160,6 +160,30 @@ def get_system_prompt(
 {chr(10).join(mcp_prompts)}
 """
 
+    # Wolfina Wiki query tool prompt (only when enabled)
+    if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+        wiki_tool_prompt = """
+=== WIKI MEMORY QUERY TOOL ===
+You have access to a `wiki_query` tool that lets you look up detailed information from the wiki memory system.
+
+- Use it when you need more context about a player or topic beyond what's already provided
+- The `query` field can be a username, a topic, or a question — it's flexible
+- Use it proactively if a player mentions something you'd like to know more about
+- Results are real-time and not cached
+
+Example usage: call `wiki_query` with `{"query": "SherefoxUwU"}` to get detailed info about that player.
+"""
+        if mcp_tools_prompt:
+            mcp_tools_prompt += wiki_tool_prompt
+        else:
+            mcp_tools_prompt = f"""
+=== MCP TOOL INVOCATION BASICS ===
+- Use the `tool_calls` mechanism when you need a little extra help to answer a question!
+- After using a tool, ALWAYS provide a sweet and helpful dialogue that incorporates the results naturally.
+
+{wiki_tool_prompt}
+"""
+
     # 檢查預載入資料 - 已移除 bot_knowledge 檢查
     has_preloaded_data = bool(user_profile or (related_memories and len(related_memories) > 0))
     
@@ -320,11 +344,11 @@ def parse_structured_response(response_content: str) -> dict:
                     # REMOVED DEBUG LOGS FROM HERE
                     # 清理 dialogue 中的非對話內容
                     dialogue_content = parsed_json.get("dialogue", "")
-                    # 移除系統訊息如 [Processing...], [Executing...] 等
-                    dialogue_content = re.sub(r'\[.*?\]', '', dialogue_content)
+                    # 只移除明確的系統動作括號如 [Processing...], [Executing...] 等，避免刮掉正常對話
+                    dialogue_content = re.sub(r'\[(Processing|Executing|Initiating|Completing|System|Action|Done|Status)[^\]]*\]', '', dialogue_content, flags=re.IGNORECASE)
                     # 移除動作描述如 *adjusts glasses*, *nods* 等
                     dialogue_content = re.sub(r'\*[^*]*\*', '', dialogue_content)
-                    # 移除 Processing, Executing 等系統動作詞
+                    # 移除 Processing, Executing 等系統動作詞開頭的句子
                     dialogue_content = re.sub(r'\b(Processing|Executing|Initiating|Completing|The system will).*?\.', '', dialogue_content)
                     # 移除 markdown 格式
                     dialogue_content = re.sub(r'\*\*(.*?)\*\*', r'\1', dialogue_content)  # **bold** -> text
@@ -332,7 +356,7 @@ def parse_structured_response(response_content: str) -> dict:
                     # 移除換行符號，保持自然對話流
                     dialogue_content = re.sub(r'\n+', ' ', dialogue_content)
                     dialogue_content = dialogue_content.strip()
-                    
+
                     result = {
                         "commands": parsed_json.get("commands", []),
                         "valid_response": bool(dialogue_content.strip()), # Internal flag
@@ -363,11 +387,11 @@ def parse_structured_response(response_content: str) -> dict:
                 # REMOVED DEBUG LOGS FROM HERE
                 # 清理 dialogue 中的非對話內容
                 dialogue_content = parsed_json.get("dialogue", "")
-                # 移除系統訊息如 [Processing...], [Executing...] 等
-                dialogue_content = re.sub(r'\[.*?\]', '', dialogue_content)
+                # 只移除明確的系統動作括號如 [Processing...], [Executing...] 等，避免刮掉正常對話
+                dialogue_content = re.sub(r'\[(Processing|Executing|Initiating|Completing|System|Action|Done|Status)[^\]]*\]', '', dialogue_content, flags=re.IGNORECASE)
                 # 移除動作描述如 *adjusts glasses*, *nods* 等
                 dialogue_content = re.sub(r'\*[^*]*\*', '', dialogue_content)
-                # 移除 Processing, Executing 等系統動作詞
+                # 移除 Processing, Executing 等系統動作詞開頭的句子
                 dialogue_content = re.sub(r'\b(Processing|Executing|Initiating|Completing|The system will).*?\.', '', dialogue_content)
                 # 移除 markdown 格式
                 dialogue_content = re.sub(r'\*\*(.*?)\*\*', r'\1', dialogue_content)  # **bold** -> text
@@ -375,7 +399,7 @@ def parse_structured_response(response_content: str) -> dict:
                 # 移除換行符號，保持自然對話流
                 dialogue_content = re.sub(r'\n+', ' ', dialogue_content)
                 dialogue_content = dialogue_content.strip()
-                
+
                 result = {
                     "commands": parsed_json.get("commands", []),
                     "valid_response": bool(dialogue_content.strip()), # Internal flag, add strip() check
@@ -587,7 +611,47 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
     Creates a synthetic, caring response in Haato's character
     ONLY when the LLM uses tools but fails to provide a dialogue response.
     """
-    # List of caring responses in Haato's character (English)
+    # Check if position removal tool was used — provide context-appropriate response
+    tool_names = [t.get("name", "") for t in tool_results] if tool_results else []
+    if "remove_user_position" in tool_names:
+        # Try to determine success or failure from tool result content
+        is_success = True
+        for tool_result in tool_results:
+            if tool_result.get("name") == "remove_user_position":
+                try:
+                    result_data = json.loads(tool_result.get("content", "{}"))
+                    if result_data.get("status") == "error" or "error" in result_data:
+                        is_success = False
+                except Exception:
+                    # Cannot determine outcome — fail safe to avoid falsely reporting success
+                    is_success = False
+                break
+
+        if is_success:
+            position_success_options = [
+                "Done! Your position has been removed~",
+                "All done! Position removed for you♡",
+                "Position removed! Let me know if you need anything else~",
+                "Got it! I've removed your position, meow~",
+                "Your position has been cleared! Anything else I can help with?♡",
+            ]
+            dialogue = random.choice(position_success_options)
+        else:
+            position_error_options = [
+                "Hmm, something went wrong with the position removal. Please try again~",
+                "I couldn't remove your position this time, sorry! Please try again♡",
+                "Position removal failed... Please try again or contact an officer, meow~",
+            ]
+            dialogue = random.choice(position_error_options)
+
+        synthetic_response = {
+            "dialogue": dialogue,
+            "commands": [],
+            "thoughts": "Auto-generated position removal response due to LLM failing to provide dialogue after tool use."
+        }
+        return json.dumps(synthetic_response, ensure_ascii=False)
+
+    # Generic fallback for other tools (e.g. web_search, wiki_query)
     dialogue_options = [
         "I found some information for you! Hope it helps, meow~♡",
         "Let me help you with that! I did my best to find what you need~",
@@ -607,17 +671,14 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
         "Ready to serve! I found what you were looking for~"
     ]
 
-    # Randomly select a response
     dialogue = random.choice(dialogue_options)
 
-    # Construct the structured response
     synthetic_response = {
         "dialogue": dialogue,
         "commands": [],
         "thoughts": "Auto-generated response due to LLM failing to provide dialogue after tool use. Reflects the character's established personality traits."
     }
 
-    # Return as a JSON string, as expected by the calling function
     return json.dumps(synthetic_response, ensure_ascii=False)
 
 
@@ -906,7 +967,13 @@ async def get_llm_response(
                 # 添加回應到消息歷史 (不論是否有工具調用)
                 # IMPORTANT: This modifies the 'messages' list within the attempt loop.
                 # This is okay because 'messages' is rebuilt at the start of each attempt.
-                messages.append(response_message.model_dump(exclude_unset=True))
+                dumped_msg = response_message.model_dump(exclude_unset=True)
+                # Remove content:null when tool_calls are present — many proxy providers
+                # reject or mishandle null content in assistant tool-call messages,
+                # causing empty/short responses in the subsequent cycle.
+                if dumped_msg.get('content') is None and 'tool_calls' in dumped_msg:
+                    dumped_msg.pop('content', None)
+                messages.append(dumped_msg)
 
                 # 如果沒有工具調用請求，則退出內循環，準備處理最終回應
                 if not tool_calls:
@@ -1118,43 +1185,92 @@ async def _execute_single_tool_call(tool_call, mcp_sessions, available_mcp_tools
 
     # Proceed only if args were parsed successfully
     if function_args is not None:
-        target_session = None; target_server_key = None
-        for tool_def in available_mcp_tools:
-            if isinstance(tool_def, dict) and tool_def.get('name') == function_name: target_server_key = tool_def.get('_server_key'); break
-        if target_server_key and target_server_key in mcp_sessions: target_session = mcp_sessions[target_server_key]
-        elif target_server_key: print(f"Error: No active session for '{target_server_key}'"); result_content = {"error": f"MCP session '{target_server_key}' not active"}
-        else: print(f"Error: Source server for tool '{function_name}' not found"); result_content = {"error": f"Source server not found for tool '{function_name}'"}
 
-        if target_session:
-            # 特殊處理：為 remove_user_position 工具注入 UI 上下文數據
-            if function_name == 'remove_user_position' and ui_context:
-                print(f"LLM Tool Call: Injecting UI context for {function_name}")
-                
-                # 將 UI 上下文數據注入到全域變數中，供 MCP 工具讀取
+        # --- Local tool: remove_user_position ---
+        if function_name == 'remove_user_position':
+            try:
                 import __main__
-                if 'bubble_snapshot' in ui_context:
-                    __main__.bubble_snapshot = ui_context['bubble_snapshot']
-                    print(f"LLM Tool Call: Injected bubble_snapshot to main globals (type: {type(__main__.bubble_snapshot)})")
-                
-                if 'bubble_region' in ui_context:
-                    __main__.bubble_region = ui_context['bubble_region']
-                    print(f"LLM Tool Call: Injected bubble_region to main globals: {__main__.bubble_region}")
-                    
-                if 'search_area' in ui_context:
-                    __main__.search_area = ui_context['search_area']
-                    print(f"LLM Tool Call: Injected search_area to main globals: {__main__.search_area}")
-            
-            result_content = await mcp_client.call_mcp_tool(session=target_session, tool_name=function_name, arguments=function_args) # Use corrected args
-            if isinstance(result_content, dict) and 'error' in result_content: 
-                print(f"Tool '{function_name}' call returned error: {result_content['error']}")
-                if request_id:
-                    debug_log(f"LLM Request #{request_id} - Tool Call Error", 
-                              f"Tool: {function_name}\nError: {result_content['error']}")
-            elif request_id:
-                debug_log(f"LLM Request #{request_id} - Tool Call Success", 
-                          f"Tool: {function_name}\nResult: {json.dumps(result_content, ensure_ascii=False, indent=2)[:500]}..." 
-                          if isinstance(result_content, (dict, list)) and len(json.dumps(result_content)) > 500 
-                          else f"Tool: {function_name}\nResult: {result_content}")
+                # Inject UI context into main globals so execute_position_removal_with_feedback can read them
+                if ui_context:
+                    if 'bubble_snapshot' in ui_context:
+                        __main__.bubble_snapshot = ui_context['bubble_snapshot']
+                        print(f"Local tool: Injected bubble_snapshot (type: {type(__main__.bubble_snapshot)})")
+                    if 'bubble_region' in ui_context:
+                        __main__.bubble_region = ui_context['bubble_region']
+                        print(f"Local tool: Injected bubble_region: {__main__.bubble_region}")
+                    if 'search_area' in ui_context:
+                        __main__.search_area = ui_context['search_area']
+                        print(f"Local tool: Injected search_area: {__main__.search_area}")
+                # Call the position removal callback directly
+                result_content = await __main__.execute_position_removal_with_feedback(
+                    'remove_position_with_feedback'
+                )
+                print(f"Local tool remove_user_position result: {result_content.get('status')}")
+            except Exception as e:
+                result_content = {"error": f"remove_user_position failed: {e}"}
+                print(f"Local tool remove_user_position error: {e}")
+
+        # --- Local tool: wiki_query ---
+        elif function_name == 'wiki_query':
+            try:
+                import urllib.request as _urlreq
+                import json as _json
+                wiki_host = getattr(config, 'WOLFINA_WIKI_HOST', 'http://localhost:8000')
+                payload = _json.dumps({
+                    "query": function_args.get("query", ""),
+                    "max_words": function_args.get("max_words", 300)
+                }).encode()
+                req = _urlreq.Request(
+                    f"{wiki_host}/wolfchat/query",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                def _do_request():
+                    with _urlreq.urlopen(req, timeout=10) as resp:
+                        return resp.read()
+                resp_data = await asyncio.get_event_loop().run_in_executor(None, _do_request)
+                result_content = _json.loads(resp_data.decode())
+                print(f"wiki_query succeeded for query='{function_args.get('query')}'")
+            except Exception as e:
+                result_content = {"error": f"wiki_query failed: {e}"}
+                print(f"wiki_query error: {e}")
+
+        else:
+            # --- MCP tools ---
+            target_session = None; target_server_key = None
+            for tool_def in available_mcp_tools:
+                if isinstance(tool_def, dict) and tool_def.get('name') == function_name: target_server_key = tool_def.get('_server_key'); break
+            if target_server_key and target_server_key in mcp_sessions: target_session = mcp_sessions[target_server_key]
+            elif target_server_key: print(f"Error: No active session for '{target_server_key}'"); result_content = {"error": f"MCP session '{target_server_key}' not active"}
+            else: print(f"Error: Source server for tool '{function_name}' not found"); result_content = {"error": f"Source server not found for tool '{function_name}'"}
+
+            if target_session:
+                # 特殊處理：為 remove_user_position 工具注入 UI 上下文數據
+                if function_name == 'remove_user_position' and ui_context:
+                    print(f"LLM Tool Call: Injecting UI context for {function_name}")
+                    import __main__
+                    if 'bubble_snapshot' in ui_context:
+                        __main__.bubble_snapshot = ui_context['bubble_snapshot']
+                        print(f"LLM Tool Call: Injected bubble_snapshot to main globals (type: {type(__main__.bubble_snapshot)})")
+                    if 'bubble_region' in ui_context:
+                        __main__.bubble_region = ui_context['bubble_region']
+                        print(f"LLM Tool Call: Injected bubble_region to main globals: {__main__.bubble_region}")
+                    if 'search_area' in ui_context:
+                        __main__.search_area = ui_context['search_area']
+                        print(f"LLM Tool Call: Injected search_area to main globals: {__main__.search_area}")
+
+                result_content = await mcp_client.call_mcp_tool(session=target_session, tool_name=function_name, arguments=function_args)
+                if isinstance(result_content, dict) and 'error' in result_content:
+                    print(f"Tool '{function_name}' call returned error: {result_content['error']}")
+                    if request_id:
+                        debug_log(f"LLM Request #{request_id} - Tool Call Error",
+                                  f"Tool: {function_name}\nError: {result_content['error']}")
+                elif request_id:
+                    debug_log(f"LLM Request #{request_id} - Tool Call Success",
+                              f"Tool: {function_name}\nResult: {json.dumps(result_content, ensure_ascii=False, indent=2)[:500]}..."
+                              if isinstance(result_content, (dict, list)) and len(json.dumps(result_content)) > 500
+                              else f"Tool: {function_name}\nResult: {result_content}")
 
     # Format result content for LLM
     try:

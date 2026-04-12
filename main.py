@@ -51,8 +51,6 @@ import signal
 import platform
 import atexit
 import psutil  # For robust process management
-# Import position tool server for MCP integration
-import position_tool_server
 import json  # For file communication with MCP server
 import time   # For heartbeat timestamps
 # Conditionally import Windows-specific modules
@@ -463,13 +461,15 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
             print(f"MCP Callback: Using bubble_region: {bubble_region}")
             
             # 構造命令，重用現有的UI操作邏輯
+            # 使用一次性 queue 讓 UI thread 直接回傳結果，不需要 import main
+            result_callback_queue = ThreadSafeQueue()
             command_to_send = {
-                'action': 'remove_position_with_feedback',  # 新的action type
+                'action': 'remove_position_with_feedback',
                 'trigger_bubble_region': bubble_region,
                 'bubble_snapshot': bubble_snapshot if 'bubble_snapshot' in globals() else None,
                 'search_area': search_area if 'search_area' in globals() else None,
                 'user_context': user_context,
-                'mcp_request': True  # 標記這是來自MCP的請求
+                'result_queue': result_callback_queue,  # UI thread 直接 put 到這裡
             }
             
             print("MCP Callback: Sending command to UI thread...")
@@ -478,8 +478,8 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
                 await asyncio.get_event_loop().run_in_executor(None, command_queue.put, command_to_send)
                 print("MCP Callback: Command sent to UI thread, waiting for result...")
                 
-                # 等待UI處理結果
-                result = await wait_for_ui_result(timeout=15)  # 給UI操作更長的超時時間
+                # 等待UI處理結果（從一次性 queue 讀取）
+                result = await wait_for_ui_result(timeout=15, result_queue=result_callback_queue)
                 print(f"MCP Callback: Received result: {result}")
                 return result
                 
@@ -511,18 +511,20 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
         print(f"MCP Callback: Unsupported action type: {error_result}")
         return error_result
 
-async def wait_for_ui_result(timeout: float = 10.0) -> dict:
+async def wait_for_ui_result(timeout: float = 10.0, result_queue: ThreadSafeQueue = None) -> dict:
     """
     等待UI線程返回的結果
-    
+
     Args:
         timeout: 超時時間（秒）
-    
+        result_queue: 一次性 queue，由 UI thread 直接 put 結果進來
+
     Returns:
         UI操作結果字典
     """
+    q = result_queue if result_queue is not None else position_result_queue
     start_time = asyncio.get_event_loop().time()
-    
+
     while True:
         current_time = asyncio.get_event_loop().time()
         if current_time - start_time > timeout:
@@ -531,11 +533,11 @@ async def wait_for_ui_result(timeout: float = 10.0) -> dict:
                 "message": f"UI操作超時（{timeout}秒），可能是UI識別失敗",
                 "execution_time": datetime.datetime.now().isoformat()
             }
-        
+
         try:
             # 非阻塞式檢查result queue
             result = await asyncio.get_event_loop().run_in_executor(
-                None, position_result_queue.get, False  # False = non-blocking
+                None, q.get, False  # False = non-blocking
             )
             return result
         except QueueEmpty:
@@ -882,7 +884,42 @@ async def initialize_mcp_connections():
         #           print(f"Exception caught when connecting to Server '{server_key}': {result}")
     print("\n--- All MCP connection initialization attempts completed ---")
     print(f"Total discovered MCP tools: {len(all_discovered_mcp_tools)}.")
-    # Removed print statement for active sessions
+
+    # Inject local wiki_query tool if Wiki memory is enabled
+    if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+        all_discovered_mcp_tools.append({
+            "name": "wiki_query",
+            "description": "Query the Wolfina Wiki memory system for information about a player or topic. Use this when you need more context beyond what's already in the conversation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The username, topic, or question to look up"
+                    },
+                    "max_words": {
+                        "type": "integer",
+                        "description": "Maximum words in the response (default: 300)"
+                    }
+                },
+                "required": ["query"]
+            },
+            "_server_key": "local"
+        })
+        print("Injected local tool: wiki_query")
+
+    # Always inject remove_user_position as a local tool (override any MCP-registered version)
+    all_discovered_mcp_tools[:] = [t for t in all_discovered_mcp_tools if t.get('name') != 'remove_user_position']
+    all_discovered_mcp_tools.append({
+        "name": "remove_user_position",
+        "description": "Remove the current position/title from the user who sent the message. Call this when the user requests to have their position removed. No parameters needed.",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        },
+        "_server_key": "local"
+    })
+    print("Injected local tool: remove_user_position")
 
 
 # --- Load Persona Function (with corrected syntax) ---
@@ -1026,14 +1063,6 @@ async def run_main_with_exit_stack():
         if wolfhart_persona_details: print("Persona data loaded.")
         else: print("Warning: Failed to load Persona data.")
         
-        # 啟動MCP文件通訊監控（替代舊的回調機制）
-        try:
-            monitor_task = asyncio.create_task(monitor_mcp_commands())
-            print("MCP File Communication monitor started successfully.")
-        except Exception as e:
-            print(f"Warning: Failed to start MCP file communication monitor: {e}")
-            monitor_task = None
-        
         print("F7: Clear History, F8: Pause/Resume, F9: Quit.")
 
         while True:
@@ -1131,8 +1160,24 @@ async def run_main_with_exit_stack():
                     # Prepare parallel tasks
                     tasks = []
 
-                    # Task 1: Get user profile
-                    profile_task = loop.run_in_executor(None, chroma_client.get_entity_profile, sender_name)
+                    # Task 1: Get user profile (from Wolfina Wiki if enabled, else ChromaDB)
+                    def fetch_user_profile(username):
+                        if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+                            try:
+                                import urllib.request
+                                import json as _json
+                                url = f"{config.WOLFINA_WIKI_HOST}/wolfchat/user/{urllib.request.quote(username)}"
+                                req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                                with urllib.request.urlopen(req, timeout=5) as resp:
+                                    data = _json.loads(resp.read().decode())
+                                    summary = data.get("summary", "")
+                                    if summary and "No data found" not in summary:
+                                        return summary
+                            except Exception as wiki_err:
+                                logger.warning(f"Wiki profile fetch failed for {username}, falling back to ChromaDB: {wiki_err}")
+                        return chroma_client.get_entity_profile(username)
+
+                    profile_task = loop.run_in_executor(None, fetch_user_profile, sender_name)
                     tasks.append(profile_task)
 
                     # Task 2: Preload related memories if configured
@@ -1321,6 +1366,31 @@ async def run_main_with_exit_stack():
                         bot_thoughts=thoughts # Pass the extracted thoughts
                     )
                     # --- End Log interaction ---
+
+                    # --- Push to Wolfina Wiki (fire-and-forget) ---
+                    if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+                        async def _push_to_wiki(username, user_msg, bot_name, bot_msg, bot_thoughts):
+                            try:
+                                import urllib.request
+                                import json as _json
+                                ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                raw = (
+                                    f"[{ts}] User ({username}): {user_msg}\n"
+                                    f"[{ts}] Bot ({bot_name}) Thoughts: {bot_thoughts or ''}\n"
+                                    f"[{ts}] Bot ({bot_name}) Dialogue: {bot_msg}\n"
+                                )
+                                payload = _json.dumps({"raw_log": raw, "session_id": "wolfchat"}).encode()
+                                req = urllib.request.Request(
+                                    f"{config.WOLFINA_WIKI_HOST}/wolfchat/conversation",
+                                    data=payload,
+                                    headers={"Content-Type": "application/json"},
+                                    method="POST"
+                                )
+                                await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=5).close())
+                            except Exception as wiki_push_err:
+                                logger.debug(f"Wiki conversation push failed: {wiki_push_err}")
+                        asyncio.create_task(_push_to_wiki(sender_name, bubble_text, config.PERSONA_NAME, bot_dialogue, thoughts))
+                    # --- End Push to Wolfina Wiki ---
 
                     print("Sending 'send_reply' command to UI thread...")
                     command_to_send = {'action': 'send_reply', 'text': bot_dialogue}
