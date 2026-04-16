@@ -889,7 +889,7 @@ async def initialize_mcp_connections():
     if getattr(config, 'ENABLE_WIKI_MEMORY', False):
         all_discovered_mcp_tools.append({
             "name": "wiki_query",
-            "description": "Query the Wolfina Wiki memory system for information about a player or topic. Use this when you need more context beyond what's already in the conversation.",
+            "description": "Query the Wolfina Wiki knowledge base for information relevant to managing Server 11. Use this to look up member profiles, Last War gameplay mechanics, Season 6 content (factions, fishing, city capture/destruction), or any in-game events and topics. Call this proactively whenever a member mentions something game-related, references an event, or when you want to know more about who you're talking to.",
             "parameters": {
                 "type": "object",
                 "properties": {
