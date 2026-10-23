@@ -11,74 +11,62 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-REQUIREMENTS = [
-    "openai",
-    "mcp",
-    "pyautogui",
-    "opencv-python",
-    "numpy",
-    "pyperclip",
-    "pygetwindow",
-    "psutil",
-    "pywin32",
-    "python-dotenv",
-    "keyboard"
-]
+LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.lock.txt")
+
+
+def _count_locked_packages():
+    try:
+        with open(LOCK_FILE, encoding="utf-8") as f:
+            return sum(1 for line in f if "==" in line and not line.lstrip().startswith("#"))
+    except OSError:
+        return 0
+
 
 def install_requirements(progress_var=None, status_label=None, root=None):
-    """Install all required packages using pip"""
-    
-    total = len(REQUIREMENTS)
-    success_count = 0
-    failed_packages = []
-    
-    for i, package in enumerate(REQUIREMENTS):
+    """Sync this interpreter's environment to requirements.lock.txt (same as start.bat)"""
+    if not os.path.exists(LOCK_FILE):
+        message = f"Lock file not found: {LOCK_FILE}"
+        print(message)
         if status_label:
-            status_label.config(text=f"Installing {package}...")
-        if progress_var:
-            progress_var.set((i / total) * 100)
-        if root:
-            root.update()
-        
+            status_label.config(text=message)
+        return False, message
+
+    # Prefer uv (the .venv is created by uv and has no pip); fall back to pip
+    commands = [
+        ["uv", "pip", "sync", "--python", sys.executable, LOCK_FILE],
+        [sys.executable, "-m", "pip", "install", "-r", LOCK_FILE],
+    ]
+    if status_label:
+        status_label.config(text="Syncing dependencies with requirements.lock.txt...")
+    if progress_var:
+        progress_var.set(10)
+    if root:
+        root.update()
+
+    last_error = ""
+    for cmd in commands:
         try:
-            print(f"Installing {package}...")
-            # Use subprocess to run pip install
-            process = subprocess.run(
-                [sys.executable, "-m", "pip", "install", package],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            print(f"Successfully installed {package}")
-            success_count += 1
-            
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to install {package}: {e}")
-            print(f"Error output: {e.stderr}")
-            failed_packages.append(package)
-            
-        except Exception as e:
-            print(f"Unexpected error installing {package}: {str(e)}")
-            failed_packages.append(package)
-    
-    # Final progress update
+            print(f"Running: {' '.join(cmd)}")
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            print(process.stdout)
+            if process.returncode == 0:
+                message = f"Dependencies synced with requirements.lock.txt ({_count_locked_packages()} packages)."
+                if progress_var:
+                    progress_var.set(100)
+                if status_label:
+                    status_label.config(text=message)
+                return True, message
+            last_error = process.stdout.strip().splitlines()[-1] if process.stdout.strip() else f"exit code {process.returncode}"
+        except FileNotFoundError as e:
+            last_error = str(e)
+        print(f"Failed: {last_error}")
+
     if progress_var:
         progress_var.set(100)
-    
-    # Report results
-    if not failed_packages:
-        result_message = f"All {success_count} packages installed successfully!"
-        print(result_message)
-        if status_label:
-            status_label.config(text=result_message)
-        return True, result_message
-    else:
-        result_message = f"Installed {success_count}/{total} packages. Failed: {', '.join(failed_packages)}"
-        print(result_message)
-        if status_label:
-            status_label.config(text=result_message)
-        return False, result_message
+    message = f"Dependency sync failed: {last_error}. Close the bot and run start.bat instead."
+    if status_label:
+        status_label.config(text=message)
+    return False, message
 
 def run_installer_gui():
     """Run a simple GUI for the installer"""
@@ -96,7 +84,7 @@ def run_installer_gui():
     title_label.pack(pady=(0, 10))
     
     # Info text
-    info_text = f"This will install {len(REQUIREMENTS)} required packages for Wolf Chat."
+    info_text = f"This will sync {_count_locked_packages()} locked packages for Wolf Chat."
     info_label = ttk.Label(main_frame, text=info_text)
     info_label.pack(pady=(0, 15))
     
