@@ -644,7 +644,9 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
             if tool_result.get("name") == "remove_user_position":
                 try:
                     result_data = json.loads(tool_result.get("content", "{}"))
-                    if result_data.get("status") == "error" or "error" in result_data:
+                    # Only an explicit success counts: the UI thread reports failures as
+                    # status "failed" (no "error" key), which used to fall through as success.
+                    if result_data.get("status") != "success":
                         is_success = False
                 except Exception:
                     # Cannot determine outcome — fail safe to avoid falsely reporting success

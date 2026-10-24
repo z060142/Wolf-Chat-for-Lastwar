@@ -2070,8 +2070,13 @@ class DetectionModule:
     def get_current_ui_state(self) -> str:
         """Determine the current UI state based on visible elements."""
         if self.vision:
-            with self.vision.frozen():  # one capture shared by every check below
-                return self._get_current_ui_state()
+            try:
+                with self.vision.frozen():  # one capture shared by every check below
+                    return self._get_current_ui_state()
+            except Exception as e:
+                # _find_template swallows its own errors, but the shared capture happens here;
+                # without this a capture failure would abort the caller (e.g. state cleanup)
+                print(f"Warning: shared-frame state check failed ({e}), checking templates individually")
         return self._get_current_ui_state()
 
     def _get_current_ui_state(self) -> str:
@@ -2957,8 +2962,19 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
 
                     if snapshot:
                         print(f"UI Thread: Snapshot available, attempting position removal...")
-                        removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
-                        
+                        try:
+                            removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+                        except Exception as removal_err:
+                            # Without this the exception is swallowed by the queue-drain handler below,
+                            # no result is sent and the caller waits for the full timeout instead.
+                            import traceback
+                            traceback.print_exc()
+                            removal_result = {
+                                "status": "failed",
+                                "error_type": "ui_operation_failed",
+                                "message": f"Exception during position removal: {removal_err}",
+                            }
+
                         # Process detailed result information
                         if removal_result["status"] == "success":
                             result = {

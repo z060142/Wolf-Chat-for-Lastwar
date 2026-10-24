@@ -91,6 +91,15 @@ class ScreenVision:
         self._frozen = threading.local()  # per-thread frozen full frame
         self.screen_w, self.screen_h = _screen_size()
         self.stats = {'calls': 0, 'hint_hits': 0, 'time': 0.0}
+        self._last_warn: Dict[str, float] = {}
+
+    def _warn(self, key: str, message: str, interval: float = 60.0):
+        """Print a warning at most once per `interval` seconds per key, so failures that make every
+        lookup return "not found" are visible in the log without flooding it."""
+        now = time.time()
+        if now - self._last_warn.get(key, 0.0) >= interval:
+            self._last_warn[key] = now
+            print(f"[ScreenVision] WARNING: {message}")
 
     # ------------------------------------------------------------------ capture
     def _grab_gdi(self, region: Region) -> np.ndarray:
@@ -115,26 +124,41 @@ class ScreenVision:
 
     def grab(self, region: Optional[Region] = None) -> Tuple[np.ndarray, Region]:
         """Capture region (left, top, width, height) as BGR. Returns (image, actual_region)."""
-        full = (0, 0, self.screen_w, self.screen_h)
-        region = _clip_region(tuple(int(v) for v in region), full) if region else full
-        if region is None:
-            raise ValueError("Capture region is outside the screen")
-
         frozen = getattr(self._frozen, 'frame', None)
+        if frozen is None:
+            # Re-read every capture: resolution can change while the bot runs (game/window mode switch)
+            size = _screen_size()
+            if size != (self.screen_w, self.screen_h):
+                self._warn('resize', f"screen size changed {self.screen_w}x{self.screen_h} -> {size[0]}x{size[1]}", 0)
+                self.screen_w, self.screen_h = size
+                self._hints.clear()
+        full = (0, 0, self.screen_w, self.screen_h)
+        requested = tuple(int(v) for v in region) if region else full
+        region = _clip_region(requested, full)
+        if region is None:
+            raise ValueError(f"Capture region {requested} is outside the primary screen {full[2]}x{full[3]}")
+        if region != requested:
+            self._warn(f'clip{requested}', f"capture region {requested} clipped to the primary screen -> {region}")
+
         if frozen is not None:
             x, y, w, h = region
             return frozen[y:y + h, x:x + w], region
 
+        img = None
         if _HAS_WIN32:
             try:
-                return self._grab_gdi(region), region
+                img = self._grab_gdi(region)
             except Exception as e:
-                if self.debug:
-                    print(f"[ScreenVision] GDI capture failed, falling back to PIL: {e}")
-        from PIL import ImageGrab
-        x, y, w, h = region
-        pil = ImageGrab.grab(bbox=(x, y, x + w, y + h))
-        return cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR), region
+                self._warn('gdi', f"GDI capture failed, falling back to PIL ImageGrab: {e}")
+        if img is None:
+            from PIL import ImageGrab
+            x, y, w, h = region
+            pil = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            img = cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR)
+        if img.size >= 30000 and not img.any():
+            # Locked screen / secure desktop / minimised exclusive-fullscreen game: every match fails
+            self._warn('black', f"captured an all-black frame for {region}; screen locked or game not drawable?")
+        return img, region
 
     def grab_pil(self, region: Optional[Region] = None) -> Image.Image:
         img, _ = self.grab(region)
@@ -163,6 +187,7 @@ class ScreenVision:
                 data = np.fromfile(needle, dtype=np.uint8)  # handles non-ASCII paths
                 bgr = cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
                 if bgr is None:
+                    self._warn(f'tpl{needle}', f"template could not be decoded (empty or corrupt): {needle}", 600)
                     return needle, None
                 tpl = _Template(bgr)
                 with self._lock:
@@ -261,6 +286,11 @@ class ScreenVision:
             full = (0, 0, self.screen_w, self.screen_h)
             search_region = _clip_region(tuple(int(v) for v in region), full) if region else full
             if search_region is None:
+                self._warn(f'region{region}', f"search region {region} is outside the primary screen")
+                return []
+            if search_region[2] < tpl.w or search_region[3] < tpl.h:
+                self._warn(f'small{key or "image"}{search_region[2:]}',
+                           f"template {key or 'image'} ({tpl.w}x{tpl.h}) is larger than the search region {search_region}")
                 return []
 
             hint = self._hints.get(key) if (use_hint and key) else None
