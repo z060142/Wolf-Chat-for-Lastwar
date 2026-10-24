@@ -177,7 +177,7 @@ class PositionVisionRecognizer:
 
     def __init__(self, provider: str = "anthropic", model: str = "claude-haiku-5-5",
                  api_key: Optional[str] = None, base_url: Optional[str] = None,
-                 timeout: float = 6.0):
+                 timeout: float = 4.0):
         self.provider = (provider or "anthropic").lower()
         self.model = model
         self.timeout = timeout
@@ -273,7 +273,7 @@ def create_recognizer_from_config(config_module) -> PositionVisionRecognizer:
     provider = getattr(config_module, "POSITION_VISION_PROVIDER", "anthropic")
     model = getattr(config_module, "POSITION_VISION_MODEL", "claude-haiku-5-5")
     base_url = getattr(config_module, "POSITION_VISION_BASE_URL", "") or None
-    timeout = float(getattr(config_module, "POSITION_VISION_TIMEOUT", 6.0))
+    timeout = float(getattr(config_module, "POSITION_VISION_TIMEOUT", 4.0))
     api_key = getattr(config_module, "POSITION_VISION_API_KEY", None)
     if not api_key:
         api_key = os.getenv("ANTHROPIC_API_KEY") if provider == "anthropic" else os.getenv("OPENAI_API_KEY")

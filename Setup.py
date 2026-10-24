@@ -321,7 +321,7 @@ def load_current_config():
         "POSITION_VISION_PROVIDER": "anthropic",
         "POSITION_VISION_MODEL": "claude-haiku-5-5",
         "POSITION_VISION_BASE_URL": "",
-        "POSITION_VISION_TIMEOUT": 6.0,
+        "POSITION_VISION_TIMEOUT": 4.0,
         "POSITION_VISION_FALLBACK_TO_TEMPLATE": True,
         "POSITION_VISION_SAVE_CROPS": True,
         "ENABLE_CHAT_LOGGING": True,
@@ -907,7 +907,7 @@ def generate_config_file(config_data, env_data):
         f.write(f"POSITION_VISION_BASE_URL = \"{config_data.get('POSITION_VISION_BASE_URL', '')}\"\n")
         f.write("# Falls back to ANTHROPIC_API_KEY / OPENAI_API_KEY when not set\n")
         f.write("POSITION_VISION_API_KEY = os.getenv(\"POSITION_VISION_API_KEY\")\n")
-        f.write(f"POSITION_VISION_TIMEOUT = {float(config_data.get('POSITION_VISION_TIMEOUT', 6.0))}\n")
+        f.write(f"POSITION_VISION_TIMEOUT = {float(config_data.get('POSITION_VISION_TIMEOUT', 4.0))}\n")
         f.write(f"POSITION_VISION_FALLBACK_TO_TEMPLATE = {str(config_data.get('POSITION_VISION_FALLBACK_TO_TEMPLATE', True))}\n")
         f.write("# Save each analysed crop to debug_screenshots/position_vision/ (for building test samples)\n")
         f.write(f"POSITION_VISION_SAVE_CROPS = {str(config_data.get('POSITION_VISION_SAVE_CROPS', True))}\n\n")
@@ -2191,7 +2191,7 @@ class WolfChatSetup(tk.Tk):
                         ).pack(side=tk.LEFT, padx=(5, 0))
 
         row = add_row("Timeout (sec):")
-        self.pos_timeout_var = tk.DoubleVar(value=6.0)
+        self.pos_timeout_var = tk.DoubleVar(value=4.0)
         ttk.Spinbox(row, from_=2, to=14, increment=1, textvariable=self.pos_timeout_var, width=6).pack(side=tk.LEFT)
 
         row = add_row("")
@@ -2213,7 +2213,8 @@ class WolfChatSetup(tk.Tk):
             "• Anthropic: leave Base URL empty; API Key falls back to ANTHROPIC_API_KEY in .env\n"
             "• OpenAI / compatible (OpenRouter, local): set Base URL if needed and a vision-capable model;\n"
             "  API Key falls back to OPENAI_API_KEY in .env\n"
-            "• The whole removal flow must finish within 15s, keep the timeout well below that"
+            "• Timeout is per attempt with one retry (worst case 2x). The whole removal flow must\n"
+            "  finish within 15s; 4s is recommended (measured: avg 1.4s, max 3.0s with Haiku)"
         )
         ttk.Label(frame, text=info_text, justify=tk.LEFT, wraplength=700).pack(padx=10, pady=(5, 10), anchor=tk.W)
 
@@ -2227,7 +2228,7 @@ class WolfChatSetup(tk.Tk):
         try:
             timeout = float(self.pos_timeout_var.get())
         except (tk.TclError, ValueError):
-            timeout = 6.0
+            timeout = 4.0
         api_key = self.pos_api_key_var.get().strip()
         if not api_key:
             if provider == "anthropic":
@@ -3183,7 +3184,7 @@ class WolfChatSetup(tk.Tk):
             self.pos_model_var.set(self.config_data.get("POSITION_VISION_MODEL", "claude-haiku-5-5"))
             self.pos_base_url_var.set(self.config_data.get("POSITION_VISION_BASE_URL", ""))
             self.pos_api_key_var.set(self.env_data.get("POSITION_VISION_API_KEY", ""))
-            self.pos_timeout_var.set(self.config_data.get("POSITION_VISION_TIMEOUT", 6.0))
+            self.pos_timeout_var.set(self.config_data.get("POSITION_VISION_TIMEOUT", 4.0))
             self.pos_fallback_var.set(self.config_data.get("POSITION_VISION_FALLBACK_TO_TEMPLATE", True))
             self.pos_save_crops_var.set(self.config_data.get("POSITION_VISION_SAVE_CROPS", True))
 
@@ -3680,7 +3681,7 @@ class WolfChatSetup(tk.Tk):
             try:
                 self.config_data["POSITION_VISION_TIMEOUT"] = float(self.pos_timeout_var.get())
             except (tk.TclError, ValueError):
-                self.config_data["POSITION_VISION_TIMEOUT"] = 6.0
+                self.config_data["POSITION_VISION_TIMEOUT"] = 4.0
             self.config_data["POSITION_VISION_FALLBACK_TO_TEMPLATE"] = self.pos_fallback_var.get()
             self.config_data["POSITION_VISION_SAVE_CROPS"] = self.pos_save_crops_var.get()
 
