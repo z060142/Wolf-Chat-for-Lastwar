@@ -45,7 +45,7 @@ import mcp_client
 import llm_interaction
 # Import UI module
 import ui_interaction
-import chroma_client
+# import chroma_client  # [Chroma deprecated] memory is provided by Wolfina Wiki (ENABLE_WIKI_MEMORY)
 import subprocess # Import subprocess module
 import signal
 import platform
@@ -799,6 +799,11 @@ async def connect_and_discover(key: str, server_config: dict):
         print(f"==> Error: Missing 'command' in Server '{key}' configuration. <==")
         return
 
+    # "python" on PATH may be the system interpreter without the venv's packages (e.g. mcp);
+    # run Python-based servers with the same interpreter as the bot.
+    if command.lower() in ("python", "python.exe", "python3"):
+        command = sys.executable
+
     # Use StdioServerParameters again
     server_params = StdioServerParameters(
         command=command, args=args, env=process_env,
@@ -953,29 +958,35 @@ def load_persona_from_file(filename="persona.json"):
 
 # --- Memory System Initialization ---
 def initialize_memory_system():
-    """Initialize memory system"""
-    if hasattr(config, 'ENABLE_PRELOAD_PROFILES') and config.ENABLE_PRELOAD_PROFILES:
-        print("\nInitializing ChromaDB memory system...")
-        if chroma_client.initialize_chroma_client():
-            # Check if collections are available
-            collections_to_check = [
-                config.PROFILES_COLLECTION,
-                config.CONVERSATIONS_COLLECTION,
-                config.BOT_MEMORY_COLLECTION
-            ]
-            success_count = 0
-            for coll_name in collections_to_check:
-                if chroma_client.get_collection(coll_name):
-                    success_count += 1
-
-            print(f"Memory system initialization complete, successfully connected to {success_count}/{len(collections_to_check)} collections")
-            return True
-        else:
-            print("Memory system initialization failed, falling back to tool calls")
-            return False
-    else:
-        print("Memory system preloading is disabled, will use tool calls to get memory")
-        return False
+    """Initialize memory system. Returns True when user profile preloading (Wolfina Wiki) is active."""
+    # [Chroma deprecated] ChromaDB memory initialization disabled; Wolfina Wiki replaces it.
+    # if hasattr(config, 'ENABLE_PRELOAD_PROFILES') and config.ENABLE_PRELOAD_PROFILES:
+    #     print("\nInitializing ChromaDB memory system...")
+    #     if chroma_client.initialize_chroma_client():
+    #         # Check if collections are available
+    #         collections_to_check = [
+    #             config.PROFILES_COLLECTION,
+    #             config.CONVERSATIONS_COLLECTION,
+    #             config.BOT_MEMORY_COLLECTION
+    #         ]
+    #         success_count = 0
+    #         for coll_name in collections_to_check:
+    #             if chroma_client.get_collection(coll_name):
+    #                 success_count += 1
+    #
+    #         print(f"Memory system initialization complete, successfully connected to {success_count}/{len(collections_to_check)} collections")
+    #         return True
+    #     else:
+    #         print("Memory system initialization failed, falling back to tool calls")
+    #         return False
+    # else:
+    #     print("Memory system preloading is disabled, will use tool calls to get memory")
+    #     return False
+    if getattr(config, 'ENABLE_WIKI_MEMORY', False):
+        print(f"\nMemory system: Wolfina Wiki ({getattr(config, 'WOLFINA_WIKI_HOST', '')})")
+        return True
+    print("\nMemory system: disabled (enable Wolfina Wiki in Setup.py to preload user profiles)")
+    return False
 # --- End Memory System Initialization ---
 
 # --- Main Async Function ---
@@ -1149,8 +1160,9 @@ async def run_main_with_exit_stack():
             bot_knowledge = []
             memory_retrieval_time = 0
 
-            # If memory system is active and preloading is enabled
-            if memory_system_active and hasattr(config, 'ENABLE_PRELOAD_PROFILES') and config.ENABLE_PRELOAD_PROFILES:
+            # If memory system (Wolfina Wiki) is active
+            # [Chroma deprecated] previously also required config.ENABLE_PRELOAD_PROFILES
+            if memory_system_active:
                 try:
                     memory_start_time = time.time()
 
@@ -1160,7 +1172,7 @@ async def run_main_with_exit_stack():
                     # Prepare parallel tasks
                     tasks = []
 
-                    # Task 1: Get user profile (from Wolfina Wiki if enabled, else ChromaDB)
+                    # Task 1: Get user profile from Wolfina Wiki
                     def fetch_user_profile(username):
                         if getattr(config, 'ENABLE_WIKI_MEMORY', False):
                             try:
@@ -1174,43 +1186,46 @@ async def run_main_with_exit_stack():
                                     if summary and "No data found" not in summary:
                                         return summary
                             except Exception as wiki_err:
-                                logger.warning(f"Wiki profile fetch failed for {username}, falling back to ChromaDB: {wiki_err}")
-                        return chroma_client.get_entity_profile(username)
+                                logger.warning(f"Wiki profile fetch failed for {username}: {wiki_err}")
+                        # [Chroma deprecated] return chroma_client.get_entity_profile(username)
+                        return None
 
                     profile_task = loop.run_in_executor(None, fetch_user_profile, sender_name)
                     tasks.append(profile_task)
 
-                    # Task 2: Preload related memories if configured
-                    if hasattr(config, 'PRELOAD_RELATED_MEMORIES') and config.PRELOAD_RELATED_MEMORIES > 0:
-                        memories_task = loop.run_in_executor(
-                            None,
-                            lambda: chroma_client.get_related_memories(sender_name, limit=config.PRELOAD_RELATED_MEMORIES)
-                        )
-                        tasks.append(memories_task)
-                    else:
-                        tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
+                    # Task 2: Related memories
+                    # [Chroma deprecated] ChromaDB related-memory preload disabled (wiki_query tool covers this)
+                    # if hasattr(config, 'PRELOAD_RELATED_MEMORIES') and config.PRELOAD_RELATED_MEMORIES > 0:
+                    #     memories_task = loop.run_in_executor(
+                    #         None,
+                    #         lambda: chroma_client.get_related_memories(sender_name, limit=config.PRELOAD_RELATED_MEMORIES)
+                    #     )
+                    #     tasks.append(memories_task)
+                    # else:
+                    tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
 
-                    # Task 3: Prepare bot knowledge retrieval based on message content
-                    key_game_terms = ["capital_position", "capital_administrator_role", "server_hierarchy",
-                                     "last_war", "winter_war", "excavations", "blueprints",
-                                     "honor_points", "golden_eggs", "diamonds"]
-
-                    # Check if message contains these keywords
-                    found_terms = [term for term in key_game_terms if term.lower() in bubble_text.lower()]
-
-                    if found_terms:
-                        # Create task for knowledge retrieval (limit to 2 terms)
-                        def get_knowledge():
-                            knowledge = []
-                            for term in found_terms[:2]:
-                                term_knowledge = chroma_client.get_bot_knowledge(term, limit=2)
-                                knowledge.extend(term_knowledge)
-                            return knowledge
-
-                        knowledge_task = loop.run_in_executor(None, get_knowledge)
-                        tasks.append(knowledge_task)
-                    else:
-                        tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
+                    # Task 3: Bot knowledge
+                    # [Chroma deprecated] ChromaDB bot-knowledge preload disabled (wiki_query tool covers this)
+                    # key_game_terms = ["capital_position", "capital_administrator_role", "server_hierarchy",
+                    #                  "last_war", "winter_war", "excavations", "blueprints",
+                    #                  "honor_points", "golden_eggs", "diamonds"]
+                    #
+                    # # Check if message contains these keywords
+                    # found_terms = [term for term in key_game_terms if term.lower() in bubble_text.lower()]
+                    #
+                    # if found_terms:
+                    #     # Create task for knowledge retrieval (limit to 2 terms)
+                    #     def get_knowledge():
+                    #         knowledge = []
+                    #         for term in found_terms[:2]:
+                    #             term_knowledge = chroma_client.get_bot_knowledge(term, limit=2)
+                    #             knowledge.extend(term_knowledge)
+                    #         return knowledge
+                    #
+                    #     knowledge_task = loop.run_in_executor(None, get_knowledge)
+                    #     tasks.append(knowledge_task)
+                    # else:
+                    tasks.append(asyncio.sleep(0, result=[]))  # Dummy task returning empty list
 
                     # Execute all tasks in parallel with error handling
                     results = await asyncio.gather(*tasks, return_exceptions=True)

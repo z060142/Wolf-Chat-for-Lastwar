@@ -136,8 +136,9 @@ def get_system_prompt(
                     # 根據伺服器類型確定可用工具
                     if server_name == "exa":
                         available_tools.extend(["Web Search", "Research Tools"])
-                    elif server_name == "chroma":
-                        available_tools.extend(["Semantic Query"])
+                    # [Chroma deprecated] Chroma MCP server is no longer connected
+                    # elif server_name == "chroma":
+                    #     available_tools.extend(["Semantic Query"])
                     else:
                         available_tools.append(f"{server_name} Tools")
         

@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 import mcp_client
 import llm_interaction
-import chroma_client # <-- 新增導入
+# import chroma_client  # [Chroma deprecated] memory is provided by Wolfina Wiki
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
@@ -171,12 +171,13 @@ async def debug_loop():
     load_persona_from_file()
 
     # 2. Initialize ChromaDB
-    print("\n--- Initializing ChromaDB ---")
-    if not chroma_client.initialize_chroma_client():
-        print("Warning: ChromaDB initialization failed. Memory functions may not work.")
-    else:
-        print("ChromaDB initialized successfully.")
-    print("-----------------------------")
+    # [Chroma deprecated] ChromaDB removed; user profiles come from Wolfina Wiki when enabled
+    # print("\n--- Initializing ChromaDB ---")
+    # if not chroma_client.initialize_chroma_client():
+    #     print("Warning: ChromaDB initialization failed. Memory functions may not work.")
+    # else:
+    #     print("ChromaDB initialized successfully.")
+    # print("-----------------------------")
 
     # 3. Initialize MCP
     await initialize_mcp_connections()
@@ -232,12 +233,14 @@ async def debug_loop():
                                 print(f"[Wiki] Got profile for '{username}' (cached={data.get('cached')})")
                                 return summary
                     except Exception as wiki_err:
-                        print(f"[Wiki] Profile fetch failed, falling back to ChromaDB: {wiki_err}")
-                return chroma_client.get_entity_profile(username)
+                        print(f"[Wiki] Profile fetch failed: {wiki_err}")
+                # [Chroma deprecated] return chroma_client.get_entity_profile(username)
+                return None
 
             print(f"Fetching user profile for '{user_name}'...")
             user_profile_data = fetch_user_profile_debug(user_name)
-            related_memories_data = chroma_client.get_related_memories(user_name, topic=user_input, limit=5)
+            # [Chroma deprecated] related_memories_data = chroma_client.get_related_memories(user_name, topic=user_input, limit=5)
+            related_memories_data = []
             print("Profile fetch complete.")
             # --- End Pre-fetch ---
 

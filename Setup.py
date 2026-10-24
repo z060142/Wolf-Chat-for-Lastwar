@@ -307,7 +307,7 @@ def load_current_config():
                 "server_path": normalize_path(f"C:/Users/{CURRENT_USERNAME}/AppData/Roaming/npm/exa-mcp-server")
             },
             "chroma": {
-                "enabled": True,
+                "enabled": False,  # [Chroma deprecated] always disabled
                 "data_dir": normalize_path("chroma_data")
             },
             "position-tool": {
@@ -316,6 +316,14 @@ def load_current_config():
         },
         "ENABLE_WIKI_MEMORY": False,
         "WOLFINA_WIKI_HOST": "http://localhost:8000",
+        # Position icon recognition (multimodal LLM replaces template matching)
+        "POSITION_DETECTION_METHOD": "llm",
+        "POSITION_VISION_PROVIDER": "anthropic",
+        "POSITION_VISION_MODEL": "claude-haiku-5-5",
+        "POSITION_VISION_BASE_URL": "",
+        "POSITION_VISION_TIMEOUT": 4.0,
+        "POSITION_VISION_FALLBACK_TO_TEMPLATE": True,
+        "POSITION_VISION_SAVE_CROPS": True,
         "ENABLE_CHAT_LOGGING": True,
         "LOG_DIR": "chat_logs",
         "GAME_WINDOW_CONFIG": {
@@ -376,6 +384,20 @@ def load_current_config():
             wiki_host_match = re.search(r'WOLFINA_WIKI_HOST\s*=\s*["\'](.+?)["\']', config_content)
             if wiki_host_match:
                 config_data["WOLFINA_WIKI_HOST"] = wiki_host_match.group(1)
+
+            # Extract position vision (LLM) settings
+            for key in ("POSITION_DETECTION_METHOD", "POSITION_VISION_PROVIDER",
+                        "POSITION_VISION_MODEL", "POSITION_VISION_BASE_URL"):
+                str_match = re.search(rf'^{key}\s*=\s*["\'](.*?)["\']', config_content, re.MULTILINE)
+                if str_match:
+                    config_data[key] = str_match.group(1)
+            timeout_match = re.search(r'^POSITION_VISION_TIMEOUT\s*=\s*([\d.]+)', config_content, re.MULTILINE)
+            if timeout_match:
+                config_data["POSITION_VISION_TIMEOUT"] = float(timeout_match.group(1))
+            for key in ("POSITION_VISION_FALLBACK_TO_TEMPLATE", "POSITION_VISION_SAVE_CROPS"):
+                bool_match = re.search(rf'^{key}\s*=\s*(True|False)', config_content, re.MULTILINE)
+                if bool_match:
+                    config_data[key] = (bool_match.group(1) == "True")
 
             # Extract logging settings
             chat_logging_match = re.search(r'ENABLE_CHAT_LOGGING\s*=\s*(True|False)', config_content)
@@ -593,7 +615,8 @@ def load_current_config():
                     enabled_items = re.findall(r'"([^"]+)":\s*(True|False)', enabled_text)
                     for server_name, enabled_str in enabled_items:
                         if server_name in config_data["MCP_SERVERS"]:
-                            config_data["MCP_SERVERS"][server_name]["enabled"] = (enabled_str == "True")
+                            # [Chroma deprecated] chroma stays disabled even if an old config enabled it
+                            config_data["MCP_SERVERS"][server_name]["enabled"] = (enabled_str == "True") and server_name != "chroma"
             except Exception as e:
                 print(f"Error parsing MCP_SERVERS_ENABLED section: {e}")
 
@@ -729,7 +752,8 @@ def generate_config_file(config_data, env_data):
         
         # Add configured servers
         for server_name, server_config in config_data["MCP_SERVERS"].items():
-            if not server_config.get("enabled", True):
+            # [Chroma deprecated] Chroma MCP is never written as an active server
+            if server_name == "chroma" or not server_config.get("enabled", True):
                 f.write(f"    # \"{server_name}\": {{  # Disabled\n")
                 continue
                 
@@ -853,7 +877,7 @@ def generate_config_file(config_data, env_data):
         f.write("# =============================================================================\n")
         f.write("MCP_SERVERS_ENABLED = {\n")
         for server_name, server_config in config_data["MCP_SERVERS"].items():
-            enabled = server_config.get("enabled", True)
+            enabled = server_config.get("enabled", True) and server_name != "chroma"  # [Chroma deprecated]
             f.write(f"    \"{server_name}\": {enabled},\n")
         f.write("}\n\n")
         
@@ -870,6 +894,23 @@ def generate_config_file(config_data, env_data):
         f.write(f"ENABLE_WIKI_MEMORY = {str(enable_wiki)}\n")
         wiki_host = config_data.get('WOLFINA_WIKI_HOST', 'http://localhost:8000')
         f.write(f"WOLFINA_WIKI_HOST = \"{wiki_host}\"\n\n")
+
+        f.write("# =============================================================================\n")
+        f.write("# Position Icon Recognition (Multimodal LLM)\n")
+        f.write("# =============================================================================\n")
+        f.write("# \"llm\": vision LLM (position_vision.py), \"template\": legacy OpenCV template matching\n")
+        f.write(f"POSITION_DETECTION_METHOD = \"{config_data.get('POSITION_DETECTION_METHOD', 'llm')}\"\n")
+        f.write("# \"anthropic\" or \"openai\" (OpenAI or any OpenAI-compatible endpoint)\n")
+        f.write(f"POSITION_VISION_PROVIDER = \"{config_data.get('POSITION_VISION_PROVIDER', 'anthropic')}\"\n")
+        f.write(f"POSITION_VISION_MODEL = \"{config_data.get('POSITION_VISION_MODEL', 'claude-haiku-5-5')}\"\n")
+        f.write("# Leave empty for the provider's official endpoint\n")
+        f.write(f"POSITION_VISION_BASE_URL = \"{config_data.get('POSITION_VISION_BASE_URL', '')}\"\n")
+        f.write("# Falls back to ANTHROPIC_API_KEY / OPENAI_API_KEY when not set\n")
+        f.write("POSITION_VISION_API_KEY = os.getenv(\"POSITION_VISION_API_KEY\")\n")
+        f.write(f"POSITION_VISION_TIMEOUT = {float(config_data.get('POSITION_VISION_TIMEOUT', 4.0))}\n")
+        f.write(f"POSITION_VISION_FALLBACK_TO_TEMPLATE = {str(config_data.get('POSITION_VISION_FALLBACK_TO_TEMPLATE', True))}\n")
+        f.write("# Save each analysed crop to debug_screenshots/position_vision/ (for building test samples)\n")
+        f.write(f"POSITION_VISION_SAVE_CROPS = {str(config_data.get('POSITION_VISION_SAVE_CROPS', True))}\n\n")
 
         f.write("# =============================================================================\n")
         f.write("# Chat Logging Configuration\n")
@@ -901,8 +942,9 @@ def generate_config_file(config_data, env_data):
         f.write("# ChromaDB Memory Configuration\n")
         f.write("# =============================================================================\n")
         # Ensure boolean is written correctly as True/False, not string 'True'/'False'
-        enable_preload = config_data.get('ENABLE_PRELOAD_PROFILES', True) # Default to True if key missing
-        f.write(f"ENABLE_PRELOAD_PROFILES = {str(enable_preload)}\n") # Writes True or False literal
+        # [Chroma deprecated] ChromaDB preloading is always off; kept for modules that still read it
+        # enable_preload = config_data.get('ENABLE_PRELOAD_PROFILES', True) # Default to True if key missing
+        f.write("ENABLE_PRELOAD_PROFILES = False  # ChromaDB deprecated\n")
 
         preload_memories = config_data.get('PRELOAD_RELATED_MEMORIES', 2) # Default to 2
         f.write(f"PRELOAD_RELATED_MEMORIES = {preload_memories}\n\n")
@@ -1547,6 +1589,7 @@ class WolfChatSetup(tk.Tk):
             script_dir = os.path.dirname(os.path.abspath(__file__)) 
             current_env = os.environ.copy()
             current_env["PYTHONIOENCODING"] = "utf-8"
+            current_env["PYTHONUNBUFFERED"] = "1"  # Child stdout is a pipe; without this output arrives in delayed chunks
             self.bot_process_instance = subprocess.Popen(
                 [sys.executable, bot_script_name],
                 cwd=script_dir, # Run main.py from its directory
@@ -2106,6 +2149,127 @@ class WolfChatSetup(tk.Tk):
         status_label = ttk.Label(validate_frame, textvariable=self.extra_params_status_var, foreground="green")
         status_label.pack(side=tk.LEFT, padx=10)
 
+        self.create_position_vision_frame(main_frame)
+
+    def create_position_vision_frame(self, parent):
+        """Settings for position icon recognition with a multimodal LLM"""
+        frame = ttk.LabelFrame(parent, text="Position Icon Recognition (Vision LLM)")
+        frame.pack(fill=tk.X, pady=10)
+
+        def add_row(label_text):
+            row = ttk.Frame(frame)
+            row.pack(fill=tk.X, padx=10, pady=3)
+            ttk.Label(row, text=label_text, width=18).pack(side=tk.LEFT, padx=(0, 5))
+            return row
+
+        row = add_row("Detection Method:")
+        self.pos_method_var = tk.StringVar(value="llm")
+        ttk.Combobox(row, textvariable=self.pos_method_var, values=["llm", "template"],
+                     state="readonly", width=12).pack(side=tk.LEFT)
+        ttk.Label(row, text="llm = vision LLM, template = legacy OpenCV matching").pack(side=tk.LEFT, padx=10)
+
+        row = add_row("Provider:")
+        self.pos_provider_var = tk.StringVar(value="anthropic")
+        ttk.Combobox(row, textvariable=self.pos_provider_var, values=["anthropic", "openai"],
+                     state="readonly", width=12).pack(side=tk.LEFT)
+
+        row = add_row("Model:")
+        self.pos_model_var = tk.StringVar(value="claude-haiku-5-5")
+        ttk.Entry(row, textvariable=self.pos_model_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row = add_row("Base URL:")
+        self.pos_base_url_var = tk.StringVar(value="")
+        ttk.Entry(row, textvariable=self.pos_base_url_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row = add_row("API Key:")
+        self.pos_api_key_var = tk.StringVar(value="")
+        pos_key_entry = ttk.Entry(row, textvariable=self.pos_api_key_var, show="*")
+        pos_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.pos_show_key_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row, text="Show", variable=self.pos_show_key_var,
+                        command=lambda: self.toggle_field_visibility(pos_key_entry, self.pos_show_key_var)
+                        ).pack(side=tk.LEFT, padx=(5, 0))
+
+        row = add_row("Timeout (sec):")
+        self.pos_timeout_var = tk.DoubleVar(value=4.0)
+        ttk.Spinbox(row, from_=2, to=14, increment=1, textvariable=self.pos_timeout_var, width=6).pack(side=tk.LEFT)
+
+        row = add_row("")
+        self.pos_fallback_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row, text="Fall back to template matching when the LLM call fails",
+                        variable=self.pos_fallback_var).pack(side=tk.LEFT)
+
+        row = add_row("")
+        self.pos_save_crops_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row, text="Save analysed crops to debug_screenshots/position_vision/",
+                        variable=self.pos_save_crops_var).pack(side=tk.LEFT)
+
+        row = add_row("")
+        ttk.Button(row, text="Test Recognition", command=self.test_position_vision).pack(side=tk.LEFT)
+        self.pos_test_status_var = tk.StringVar(value="")
+        ttk.Label(row, textvariable=self.pos_test_status_var, wraplength=550).pack(side=tk.LEFT, padx=10)
+
+        info_text = (
+            "• Anthropic: leave Base URL empty; API Key falls back to ANTHROPIC_API_KEY in .env\n"
+            "• OpenAI / compatible (OpenRouter, local): set Base URL if needed and a vision-capable model;\n"
+            "  API Key falls back to OPENAI_API_KEY in .env\n"
+            "• Timeout is per attempt with one retry (worst case 2x). The whole removal flow must\n"
+            "  finish within 15s; 4s is recommended (measured: avg 1.4s, max 3.0s with Haiku)"
+        )
+        ttk.Label(frame, text=info_text, justify=tk.LEFT, wraplength=700).pack(padx=10, pady=(5, 10), anchor=tk.W)
+
+    def test_position_vision(self):
+        """Run one recognition on a sample icon with the current (unsaved) settings"""
+        self.pos_test_status_var.set("Testing...")
+        # Read Tk variables on the main thread
+        provider = self.pos_provider_var.get()
+        model = self.pos_model_var.get().strip()
+        base_url = self.pos_base_url_var.get().strip() or None
+        try:
+            timeout = float(self.pos_timeout_var.get())
+        except (tk.TclError, ValueError):
+            timeout = 4.0
+        api_key = self.pos_api_key_var.get().strip()
+        if not api_key:
+            if provider == "anthropic":
+                api_key = os.getenv("ANTHROPIC_API_KEY") or self.env_data.get("ANTHROPIC_API_KEY")
+            else:
+                api_key = self.api_key_var.get().strip()
+
+        outcome = {}
+
+        def worker():
+            try:
+                import random
+                from PIL import Image
+                import position_vision as pv
+                recognizer = pv.PositionVisionRecognizer(
+                    provider=provider, model=model, api_key=api_key,
+                    base_url=base_url, timeout=timeout)
+                expected = random.choice(pv.POSITION_NAMES)
+                icon = Image.open(os.path.join(pv.TEMPLATE_DIR, pv.POSITION_ICON_FILES[expected])).convert("RGB")
+                crop = Image.new("RGB", (160, 40), icon.getpixel((0, 0)))
+                crop.paste(icon, (10, (40 - icon.height) // 2))
+                result = recognizer.recognize(crop)
+                if "error" in result:
+                    msg = f"Failed: {result['error']}"
+                else:
+                    verdict = "OK" if result["position"] == expected else "WRONG"
+                    msg = f"{verdict}: expected {expected}, got {result['position']} ({result['latency']:.2f}s)"
+            except Exception as e:
+                msg = f"Failed: {type(e).__name__}: {e}"
+            outcome["msg"] = msg
+
+        # Poll from the Tk main thread instead of touching widgets from the worker
+        def poll():
+            if "msg" in outcome:
+                self.pos_test_status_var.set(outcome["msg"])
+            else:
+                self.after(200, poll)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(200, poll)
+
     def validate_extra_params(self):
         """Validate the JSON input for extra API parameters"""
         content = self.extra_params_text.get("1.0", tk.END).strip()
@@ -2596,7 +2760,7 @@ class WolfChatSetup(tk.Tk):
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Header
-        header = ttk.Label(main_frame, text="ChromaDB Memory Integration", font=("", 12, "bold"))
+        header = ttk.Label(main_frame, text="Memory (Wolfina Wiki)", font=("", 12, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
 
         # Enable Pre-loading
@@ -2681,13 +2845,17 @@ class WolfChatSetup(tk.Tk):
         embedding_model_info = ttk.Label(embedding_model_settings_frame, text="Default: sentence-transformers/paraphrase-multilingual-mpnet-base-v2", justify=tk.LEFT)
         embedding_model_info.pack(anchor=tk.W, padx=10, pady=(0,5))
 
+        # [Chroma deprecated] ChromaDB settings are kept in code but not shown
+        for chroma_widget in (preload_frame, collections_frame, preload_settings_frame, embedding_model_settings_frame):
+            chroma_widget.pack_forget()
+
 
         # Wolfina Wiki Integration Frame
         wiki_frame = ttk.LabelFrame(main_frame, text="Wolfina Wiki Integration")
         wiki_frame.pack(fill=tk.X, pady=10)
 
         self.enable_wiki_memory_var = tk.BooleanVar(value=False)
-        wiki_cb = ttk.Checkbutton(wiki_frame, text="Enable Wolfina Wiki memory (replaces ChromaDB user profile lookup)",
+        wiki_cb = ttk.Checkbutton(wiki_frame, text="Enable Wolfina Wiki memory (user profiles, conversation memory, wiki_query tool)",
                                   variable=self.enable_wiki_memory_var)
         wiki_cb.pack(anchor=tk.W, padx=10, pady=(5, 2))
 
@@ -2706,11 +2874,10 @@ class WolfChatSetup(tk.Tk):
         info_frame.pack(fill=tk.BOTH, expand=True, pady=10)
 
         info_text = (
-            "• Pre-loading user profiles will speed up responses by fetching data before LLM calls\n"
-            "• Collection names must match your ChromaDB configuration\n"
-            "• The bot will automatically use pre-loaded data if available\n"
-            "• If data isn't found locally, the bot will fall back to using tool calls\n"
-            "• Wolfina Wiki: when enabled, user profile is fetched from Wiki API instead of ChromaDB"
+            "• ChromaDB memory has been removed; Wolfina Wiki is the only memory backend\n"
+            "• When enabled, the user profile is fetched from the Wiki API before each reply,\n"
+            "  conversations are pushed to the Wiki, and the LLM gets the wiki_query tool\n"
+            "• When disabled, the bot replies without long-term memory"
         )
 
         info_label = ttk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=700)
@@ -2720,6 +2887,8 @@ class WolfChatSetup(tk.Tk):
     def create_memory_management_tab(self):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Memory Management")
+        # [Chroma deprecated] ChromaDB backup/profile scheduler; tab kept in code but hidden
+        self.notebook.hide(tab)
 
         main_frame = ttk.Frame(tab, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -2806,11 +2975,12 @@ class WolfChatSetup(tk.Tk):
         self.stop_btn.pack(side=tk.RIGHT, padx=5)
 
         # Scheduler buttons
+        # [Chroma deprecated] memory scheduler (memory_backup.py) buttons are created but not shown
         self.stop_scheduler_btn = ttk.Button(btn_frame, text="Stop Scheduler", command=self.stop_memory_scheduler, state=tk.DISABLED)
-        self.stop_scheduler_btn.pack(side=tk.RIGHT, padx=5)
+        # self.stop_scheduler_btn.pack(side=tk.RIGHT, padx=5)
 
         self.start_scheduler_btn = ttk.Button(btn_frame, text="Start Scheduler", command=self.run_memory_scheduler)
-        self.start_scheduler_btn.pack(side=tk.RIGHT, padx=5)
+        # self.start_scheduler_btn.pack(side=tk.RIGHT, padx=5)
         
     def install_dependencies(self):
         """Run the installation script for dependencies"""
@@ -2845,6 +3015,7 @@ class WolfChatSetup(tk.Tk):
             # Run main.py, capturing output with UTF-8 encoding and setting PYTHONIOENCODING
             current_env = os.environ.copy()
             current_env["PYTHONIOENCODING"] = "utf-8"
+            current_env["PYTHONUNBUFFERED"] = "1"  # Child stdout is a pipe; without this output arrives in delayed chunks
             self.running_process = subprocess.Popen(
                 [sys.executable, "main.py"],
                 stdout=subprocess.PIPE,
@@ -3006,7 +3177,17 @@ class WolfChatSetup(tk.Tk):
             self.extra_params_text.delete("1.0", tk.END)
             if extra_params:
                 self.extra_params_text.insert(tk.END, json.dumps(extra_params, indent=2))
-            
+
+            # Position vision settings
+            self.pos_method_var.set(self.config_data.get("POSITION_DETECTION_METHOD", "llm"))
+            self.pos_provider_var.set(self.config_data.get("POSITION_VISION_PROVIDER", "anthropic"))
+            self.pos_model_var.set(self.config_data.get("POSITION_VISION_MODEL", "claude-haiku-5-5"))
+            self.pos_base_url_var.set(self.config_data.get("POSITION_VISION_BASE_URL", ""))
+            self.pos_api_key_var.set(self.env_data.get("POSITION_VISION_API_KEY", ""))
+            self.pos_timeout_var.set(self.config_data.get("POSITION_VISION_TIMEOUT", 4.0))
+            self.pos_fallback_var.set(self.config_data.get("POSITION_VISION_FALLBACK_TO_TEMPLATE", True))
+            self.pos_save_crops_var.set(self.config_data.get("POSITION_VISION_SAVE_CROPS", True))
+
             # MCP Servers
             # Exa settings
             if "exa" in self.config_data.get("MCP_SERVERS", {}):
@@ -3234,7 +3415,7 @@ class WolfChatSetup(tk.Tk):
         
         # Add built-in servers
         self.servers_listbox.insert(tk.END, "exa")
-        self.servers_listbox.insert(tk.END, "chroma")
+        # self.servers_listbox.insert(tk.END, "chroma")  # [Chroma deprecated] not selectable
         self.servers_listbox.insert(tk.END, "position-tool")
         
         # Add custom servers
@@ -3492,7 +3673,20 @@ class WolfChatSetup(tk.Tk):
             else:
                 self.config_data["EXTRA_API_PARAMS"] = {}
 
+            # Position vision settings
+            self.config_data["POSITION_DETECTION_METHOD"] = self.pos_method_var.get()
+            self.config_data["POSITION_VISION_PROVIDER"] = self.pos_provider_var.get()
+            self.config_data["POSITION_VISION_MODEL"] = self.pos_model_var.get().strip()
+            self.config_data["POSITION_VISION_BASE_URL"] = self.pos_base_url_var.get().strip()
+            try:
+                self.config_data["POSITION_VISION_TIMEOUT"] = float(self.pos_timeout_var.get())
+            except (tk.TclError, ValueError):
+                self.config_data["POSITION_VISION_TIMEOUT"] = 4.0
+            self.config_data["POSITION_VISION_FALLBACK_TO_TEMPLATE"] = self.pos_fallback_var.get()
+            self.config_data["POSITION_VISION_SAVE_CROPS"] = self.pos_save_crops_var.get()
+
             # Environment variables
+            self.env_data["POSITION_VISION_API_KEY"] = self.pos_api_key_var.get().strip()
             self.env_data["OPENAI_API_KEY"] = self.api_key_var.get()
             self.env_data["EXA_API_KEY"] = self.exa_key_var.get()
             
@@ -3521,7 +3715,9 @@ class WolfChatSetup(tk.Tk):
             if "chroma" not in self.config_data["MCP_SERVERS"]:
                 self.config_data["MCP_SERVERS"]["chroma"] = {}
             
-            self.config_data["MCP_SERVERS"]["chroma"]["enabled"] = self.chroma_enable_var.get()
+            # [Chroma deprecated] always disabled; UI option is hidden
+            # self.config_data["MCP_SERVERS"]["chroma"]["enabled"] = self.chroma_enable_var.get()
+            self.config_data["MCP_SERVERS"]["chroma"]["enabled"] = False
             self.config_data["MCP_SERVERS"]["chroma"]["data_dir"] = self.chroma_dir_var.get()
             
             # Save Chroma system prompt

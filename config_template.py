@@ -54,6 +54,23 @@ MCP_SERVERS = ${MCP_SERVERS}
 MCP_CONFIRM_TOOL_EXECUTION = False  # True: Confirm before execution, False: Execute automatically
 
 # =============================================================================
+# Position Icon Recognition (Multimodal LLM)
+# =============================================================================
+# "llm": vision LLM (position_vision.py), "template": legacy OpenCV template matching
+POSITION_DETECTION_METHOD = "${POSITION_DETECTION_METHOD}"
+# "anthropic" or "openai" (OpenAI or any OpenAI-compatible endpoint)
+POSITION_VISION_PROVIDER = "${POSITION_VISION_PROVIDER}"
+POSITION_VISION_MODEL = "${POSITION_VISION_MODEL}"
+# Leave empty for the provider's official endpoint
+POSITION_VISION_BASE_URL = "${POSITION_VISION_BASE_URL}"
+# Falls back to ANTHROPIC_API_KEY / OPENAI_API_KEY when not set
+POSITION_VISION_API_KEY = os.getenv("POSITION_VISION_API_KEY")
+POSITION_VISION_TIMEOUT = ${POSITION_VISION_TIMEOUT}
+POSITION_VISION_FALLBACK_TO_TEMPLATE = ${POSITION_VISION_FALLBACK_TO_TEMPLATE}
+# Save each analysed crop to debug_screenshots/position_vision/ (for building test samples)
+POSITION_VISION_SAVE_CROPS = ${POSITION_VISION_SAVE_CROPS}
+
+# =============================================================================
 # Chat Logging Configuration
 # =============================================================================
 ENABLE_CHAT_LOGGING = ${ENABLE_CHAT_LOGGING}
@@ -83,15 +100,21 @@ MONITOR_INTERVAL_SECONDS = ${MONITOR_INTERVAL_SECONDS}
 DEDUPLICATION_WINDOW_SIZE = ${DEDUPLICATION_WINDOW_SIZE}  # 統一控制圖片去重和文字去重的滾動視窗大小
 
 # =============================================================================
-# ChromaDB Memory Configuration
+# Wolfina Wiki Memory Integration (replaces ChromaDB)
 # =============================================================================
-ENABLE_PRELOAD_PROFILES = ${ENABLE_PRELOAD_PROFILES}
-PRELOAD_RELATED_MEMORIES = ${PRELOAD_RELATED_MEMORIES}
+ENABLE_WIKI_MEMORY = ${ENABLE_WIKI_MEMORY}
+WOLFINA_WIKI_HOST = "${WOLFINA_WIKI_HOST}"
+
+# =============================================================================
+# ChromaDB Memory Configuration  [Chroma deprecated]
+# =============================================================================
+ENABLE_PRELOAD_PROFILES = False  # ChromaDB deprecated, always off
+# PRELOAD_RELATED_MEMORIES = ${PRELOAD_RELATED_MEMORIES}
 
 # Collection Names (used for both local access and MCP tool calls)
-PROFILES_COLLECTION = "${PROFILES_COLLECTION}"
-CONVERSATIONS_COLLECTION = "${CONVERSATIONS_COLLECTION}"
-BOT_MEMORY_COLLECTION = "${BOT_MEMORY_COLLECTION}"
+# PROFILES_COLLECTION = "${PROFILES_COLLECTION}"
+# CONVERSATIONS_COLLECTION = "${CONVERSATIONS_COLLECTION}"
+# BOT_MEMORY_COLLECTION = "${BOT_MEMORY_COLLECTION}"
 
 # Ensure Chroma path is consistent for both direct access and MCP
-CHROMA_DATA_DIR = os.path.abspath("chroma_data")
+# CHROMA_DATA_DIR = os.path.abspath("chroma_data")

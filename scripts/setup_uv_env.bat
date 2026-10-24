@@ -60,36 +60,27 @@ if errorlevel 1 (
     echo.
 )
 
-REM Check for Python 3.8-3.12 availability
-echo [2/5] Detecting Python version (3.8-3.12)...
+REM Python 3.12 is required: requirements.lock.txt is resolved and verified on CPython 3.12
+echo [2/5] Detecting Python 3.12...
 echo.
 
-REM Try to find the best Python version using UV
-set "PYTHON_VERSION="
-for %%v in (3.12 3.11 3.10 3.9 3.8) do (
-    uv python list | findstr /C:"cpython-%%v" >nul 2>&1
-    if not errorlevel 1 (
-        set "PYTHON_VERSION=%%v"
-        echo Found Python %%v installed
-        goto :FoundPython
-    )
-)
-
-:FoundPython
-if not defined PYTHON_VERSION (
-    echo No Python 3.8-3.12 found. Installing Python 3.11 via UV...
+set "PYTHON_VERSION=3.12"
+uv python find 3.12 >nul 2>&1
+if errorlevel 1 (
+    echo Python 3.12 not found. Installing Python 3.12 via UV...
     echo.
-    uv python install 3.11
+    uv python install 3.12
     if errorlevel 1 (
         echo.
         echo ERROR: Failed to install Python via UV
-        echo Please install Python 3.8-3.12 manually from https://www.python.org/
+        echo Please install Python 3.12 manually from https://www.python.org/
         echo.
         pause
         exit /b 1
     )
-    set "PYTHON_VERSION=3.11"
-    echo Python 3.11 installed successfully
+    echo Python 3.12 installed successfully
+) else (
+    echo Found Python 3.12
 )
 
 echo.
@@ -104,7 +95,7 @@ if exist ".venv\" (
     if /i not "!OVERWRITE!"=="y" (
         echo.
         echo Setup cancelled. Using existing virtual environment.
-        echo To sync packages, run: uv sync
+        echo start.bat will sync packages with requirements.lock.txt.
         echo.
         pause
         exit /b 0
@@ -129,46 +120,44 @@ if errorlevel 1 (
 echo Virtual environment created successfully at '.venv\'
 echo.
 
-echo [4/5] Installing dependencies from requirements.txt...
+echo [4/5] Installing dependencies from requirements.lock.txt...
 echo This may take several minutes depending on your internet connection...
 echo UV will cache packages for faster future installations
 echo.
 
-REM Use UV to install all requirements
-uv pip install -r requirements.txt
+REM Install exactly the locked (verified) package set
+uv pip sync --python .venv\Scripts\python.exe requirements.lock.txt
 
 if errorlevel 1 (
     echo.
-    echo ERROR: Failed to install dependencies from requirements.txt
-    echo Please check the requirements.txt file and your internet connection
+    echo ERROR: Failed to install dependencies from requirements.lock.txt
+    echo Please check the requirements.lock.txt file and your internet connection
     echo.
     pause
     exit /b 1
 )
 
-echo.
-echo ============================================================
-echo Downloading embedding model...
-echo ============================================================
-echo.
-echo This will download the sentence-transformers model for multilingual embeddings...
-echo Model: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
-echo.
-
-call .venv\Scripts\activate.bat
-python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2'); print('Model downloaded successfully!')"
-
-if errorlevel 1 (
-    echo.
-    echo WARNING: Failed to download embedding model
-    echo You may need to download it manually later
-    echo.
-) else (
-    echo.
-    echo Embedding model downloaded successfully!
-    echo.
-)
-
+REM [Chroma deprecated] sentence-transformers embedding model is no longer needed
+REM echo.
+REM echo ============================================================
+REM echo Downloading embedding model...
+REM echo ============================================================
+REM echo.
+REM echo This will download the sentence-transformers model for multilingual embeddings...
+REM echo Model: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+REM echo.
+REM call .venv\Scripts\activate.bat
+REM python -c "from sentence_transformers import SentenceTransformer; model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2'); print('Model downloaded successfully!')"
+REM if errorlevel 1 (
+REM     echo.
+REM     echo WARNING: Failed to download embedding model
+REM     echo You may need to download it manually later
+REM     echo.
+REM ) else (
+REM     echo.
+REM     echo Embedding model downloaded successfully!
+REM     echo.
+REM )
 echo.
 echo [5/5] Setup Complete!
 echo ============================================================
@@ -186,7 +175,7 @@ echo   - To deactivate: deactivate
 echo.
 echo To add new packages:
 echo   - uv pip install package-name
-echo   - Or add to requirements.txt and run: uv pip install -r requirements.txt
+echo   - Add it to requirements.txt, test, then run scripts\freeze_lock.bat
 echo.
 echo ============================================================
 

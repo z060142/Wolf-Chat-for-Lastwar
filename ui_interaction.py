@@ -2,6 +2,8 @@
 # Refactored to separate Detection and Interaction logic.
 
 import pyautogui
+# pyscreeze >= 1.0 raises ImageNotFoundException by default; this module expects locate*() to return None
+pyautogui.useImageNotFoundException(False)
 import cv2 # opencv-python
 import numpy as np
 import sys # Added for special character handling
@@ -636,6 +638,7 @@ class DetectionModule:
         self.state_confidence = state_confidence
         self.region = region
         self._warned_paths = set()
+        self._position_vision = None  # Lazily created PositionVisionRecognizer (LLM position detection)
 
         # --- Dual Method Specific Initialization ---
         self.use_dual_method = use_dual_method
@@ -1025,6 +1028,74 @@ class DetectionModule:
 
         print(f"[Position Detection] No results above fallback threshold ({POSITION_ICON_FALLBACK_CONFIDENCE})")
         return {'error': 'no_position_found'}
+
+    def _detect_position_icon_llm(self, search_region: Tuple[int, int, int, int]) -> Dict[str, Any]:
+        """
+        Position icon detection with a multimodal LLM (see position_vision.py).
+        Same return format as _detect_position_icon_multi_strategy, plus
+        {'error': 'llm_failed'} when the API call or answer parsing fails.
+        """
+        search_region = tuple(int(v) for v in search_region)
+        try:
+            screenshot = pyautogui.screenshot(region=search_region)
+        except Exception as e:
+            print(f"[Position LLM] Error capturing screen: {e}")
+            return {'error': 'capture_failed'}
+
+        try:
+            if self._position_vision is None:
+                from position_vision import create_recognizer_from_config
+                self._position_vision = create_recognizer_from_config(config)
+            result = self._position_vision.recognize(screenshot)
+        except Exception as e:
+            result = {'error': f"{type(e).__name__}: {e}", 'raw': '', 'latency': 0.0}
+
+        label = result.get('position') or 'ERROR'
+        print(f"[Position LLM] result={label} latency={result.get('latency', 0):.2f}s raw={result.get('raw', '')!r}")
+
+        # Save crops so real samples can be collected for tools/test_position_vision.py
+        if getattr(config, 'POSITION_VISION_SAVE_CROPS', False):
+            try:
+                save_dir = os.path.join("debug_screenshots", "position_vision")
+                os.makedirs(save_dir, exist_ok=True)
+                stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                screenshot.save(os.path.join(save_dir, f"{stamp}_{label}.png"))
+            except Exception as e:
+                print(f"[Position LLM] Failed to save crop: {e}")
+
+        if 'error' in result:
+            print(f"[Position LLM] Recognition failed: {result['error']}")
+            return {'error': 'llm_failed'}
+        if result['position'] == 'NONE':
+            return {'error': 'no_position_found'}
+
+        center = (search_region[0] + search_region[2] // 2, search_region[1] + search_region[3] // 2)
+        return {
+            'name': result['position'],
+            'coords': center,  # LLM gives no location; only the name is used downstream
+            'confidence': 1.0,
+            'distance': 0.0,
+            'method': 'llm',
+        }
+
+    def detect_position_icon(self, search_region: Tuple[int, int, int, int],
+                             bubble_center: Tuple[int, int],
+                             max_distance: int = POSITION_ICON_MAX_DISTANCE) -> Dict[str, Any]:
+        """
+        Position icon detection entry point. POSITION_DETECTION_METHOD (config.py):
+        - "llm": multimodal LLM; falls back to template matching on API failure
+          if POSITION_VISION_FALLBACK_TO_TEMPLATE is True
+        - "template": OpenCV multi-strategy template matching (legacy)
+        """
+        method = getattr(config, 'POSITION_DETECTION_METHOD', 'template')
+        if method == 'llm':
+            result = self._detect_position_icon_llm(search_region)
+            if result.get('error') != 'llm_failed':
+                return result
+            if not getattr(config, 'POSITION_VISION_FALLBACK_TO_TEMPLATE', True):
+                return result
+            print("[Position Detection] LLM failed, falling back to template matching")
+        return self._detect_position_icon_multi_strategy(search_region, bubble_center, max_distance)
 
     def find_elements(self, template_keys: List[str], confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None) -> Dict[str, List[Tuple[int, int]]]:
         """Find multiple templates by their keys. Returns center coordinates."""
@@ -2450,15 +2521,15 @@ def remove_user_position(detector: DetectionModule,
 
     print(f"Searching for position icons in region: {search_region}, bubble_top_center={bubble_top_center}")
 
-    # Use multi-strategy detection
-    position_result = detector._detect_position_icon_multi_strategy(
+    # LLM or template detection, selected by config.POSITION_DETECTION_METHOD
+    position_result = detector.detect_position_icon(
         search_region=search_region,
         bubble_center=bubble_top_center,
         max_distance=50
     )
 
     # Handle error returns from detection
-    # Note: _detect_position_icon_multi_strategy always returns a dict (success or {'error': ...}), never None
+    # Note: detect_position_icon always returns a dict (success or {'error': ...}), never None
     if isinstance(position_result, dict) and 'error' in position_result:
         error_type = position_result.get('error')
         if error_type == 'capture_failed':
@@ -2470,6 +2541,9 @@ def remove_user_position(detector: DetectionModule,
         elif error_type == 'no_position_found':
             print("Error: No position icons found near the trigger bubble.")
             return _return_result("failed", "no_position_found", "User does not have any position assigned")
+        elif error_type == 'llm_failed':
+            print("Error: LLM position recognition failed (API error or unreadable answer).")
+            return _return_result("failed", "ui_operation_failed", "Position recognition service failed")
         else:
             print(f"Error: Unknown error from position detection: {error_type}")
             return _return_result("failed", "ui_operation_failed", f"Unknown error in position detection: {error_type}")

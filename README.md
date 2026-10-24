@@ -20,7 +20,7 @@ This bot will:
 
 ## System Requirements
 
-- Python 3.8-3.12 (Python 3.11 recommended)
+- Python 3.12 (dependencies are locked for CPython 3.12 in `requirements.lock.txt`)
 - OpenAI API key or compatible service
 - Game client ("Last War-Survival Game")
 - Windows OS (with administrator privileges recommended)
@@ -111,6 +111,9 @@ uv pip install -r requirements.txt
 
 2. **Configure Settings via GUI**:
    - **API Settings**: Set your preferred language model provider (OpenAI, OpenRouter, DeepSeek, etc.)
+   - **Position Icon Recognition (Vision LLM)**: In the API Settings tab, choose the provider (Anthropic or OpenAI-compatible),
+     model (default `claude-haiku-5-5`) and API key used to recognise position icons in chat. Use "Test Recognition" to verify.
+     Validate with `python tools/test_position_vision.py --synthetic 3` or on real crops with `--dir <folder>`
    - **MCP Servers**: Enable/disable and configure MCP servers (Exa, Chroma, custom servers)
    - **Game Settings**: Set game window title and monitoring parameters
    - **System Parameters**: Configure detection thresholds, deduplication, and other system settings
@@ -264,6 +267,28 @@ Interactive tool for configuring chat bubble colors. Captures game area screensh
 **Launcher**: `scripts\run_system_prompt_tester.bat`
 
 Test and preview system prompt configurations. Test different MCP server combinations and validate prompt scenarios before deployment.
+
+## Updating / Deploying a New Version
+
+1. Stop the running bot and close Setup.py (installed files may be locked otherwise).
+2. Copy or pull the new version over the bot folder. Keep your own `config.py`, `.env`,
+   `persona.json`, `templates/` changes and data folders.
+3. Run `start.bat`. It checks that `.venv` is Python 3.12 and syncs it to
+   `requirements.lock.txt` with `uv pip sync`: missing packages are installed, wrong
+   versions replaced and packages that are no longer used (e.g. chroma, torch) removed.
+   This happens automatically whenever the lock file changes or a core import fails.
+4. In Setup.py, check the settings (e.g. Position Icon Recognition) and click **Save Settings**
+   so `config.py` gets the new options.
+
+To change dependencies: edit `requirements.txt`, install into `.venv`, test the bot, then run
+`scripts\freeze_lock.bat` and commit the new `requirements.lock.txt`.
+
+### Toolchain security update (uv / pip)
+
+`update_toolchain.bat` updates every `uv` on PATH to the latest release, and `pip` / `certifi`
+of the system Python interpreters and the project `.venv` (eMudhra / emSign CA incident,
+2026-10; minimum safe versions: uv 0.13.4, pip 26.2.2, certifi 2026.10.19).
+Run `update_toolchain.bat --check` to only report versions.
 
 ## Troubleshooting
 

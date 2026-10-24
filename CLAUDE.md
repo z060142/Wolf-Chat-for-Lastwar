@@ -99,6 +99,9 @@ All configuration in this project is managed through `Setup.py`:
 ```bash
 OPENAI_API_KEY=your_api_key_here
 EXA_API_KEY=your_exa_key_here
+# Position icon recognition (vision LLM, see position_vision.py)
+POSITION_VISION_API_KEY=optional_key_for_vision_provider
+ANTHROPIC_API_KEY=fallback_when_POSITION_VISION_API_KEY_is_empty
 ```
 
 ### Key Configuration Files
