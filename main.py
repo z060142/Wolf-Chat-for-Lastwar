@@ -463,6 +463,8 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
             # 構造命令，重用現有的UI操作邏輯
             # 使用一次性 queue 讓 UI thread 直接回傳結果，不需要 import main
             result_callback_queue = ThreadSafeQueue()
+            started_event = threading.Event()  # UI thread sets this when it starts the removal
+            cancel_event = threading.Event()   # set by us if the UI thread never started; UI thread then skips
             command_to_send = {
                 'action': 'remove_position_with_feedback',
                 'trigger_bubble_region': bubble_region,
@@ -470,6 +472,8 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
                 'search_area': search_area if 'search_area' in globals() else None,
                 'user_context': user_context,
                 'result_queue': result_callback_queue,  # UI thread 直接 put 到這裡
+                'started_event': started_event,
+                'cancel_event': cancel_event,
             }
             
             print("MCP Callback: Sending command to UI thread...")
@@ -479,7 +483,12 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
                 print("MCP Callback: Command sent to UI thread, waiting for result...")
                 
                 # 等待UI處理結果（從一次性 queue 讀取）
-                result = await wait_for_ui_result(timeout=15, result_queue=result_callback_queue)
+                # The UI thread only picks up commands between loop iterations, so the clock for the
+                # removal itself starts when it acknowledges; a fixed 15s from enqueue reported
+                # "timeout" for removals that then finished successfully.
+                result = await wait_for_ui_result(timeout=45, result_queue=result_callback_queue,
+                                                  started_event=started_event, start_timeout=20,
+                                                  cancel_event=cancel_event)
                 print(f"MCP Callback: Received result: {result}")
                 return result
                 
@@ -511,25 +520,47 @@ async def execute_position_removal_with_feedback(action_type: str, user_context:
         print(f"MCP Callback: Unsupported action type: {error_result}")
         return error_result
 
-async def wait_for_ui_result(timeout: float = 10.0, result_queue: ThreadSafeQueue = None) -> dict:
+async def wait_for_ui_result(timeout: float = 10.0, result_queue: ThreadSafeQueue = None,
+                             started_event: threading.Event = None, start_timeout: float = 20.0,
+                             cancel_event: threading.Event = None) -> dict:
     """
     等待UI線程返回的結果
 
     Args:
-        timeout: 超時時間（秒）
+        timeout: 超時時間（秒）；有 started_event 時從 UI thread 開始處理才起算
         result_queue: 一次性 queue，由 UI thread 直接 put 結果進來
+        started_event: UI thread 開始處理時 set，用來區分「排隊中」與「執行中」
+        start_timeout: 等待 UI thread 開始處理的上限（秒）
 
     Returns:
         UI操作結果字典
     """
     q = result_queue if result_queue is not None else position_result_queue
-    start_time = asyncio.get_event_loop().time()
+    loop = asyncio.get_event_loop()
+    enqueue_time = loop.time()
+    start_time = None if started_event is not None else enqueue_time
 
     while True:
-        current_time = asyncio.get_event_loop().time()
-        if current_time - start_time > timeout:
+        current_time = loop.time()
+        if start_time is None:
+            if started_event.is_set():
+                start_time = current_time
+            elif current_time - enqueue_time > start_timeout:
+                if cancel_event is not None:
+                    cancel_event.set()
+                if started_event.is_set():  # started right at the deadline: keep waiting
+                    start_time = current_time
+                    continue
+                return {
+                    "status": "error",
+                    "error_type": "ui_busy",
+                    "message": f"UI thread did not start the removal within {start_timeout}s (busy); nothing was changed",
+                    "execution_time": datetime.datetime.now().isoformat()
+                }
+        if start_time is not None and current_time - start_time > timeout:
             return {
                 "status": "error",
+                "error_type": "timeout",
                 "message": f"UI操作超時（{timeout}秒），可能是UI識別失敗",
                 "execution_time": datetime.datetime.now().isoformat()
             }
@@ -913,8 +944,11 @@ async def initialize_mcp_connections():
         })
         print("Injected local tool: wiki_query")
 
-    # Always inject remove_user_position as a local tool (override any MCP-registered version)
-    all_discovered_mcp_tools[:] = [t for t in all_discovered_mcp_tools if t.get('name') != 'remove_user_position']
+    # Always inject remove_user_position as a local tool (override any MCP-registered version).
+    # check_position_tool_status is dropped: it reads main_heartbeat.json, which nothing writes since
+    # the file-based MCP bridge (monitor_mcp_commands) is not started, so it always reported "offline".
+    all_discovered_mcp_tools[:] = [t for t in all_discovered_mcp_tools
+                                   if t.get('name') not in ('remove_user_position', 'check_position_tool_status')]
     all_discovered_mcp_tools.append({
         "name": "remove_user_position",
         "description": "Remove the current position/title from the user who sent the message. Call this when the user requests to have their position removed. No parameters needed.",

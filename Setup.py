@@ -316,6 +316,8 @@ def load_current_config():
         },
         "ENABLE_WIKI_MEMORY": False,
         "WOLFINA_WIKI_HOST": "http://localhost:8000",
+        # Template matching backend for all UI detection: "native" (screen_vision.py) or "pyautogui"
+        "SCREEN_VISION_BACKEND": "native",
         # Position icon recognition (multimodal LLM replaces template matching)
         "POSITION_DETECTION_METHOD": "llm",
         "POSITION_VISION_PROVIDER": "anthropic",
@@ -386,7 +388,7 @@ def load_current_config():
                 config_data["WOLFINA_WIKI_HOST"] = wiki_host_match.group(1)
 
             # Extract position vision (LLM) settings
-            for key in ("POSITION_DETECTION_METHOD", "POSITION_VISION_PROVIDER",
+            for key in ("SCREEN_VISION_BACKEND", "POSITION_DETECTION_METHOD", "POSITION_VISION_PROVIDER",
                         "POSITION_VISION_MODEL", "POSITION_VISION_BASE_URL"):
                 str_match = re.search(rf'^{key}\s*=\s*["\'](.*?)["\']', config_content, re.MULTILINE)
                 if str_match:
@@ -898,6 +900,9 @@ def generate_config_file(config_data, env_data):
         f.write("# =============================================================================\n")
         f.write("# Position Icon Recognition (Multimodal LLM)\n")
         f.write("# =============================================================================\n")
+        f.write("# Template matching backend for all UI detection:\n")
+        f.write("# \"native\": screen_vision.py (region capture, template cache, polling waits), \"pyautogui\": legacy\n")
+        f.write(f"SCREEN_VISION_BACKEND = \"{config_data.get('SCREEN_VISION_BACKEND', 'native')}\"\n")
         f.write("# \"llm\": vision LLM (position_vision.py), \"template\": legacy OpenCV template matching\n")
         f.write(f"POSITION_DETECTION_METHOD = \"{config_data.get('POSITION_DETECTION_METHOD', 'llm')}\"\n")
         f.write("# \"anthropic\" or \"openai\" (OpenAI or any OpenAI-compatible endpoint)\n")
@@ -2162,6 +2167,12 @@ class WolfChatSetup(tk.Tk):
             ttk.Label(row, text=label_text, width=18).pack(side=tk.LEFT, padx=(0, 5))
             return row
 
+        row = add_row("UI Matching Backend:")
+        self.screen_backend_var = tk.StringVar(value="native")
+        ttk.Combobox(row, textvariable=self.screen_backend_var, values=["native", "pyautogui"],
+                     state="readonly", width=12).pack(side=tk.LEFT)
+        ttk.Label(row, text="All UI template checks. native = faster region capture + polling waits").pack(side=tk.LEFT, padx=10)
+
         row = add_row("Detection Method:")
         self.pos_method_var = tk.StringVar(value="llm")
         ttk.Combobox(row, textvariable=self.pos_method_var, values=["llm", "template"],
@@ -3179,6 +3190,7 @@ class WolfChatSetup(tk.Tk):
                 self.extra_params_text.insert(tk.END, json.dumps(extra_params, indent=2))
 
             # Position vision settings
+            self.screen_backend_var.set(self.config_data.get("SCREEN_VISION_BACKEND", "native"))
             self.pos_method_var.set(self.config_data.get("POSITION_DETECTION_METHOD", "llm"))
             self.pos_provider_var.set(self.config_data.get("POSITION_VISION_PROVIDER", "anthropic"))
             self.pos_model_var.set(self.config_data.get("POSITION_VISION_MODEL", "claude-haiku-5-5"))
@@ -3674,6 +3686,7 @@ class WolfChatSetup(tk.Tk):
                 self.config_data["EXTRA_API_PARAMS"] = {}
 
             # Position vision settings
+            self.config_data["SCREEN_VISION_BACKEND"] = self.screen_backend_var.get()
             self.config_data["POSITION_DETECTION_METHOD"] = self.pos_method_var.get()
             self.config_data["POSITION_VISION_PROVIDER"] = self.pos_provider_var.get()
             self.config_data["POSITION_VISION_MODEL"] = self.pos_model_var.get().strip()

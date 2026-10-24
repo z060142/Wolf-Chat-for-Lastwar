@@ -24,6 +24,7 @@ import datetime # Added for MCP result timestamps
 import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
 from simple_bubble_dedup import SimpleBubbleDeduplication
+from screen_vision import ScreenVision, Box
 import difflib # Added for text similarity
 import os # Already imported, but good to note for RobustMessageDeduplication
 import json # Already imported, but good to note for RobustMessageDeduplication
@@ -640,6 +641,15 @@ class DetectionModule:
         self._warned_paths = set()
         self._position_vision = None  # Lazily created PositionVisionRecognizer (LLM position detection)
 
+        # Template matching backend: "native" (screen_vision.ScreenVision) or "pyautogui" (legacy)
+        self.vision = None
+        if getattr(config, 'SCREEN_VISION_BACKEND', 'native') == 'native':
+            try:
+                self.vision = ScreenVision()
+            except Exception as e:
+                print(f"Warning: native screen vision unavailable, using pyautogui: {e}")
+        print(f"Template matching backend: {'native' if self.vision else 'pyautogui'}")
+
         # --- Dual Method Specific Initialization ---
         self.use_dual_method = use_dual_method
         self.clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_TILE_SIZE)
@@ -750,8 +760,13 @@ class DetectionModule:
         current_confidence = confidence if confidence is not None else self.confidence
 
         try:
-            # locateAllOnScreen returns Box objects (left, top, width, height)
-            matches = pyautogui.locateAllOnScreen(template_path, region=current_region, confidence=current_confidence, grayscale=grayscale)
+            if self.vision:
+                # Single-instance UI elements: search around the last hit first
+                matches = [Box(*m[:4]) for m in self.vision.locate_all(
+                    template_path, region=current_region, confidence=current_confidence, grayscale=grayscale)]
+            else:
+                # locateAllOnScreen returns Box objects (left, top, width, height)
+                matches = pyautogui.locateAllOnScreen(template_path, region=current_region, confidence=current_confidence, grayscale=grayscale)
             if matches:
                 for box in matches:
                     # Calculate center coordinates from the Box object
@@ -783,7 +798,13 @@ class DetectionModule:
             # --- Temporary Debug Print ---
             print(f"DEBUG: Searching for template '{template_key}' with confidence {current_confidence}...")
             # --- End Temporary Debug Print ---
-            matches = pyautogui.locateAllOnScreen(template_path, region=current_region, confidence=current_confidence, grayscale=grayscale)
+            if self.vision:
+                # All instances wanted (bubble corners): no hint shortcut
+                matches = [Box(*m[:4]) for m in self.vision.locate_all(
+                    template_path, region=current_region, confidence=current_confidence,
+                    grayscale=grayscale, limit=200, use_hint=False)]
+            else:
+                matches = pyautogui.locateAllOnScreen(template_path, region=current_region, confidence=current_confidence, grayscale=grayscale)
             match_count = 0 # Initialize count
             if matches:
                 for box in matches:
@@ -796,6 +817,52 @@ class DetectionModule:
         except Exception as e:
             print(f"Error finding template raw '{template_key}' ({template_path}): {e}")
             return []
+
+    def screenshot(self, region: Optional[Tuple[int, int, int, int]] = None):
+        """Region screenshot as an RGB PIL image (same as pyautogui.screenshot, but captures only the region)."""
+        if self.vision:
+            return self.vision.grab_pil(region)
+        return pyautogui.screenshot(region=region)
+
+    def wait_for_template(self, template_key: str, timeout: float = 2.0, confidence: Optional[float] = None,
+                          region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
+        """Poll until the template appears; returns CENTER coordinates (like _find_template) or [] on timeout.
+        Replaces fixed sleep-then-check-once: continues as soon as the UI is ready."""
+        deadline = time.time() + timeout
+        while True:
+            locs = self._find_template(template_key, confidence=confidence, region=region, grayscale=grayscale)
+            if locs or time.time() >= deadline:
+                return locs
+            time.sleep(0.03 if self.vision else 0.05)
+
+    def wait_for_template_gone(self, template_key: str, timeout: float = 2.0, confidence: Optional[float] = None,
+                               region: Optional[Tuple[int, int, int, int]] = None) -> bool:
+        """Poll until the template is absent on two consecutive checks. True if it went away."""
+        deadline = time.time() + timeout
+        misses = 0
+        while True:
+            if self._find_template(template_key, confidence=confidence, region=region):
+                misses = 0
+            else:
+                misses += 1
+                if misses >= 2:
+                    return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.03 if self.vision else 0.05)
+
+    def locate_image(self, image, region: Optional[Tuple[int, int, int, int]] = None,
+                     confidence: float = 0.8, grayscale: bool = True):
+        """Locate a PIL image (e.g. a bubble snapshot) on screen. Returns a Box or None.
+        grayscale=True matches pyautogui.locateOnScreen's default (pyscreeze GRAYSCALE_DEFAULT)."""
+        try:
+            if self.vision:
+                return self.vision.locate(image, region=region, confidence=confidence,
+                                          grayscale=grayscale, use_hint=False)
+            return pyautogui.locateOnScreen(image, region=region, confidence=confidence, grayscale=grayscale)
+        except Exception as e:
+            print(f"Error locating image: {e}")
+            return None
 
     def _detect_position_icon_multi_strategy(self, search_region: Tuple[int, int, int, int],
                                              bubble_center: Tuple[int, int],
@@ -827,7 +894,7 @@ class DetectionModule:
 
         # Capture screen region once
         try:
-            screenshot = pyautogui.screenshot(region=search_region)
+            screenshot = self.screenshot(region=search_region)
             img_bgr = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
             img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
             img_clahe = self._apply_clahe(img_gray)
@@ -1037,7 +1104,7 @@ class DetectionModule:
         """
         search_region = tuple(int(v) for v in search_region)
         try:
-            screenshot = pyautogui.screenshot(region=search_region)
+            screenshot = self.screenshot(region=search_region)
         except Exception as e:
             print(f"[Position LLM] Error capturing screen: {e}")
             return {'error': 'capture_failed'}
@@ -1242,7 +1309,7 @@ class DetectionModule:
 
         try:
             # 1. Capture the specified region
-            screenshot = pyautogui.screenshot(region=bubble_detection_region)
+            screenshot = self.screenshot(region=bubble_detection_region)
             if screenshot is None:
                 print("Error: Failed to capture screenshot for color detection.")
                 return []
@@ -1391,7 +1458,7 @@ class DetectionModule:
         region_x, region_y, region_w, region_h = region
 
         try:
-            screenshot = pyautogui.screenshot(region=region)
+            screenshot = self.screenshot(region=region)
             if screenshot is None:
                 print("Error: Failed to capture screenshot for dual method detection.")
                 return None
@@ -1765,7 +1832,7 @@ class DetectionModule:
         
         while time.time() - start_time < self.ui_stability_timeout:
             try:
-                current_screenshot = pyautogui.screenshot(region=region)
+                current_screenshot = self.screenshot(region=region)
                 
                 if last_screenshot is not None:
                     diff = self.calculate_image_difference(last_screenshot, current_screenshot)
@@ -1892,7 +1959,11 @@ class DetectionModule:
             return None
         
         try:
-            matches = pyautogui.locateAllOnScreen(template_path, region=region, confidence=confidence, grayscale=True)
+            if self.vision:
+                matches = [Box(*m[:4]) for m in self.vision.locate_all(
+                    template_path, region=region, confidence=confidence, grayscale=True, limit=1)]
+            else:
+                matches = pyautogui.locateAllOnScreen(template_path, region=region, confidence=confidence, grayscale=True)
             if matches:
                 for box in matches:
                     center_x = box.left + box.width // 2
@@ -1951,7 +2022,7 @@ class DetectionModule:
                 return False
             
             # 截取固定區域並轉換為numpy array
-            current_screenshot = pyautogui.screenshot(region=self.eco_mode_region)
+            current_screenshot = self.screenshot(region=self.eco_mode_region)
             current_img = np.array(current_screenshot)
             current_img = cv2.cvtColor(current_img, cv2.COLOR_RGB2BGR)
             
@@ -1998,6 +2069,12 @@ class DetectionModule:
 
     def get_current_ui_state(self) -> str:
         """Determine the current UI state based on visible elements."""
+        if self.vision:
+            with self.vision.frozen():  # one capture shared by every check below
+                return self._get_current_ui_state()
+        return self._get_current_ui_state()
+
+    def _get_current_ui_state(self) -> str:
         # Check in order of specificity or likelihood
         if self._find_template('profile_name_page', confidence=self.state_confidence):
             return 'user_details'
@@ -2160,7 +2237,7 @@ class InteractionModule:
                     print("Error: Cannot retry re-location, bubble snapshot is missing.")
                     break # Cannot retry without snapshot
 
-                new_bubble_box_retry = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                new_bubble_box_retry = self.detector.locate_image(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
                 if new_bubble_box_retry:
                     new_tl_x_retry, new_tl_y_retry = new_bubble_box_retry.left, new_bubble_box_retry.top
                     print(f"Successfully re-located bubble snapshot for retry at: ({new_tl_x_retry}, {new_tl_y_retry})")
@@ -2174,14 +2251,13 @@ class InteractionModule:
             # --- Click Avatar ---
             try:
                 self.click_at(current_avatar_coords[0], current_avatar_coords[1])
-                time.sleep(0.15) # Slightly longer wait after click to allow UI to update
             except Exception as click_err:
                 print(f"Error clicking avatar at {current_avatar_coords} on attempt {attempt + 1}: {click_err}")
                 time.sleep(0.3) # Wait a bit longer after a click error before retrying
                 continue # Go to next attempt
 
-            # --- Check for Profile Page ---
-            if self.detector._find_template('profile_page', confidence=self.detector.state_confidence):
+            # --- Check for Profile Page (poll until it appears instead of a fixed sleep) ---
+            if self.detector.wait_for_template('profile_page', timeout=1.2, confidence=self.detector.state_confidence):
                 print("Profile page verified.")
                 profile_page_found = True
                 break # Success, exit retry loop
@@ -2196,25 +2272,29 @@ class InteractionModule:
         if profile_page_found:
             try:
                 # 2. Find and click profile option
-                profile_option_locations = self.detector._find_template('profile_option', confidence=0.7)
+                profile_option_locations = self.detector.wait_for_template('profile_option', timeout=1.0, confidence=0.7)
                 if not profile_option_locations:
                     print("Error: User details option not found on profile card.")
                     return None # Fail early if critical step missing
                 self.click_at(profile_option_locations[0][0], profile_option_locations[0][1])
                 print("Clicked user details option.")
-                time.sleep(0.1) # Wait for user details window
 
-                # 3. Find and click "Copy Name" button
-                copy_name_locations = self.detector._find_template('copy_name_button', confidence=0.7)
+                # 3. Find and click "Copy Name" button (wait for the user details window)
+                copy_name_locations = self.detector.wait_for_template('copy_name_button', timeout=1.5, confidence=0.7)
                 if not copy_name_locations:
                     print("Error: 'Copy Name' button not found in user details.")
                     return None # Fail early
                 self.click_at(copy_name_locations[0][0], copy_name_locations[0][1])
                 print("Clicked 'Copy Name' button.")
-                time.sleep(0.1)
 
-                # 4. Get name from clipboard
-                copied_name = self.get_clipboard()
+                # 4. Get name from clipboard (poll briefly; the game writes it asynchronously)
+                copied_name = None
+                clip_deadline = time.time() + 0.6
+                while time.time() < clip_deadline:
+                    copied_name = self.get_clipboard()
+                    if copied_name and copied_name != "___MCP_CLEAR___":
+                        break
+                    time.sleep(0.03)
                 if copied_name and copied_name != "___MCP_CLEAR___":
                     print(f"Successfully copied username: {copied_name}")
                     sender_name = copied_name.strip()
@@ -2368,7 +2448,7 @@ def remove_user_position(detector: DetectionModule,
     # First attempt with standard confidence
     print(f"First attempt with confidence {BUBBLE_RELOCATE_CONFIDENCE}...")
     try:
-        temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+        temp_bubble_box = detector.locate_image(bubble_snapshot,
                                                 region=region_to_search,
                                                 confidence=BUBBLE_RELOCATE_CONFIDENCE)
         if temp_bubble_box:
@@ -2388,7 +2468,7 @@ def remove_user_position(detector: DetectionModule,
         print(f"First attempt failed. Trying with lower confidence {BUBBLE_RELOCATE_FALLBACK_CONFIDENCE}...")
         try:
             # Try with a lower confidence threshold
-            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+            temp_bubble_box = detector.locate_image(bubble_snapshot,
                                                     region=region_to_search,
                                                     confidence=BUBBLE_RELOCATE_FALLBACK_CONFIDENCE)
             if temp_bubble_box:
@@ -2408,7 +2488,7 @@ def remove_user_position(detector: DetectionModule,
         print("Second attempt failed. Trying with even lower confidence 0.4...")
         try:
             # Last resort with very low confidence
-            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+            temp_bubble_box = detector.locate_image(bubble_snapshot,
                                                    region=region_to_search,
                                                    confidence=0.4)
             if temp_bubble_box:
@@ -2556,35 +2636,35 @@ def remove_user_position(detector: DetectionModule,
           f"distance={position_result['distance']:.1f}px)")
 
     # 2. Click user avatar (offset from *compensated* bubble coordinates for accurate clicking)
-    # --- MODIFIED: Use compensated coordinates for avatar clicks ---
     avatar_click_x = compensated_x + AVATAR_OFFSET_X # Use non-reply offset for position removal
     avatar_click_y = compensated_y + AVATAR_OFFSET_Y # Use non-reply offset for position removal
     print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X}, {AVATAR_OFFSET_Y}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
-    # --- END MODIFICATION ---
     interactor.click_at(avatar_click_x, avatar_click_y)
-    time.sleep(0.2) # Wait for profile page
+
+    # Each step waits for the next screen (polling) instead of a fixed sleep + single check,
+    # so slow frames no longer fail the flow and fast frames do not wait needlessly.
+    def _fail(message: str, cleanup: bool = True) -> dict:
+        print(f"Error: {message}")
+        if cleanup:
+            perform_state_cleanup(detector, interactor)
+        result = _return_result("failed", "ui_operation_failed", message)
+        result["position_name"] = target_position_name
+        return result
 
     # 3. Verify Profile Page and Click Capitol Button
-    if not detector._find_template('profile_page', confidence=detector.state_confidence):
-        print("Error: Failed to verify Profile Page after clicking avatar.")
-        perform_state_cleanup(detector, interactor) # Attempt cleanup
-        return _return_result("failed", "ui_operation_failed", "Failed to verify Profile Page after clicking avatar")
+    if not detector.wait_for_template('profile_page', timeout=2.5, confidence=detector.state_confidence):
+        return _fail("Failed to verify Profile Page after clicking avatar")
     print("Profile page verified.")
 
-    capitol_button_locs = detector._find_template('capitol_button', confidence=0.8)
+    capitol_button_locs = detector.wait_for_template('capitol_button', timeout=1.5, confidence=0.8)
     if not capitol_button_locs:
-        print("Error: Capitol button (#11) not found on profile page.")
-        perform_state_cleanup(detector, interactor)
-        return _return_result("failed", "ui_operation_failed", "Capitol button not found on profile page")
+        return _fail("Capitol button not found on profile page")
     interactor.click_at(capitol_button_locs[0][0], capitol_button_locs[0][1])
     print("Clicked Capitol button.")
-    time.sleep(0.2) # Wait for capitol page
 
     # 4. Verify Capitol Page
-    if not detector._find_template('president_title', confidence=detector.state_confidence):
-        print("Error: Failed to verify Capitol Page (President Title not found).")
-        perform_state_cleanup(detector, interactor)
-        return _return_result("failed", "ui_operation_failed", "Failed to verify Capitol Page - President Title not found")
+    if not detector.wait_for_template('president_title', timeout=2.5, confidence=detector.state_confidence):
+        return _fail("Failed to verify Capitol Page - President Title not found")
     print("Capitol page verified.")
 
     # 5. Find and Click Corresponding Position Button
@@ -2595,18 +2675,13 @@ def remove_user_position(detector: DetectionModule,
     }
     target_button_key = position_button_templates.get(target_position_name)
     if not target_button_key:
-        print(f"Error: Internal error - unknown position name '{target_position_name}'")
-        perform_state_cleanup(detector, interactor)
-        return _return_result("failed", "ui_operation_failed", f"Internal error - unknown position name: {target_position_name}")
+        return _fail(f"Internal error - unknown position name: {target_position_name}")
 
-    pos_button_locs = detector._find_template(target_button_key, confidence=0.8)
+    pos_button_locs = detector.wait_for_template(target_button_key, timeout=1.5, confidence=0.8)
     if not pos_button_locs:
-        print(f"Error: Position button for '{target_position_name}' not found on Capitol page.")
-        perform_state_cleanup(detector, interactor)
-        return _return_result("failed", "ui_operation_failed", f"Position button for '{target_position_name}' not found on Capitol page")
+        return _fail(f"Position button for '{target_position_name}' not found on Capitol page")
     interactor.click_at(pos_button_locs[0][0], pos_button_locs[0][1])
     print(f"Clicked '{target_position_name}' position button.")
-    time.sleep(0.4) # Wait for position page
 
     # 6. Verify Position Page
     position_page_templates = {
@@ -2616,65 +2691,64 @@ def remove_user_position(detector: DetectionModule,
     }
     target_page_key = position_page_templates.get(target_position_name)
     if not target_page_key:
-         print(f"Error: Internal error - unknown position name '{target_position_name}' for page verification")
-         perform_state_cleanup(detector, interactor)
-         return _return_result("failed", "ui_operation_failed", f"Internal error - unknown position name for page verification: {target_position_name}")
+        return _fail(f"Internal error - unknown position name for page verification: {target_position_name}")
 
-    if not detector._find_template(target_page_key, confidence=detector.state_confidence):
-        print(f"Error: Failed to verify correct position page for '{target_position_name}'.")
-        perform_state_cleanup(detector, interactor)
-        return _return_result("failed", "ui_operation_failed", f"Failed to verify correct position page for '{target_position_name}'")
+    if not detector.wait_for_template(target_page_key, timeout=2.5, confidence=detector.state_confidence):
+        return _fail(f"Failed to verify correct position page for '{target_position_name}'")
     print(f"Verified '{target_position_name}' position page.")
 
     # 7. Find and Click Dismiss Button
-    dismiss_locs = detector._find_template('dismiss_button', confidence=0.8)
+    dismiss_locs = detector.wait_for_template('dismiss_button', timeout=1.5, confidence=0.8)
     if not dismiss_locs:
-        print("Error: Dismiss button not found on position page.")
-        perform_state_cleanup(detector, interactor)
-        return _return_result("failed", "ui_operation_failed", "Dismiss button not found on position page")
+        return _fail("Dismiss button not found on position page")
     interactor.click_at(dismiss_locs[0][0], dismiss_locs[0][1])
     print("Clicked Dismiss button.")
-    time.sleep(0.4) # Wait for confirmation
 
-    # 8. Find and Click Confirm Button
-    confirm_locs = detector._find_template('confirm_button', confidence=0.8)
+    # 8. Find and Click Confirm Button, then verify the dialog closed (= dismissal accepted)
+    confirm_locs = detector.wait_for_template('confirm_button', timeout=2.0, confidence=0.8)
     if not confirm_locs:
-        print("Error: Confirm button not found after clicking dismiss.")
         # Don't cleanup here, might be stuck in confirmation state
-        return _return_result("failed", "ui_operation_failed", "Confirm button not found after clicking dismiss")
+        return _fail("Confirm button not found after clicking dismiss", cleanup=False)
     interactor.click_at(confirm_locs[0][0], confirm_locs[0][1])
-    print("Clicked Confirm button. Position should be dismissed.")
-    time.sleep(0.05) # Wait for action to complete (Reduced from 0.1)
+    print("Clicked Confirm button.")
+
+    if not detector.wait_for_template_gone('confirm_button', timeout=1.5, confidence=0.8):
+        retry_locs = detector._find_template('confirm_button', confidence=0.8)
+        if retry_locs:
+            print("Confirm dialog still open, clicking Confirm again...")
+            interactor.click_at(retry_locs[0][0], retry_locs[0][1])
+        if not detector.wait_for_template_gone('confirm_button', timeout=1.5, confidence=0.8):
+            return _fail("Confirm dialog did not close; dismissal not confirmed", cleanup=False)
+    print(f"Dismissal of '{target_position_name}' confirmed (dialog closed).")
 
     # 9. Cleanup: Return to Chat Room
     # Click Close on position page (should now be back on capitol page implicitly)
-    close_locs = detector._find_template('close_button', confidence=0.8)
+    close_locs = detector.wait_for_template('close_button', timeout=1.0, confidence=0.8)
     if close_locs:
         interactor.click_at(close_locs[0][0], close_locs[0][1])
         print("Clicked Close button (returning to Capitol).")
-        time.sleep(0.05) # Reduced from 0.1
     else:
         print("Warning: Close button not found after confirm, attempting back arrow anyway.")
 
     # Click Back Arrow on Capitol page (should return to profile)
-    back_arrow_locs = detector._find_template('back_arrow', confidence=0.8)
+    back_arrow_locs = detector.wait_for_template('back_arrow', timeout=1.0, confidence=0.8)
     if back_arrow_locs:
         interactor.click_at(back_arrow_locs[0][0], back_arrow_locs[0][1])
         print("Clicked Back Arrow (returning to Profile).")
-        time.sleep(0.05) # Reduced from 0.1
     else:
         print("Warning: Back arrow not found on Capitol page, attempting ESC cleanup.")
 
-    # Use standard ESC cleanup
+    # Use standard ESC cleanup. The dismissal itself is already confirmed above, so a failed
+    # navigation back does not turn the result into a failure (the main loop recovers navigation).
     print("Initiating final ESC cleanup to return to chat...")
     cleanup_success = perform_state_cleanup(detector, interactor)
+    if not cleanup_success:
+        print("Warning: could not confirm return to chat; automatic navigation recovery will handle it.")
 
-    if cleanup_success:
-        print("--- Position Removal Process Completed Successfully ---")
-        return _return_result("success", None, "Position removal completed successfully")
-    else:
-        print("--- Position Removal Process Completed Successfully (automatic navigation recovery will handle chat return) ---")
-        return _return_result("success", None, "Position removal completed successfully")
+    print("--- Position Removal Process Completed Successfully ---")
+    result = _return_result("success", None, f"Position {target_position_name} removed successfully")
+    result["position_name"] = target_position_name
+    return result
 
 
 # ==============================================================================
@@ -2871,7 +2945,16 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     
                     print(f"UI Thread: Processing remove_position_with_feedback (MCP: {is_mcp_request}, Request ID: {request_id})")
                     print(f"UI Thread: User context: {user_context}")
-                    
+
+                    # Caller gave up waiting before we got here: do not act on a stale request
+                    cancel_event = command_data.get('cancel_event')
+                    if cancel_event is not None and cancel_event.is_set():
+                        print("UI Thread: Position removal request was cancelled by caller (waited too long), skipping")
+                        continue
+                    started_event = command_data.get('started_event')
+                    if started_event is not None:
+                        started_event.set()
+
                     if snapshot:
                         print(f"UI Thread: Snapshot available, attempting position removal...")
                         removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
@@ -2880,8 +2963,8 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         if removal_result["status"] == "success":
                             result = {
                                 "status": "success",
-                                "message": "Position removal completed successfully",
-                                "position_name": "Unknown Position",  # Can be improved with UI recognition in future
+                                "message": removal_result.get("message", "Position removal completed successfully"),
+                                "position_name": removal_result.get("position_name") or "Unknown Position",
                                 "user_name": user_context if user_context else "Unknown User",
                                 "execution_time": datetime.datetime.now().isoformat(),
                                 "request_id": request_id
@@ -2908,6 +2991,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                 "status": "failed",
                                 "error_type": error_type,
                                 "message": user_message,
+                                "position_name": removal_result.get("position_name"),
                                 "user_name": user_context if user_context else "Unknown User", 
                                 "execution_time": datetime.datetime.now().isoformat(),
                                 "request_id": request_id
@@ -3324,7 +3408,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     if bubble_snapshot:
                         try:
                             # Use standard confidence for this initial critical step
-                            temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot,
+                            temp_bubble_box = detector.locate_image(bubble_snapshot,
                                                                              region=search_area,
                                                                              confidence=BUBBLE_RELOCATE_CONFIDENCE)
                             if temp_bubble_box:
@@ -3465,7 +3549,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                              final_bubble_box_for_reply = None
                         else:
                              print(f"Attempting final re-location for reply context using search_area: {search_area}")
-                             temp_bubble_box = pyautogui.locateOnScreen(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
+                             temp_bubble_box = detector.locate_image(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
                              if temp_bubble_box:
                                  compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
                                  final_bubble_box_for_reply = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])

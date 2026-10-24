@@ -171,6 +171,10 @@ Memory preloading can be configured via `ENABLE_PRELOAD_PROFILES` setting in `Se
 
 The UI interaction system uses:
 - **Template Matching**: OpenCV-based image recognition for game UI elements
+- **Native Screen Vision** (`screen_vision.py`, `SCREEN_VISION_BACKEND = "native"`): region-only GDI capture,
+  cached templates, last-hit hint ROI, coarse-to-fine search; `DetectionModule.wait_for_template()` /
+  `wait_for_template_gone()` poll instead of fixed sleeps. `"pyautogui"` keeps the legacy path.
+  Tests: `tools/test_screen_vision.py` (equivalence vs pyscreeze), `tools/test_screen_wait.py` (live on-screen waits)
 - **Screen Capture**: PyAutoGUI for screenshots and coordinate detection
 - **Color Detection**: JSON-based color configuration for chat bubbles
 - **Automated Input**: Keyboard/mouse automation for game interaction
