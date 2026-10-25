@@ -962,23 +962,39 @@ async def initialize_mcp_connections():
 
 
 # --- Load Persona Function (with corrected syntax) ---
-def load_persona_from_file(filename="persona.json"):
-    """Loads persona data from a local JSON file."""
+def load_persona_from_file(filename=None):
+    """Loads persona data from the file set in Setup.py (PERSONA_FILE): .json is re-formatted, .md is used as-is."""
     global wolfhart_persona_details
+    filename = filename or getattr(config, 'PERSONA_FILE', 'persona/persona-wolfhart.json')
     # Ensure 'try' starts on a new line
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        filepath = os.path.join(script_dir, filename)
+        filepath = filename if os.path.isabs(filename) else os.path.join(script_dir, filename)
+        # Older configs point at the project root; those files now live in persona/
+        moved = os.path.join(script_dir, "persona", filename)
+        if not os.path.isabs(filename) and not os.path.exists(filepath) and os.path.exists(moved):
+            filepath = moved
         print(f"\nAttempting to load Persona data from local file: {filepath}")
         # Check if file exists before opening
         if not os.path.exists(filepath):
              raise FileNotFoundError(f"Persona file not found at {filepath}")
 
         with open(filepath, 'r', encoding='utf-8') as f:
-            persona_data = json.load(f)
-            # Store as a formatted string for easy prompt injection
-            wolfhart_persona_details = json.dumps(persona_data, ensure_ascii=False, indent=2)
+            if filepath.lower().endswith('.json'):
+                persona_data = json.load(f)
+                file_name = persona_data.get("name") if isinstance(persona_data, dict) else None
+                if isinstance(file_name, str) and file_name.strip() and file_name.strip() != config.PERSONA_NAME:
+                    print(f"Warning: persona file name is '{file_name}' but PERSONA_NAME is '{config.PERSONA_NAME}' "
+                          f"(the bot speaks, logs and pushes to Wiki as '{config.PERSONA_NAME}'; change it in Setup.py > Persona)")
+                # Store as a formatted string for easy prompt injection
+                wolfhart_persona_details = json.dumps(persona_data, ensure_ascii=False, indent=2)
+            else:
+                wolfhart_persona_details = f.read().strip() or None
+                if not wolfhart_persona_details:
+                    print(f"Warning: Persona file '{filename}' is empty. Detailed persona will not be loaded.")
+                    return
             print(f"Successfully loaded Persona from '{filename}' (length: {len(wolfhart_persona_details)}).")
+            print(f"Character name (PERSONA_NAME): {config.PERSONA_NAME}")
 
     except FileNotFoundError:
         print(f"Warning: Persona configuration file '{filename}' not found. Detailed persona will not be loaded.")
@@ -1103,7 +1119,7 @@ async def run_main_with_exit_stack():
         # Since it's a daemon thread and reschedules itself, it should exit when the main program exits.
 
         # 6. Start the main processing loop (non-blocking check on queue)
-        print("\n--- Wolfhart chatbot has started (waiting for triggers) ---")
+        print(f"\n--- {config.PERSONA_NAME} chatbot has started (waiting for triggers) ---")
         print(f"Available tools: {len(all_discovered_mcp_tools)}")
         if wolfhart_persona_details: print("Persona data loaded.")
         else: print("Warning: Failed to load Persona data.")

@@ -82,7 +82,10 @@ LOG_DIR = "${LOG_DIR}"
 # =============================================================================
 # Persona Configuration
 # =============================================================================
-PERSONA_NAME = "Wolfhart"
+# Character definition file (.json or .md), relative to the project folder or absolute
+PERSONA_FILE = "${PERSONA_FILE}"
+# The name the bot speaks as: system prompt, chat logs and Wolfina Wiki conversation records
+PERSONA_NAME = "${PERSONA_NAME}"
 
 # =============================================================================
 # Game Window Configuration
