@@ -56,6 +56,9 @@ MCP_CONFIRM_TOOL_EXECUTION = False  # True: Confirm before execution, False: Exe
 # =============================================================================
 # Position Icon Recognition (Multimodal LLM)
 # =============================================================================
+# Template matching backend for all UI detection:
+# "native": screen_vision.py (region capture, template cache, polling waits), "pyautogui": legacy
+SCREEN_VISION_BACKEND = "${SCREEN_VISION_BACKEND}"
 # "llm": vision LLM (position_vision.py), "template": legacy OpenCV template matching
 POSITION_DETECTION_METHOD = "${POSITION_DETECTION_METHOD}"
 # "anthropic" or "openai" (OpenAI or any OpenAI-compatible endpoint)
@@ -79,7 +82,10 @@ LOG_DIR = "${LOG_DIR}"
 # =============================================================================
 # Persona Configuration
 # =============================================================================
-PERSONA_NAME = "Wolfhart"
+# Character definition file (.json or .md), relative to the project folder or absolute
+PERSONA_FILE = "${PERSONA_FILE}"
+# The name the bot speaks as: system prompt, chat logs and Wolfina Wiki conversation records
+PERSONA_NAME = "${PERSONA_NAME}"
 
 # =============================================================================
 # Game Window Configuration

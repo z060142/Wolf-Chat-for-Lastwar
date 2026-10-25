@@ -316,6 +316,8 @@ def load_current_config():
         },
         "ENABLE_WIKI_MEMORY": False,
         "WOLFINA_WIKI_HOST": "http://localhost:8000",
+        # Template matching backend for all UI detection: "native" (screen_vision.py) or "pyautogui"
+        "SCREEN_VISION_BACKEND": "native",
         # Position icon recognition (multimodal LLM replaces template matching)
         "POSITION_DETECTION_METHOD": "llm",
         "POSITION_VISION_PROVIDER": "anthropic",
@@ -326,6 +328,9 @@ def load_current_config():
         "POSITION_VISION_SAVE_CROPS": True,
         "ENABLE_CHAT_LOGGING": True,
         "LOG_DIR": "chat_logs",
+        # Persona: character definition file (.json or .md) and the name the bot speaks as
+        "PERSONA_FILE": "persona/persona-wolfhart.json",
+        "PERSONA_NAME": "Wolfhart",
         "GAME_WINDOW_CONFIG": {
             "WINDOW_TITLE": "Last War-Survival Game",
             "ENABLE_SCHEDULED_RESTART": True,
@@ -386,7 +391,7 @@ def load_current_config():
                 config_data["WOLFINA_WIKI_HOST"] = wiki_host_match.group(1)
 
             # Extract position vision (LLM) settings
-            for key in ("POSITION_DETECTION_METHOD", "POSITION_VISION_PROVIDER",
+            for key in ("SCREEN_VISION_BACKEND", "POSITION_DETECTION_METHOD", "POSITION_VISION_PROVIDER",
                         "POSITION_VISION_MODEL", "POSITION_VISION_BASE_URL"):
                 str_match = re.search(rf'^{key}\s*=\s*["\'](.*?)["\']', config_content, re.MULTILINE)
                 if str_match:
@@ -407,7 +412,16 @@ def load_current_config():
             log_dir_match = re.search(r'LOG_DIR\s*=\s*["\'](.+?)["\']', config_content)
             if log_dir_match:
                 config_data["LOG_DIR"] = log_dir_match.group(1)
-                
+
+            # Extract persona settings (written with json.dumps, so read back with json.loads)
+            for key in ("PERSONA_FILE", "PERSONA_NAME"):
+                persona_match = re.search(rf'^{key}\s*=\s*(".*")\s*$', config_content, re.MULTILINE)
+                if persona_match:
+                    try:
+                        config_data[key] = json.loads(persona_match.group(1))
+                    except ValueError:
+                        pass
+
             # Extract game window settings
             window_title_match = re.search(r'WINDOW_TITLE\s*=\s*["\'](.+?)["\']', config_content)
             if window_title_match:
@@ -898,6 +912,9 @@ def generate_config_file(config_data, env_data):
         f.write("# =============================================================================\n")
         f.write("# Position Icon Recognition (Multimodal LLM)\n")
         f.write("# =============================================================================\n")
+        f.write("# Template matching backend for all UI detection:\n")
+        f.write("# \"native\": screen_vision.py (region capture, template cache, polling waits), \"pyautogui\": legacy\n")
+        f.write(f"SCREEN_VISION_BACKEND = \"{config_data.get('SCREEN_VISION_BACKEND', 'native')}\"\n")
         f.write("# \"llm\": vision LLM (position_vision.py), \"template\": legacy OpenCV template matching\n")
         f.write(f"POSITION_DETECTION_METHOD = \"{config_data.get('POSITION_DETECTION_METHOD', 'llm')}\"\n")
         f.write("# \"anthropic\" or \"openai\" (OpenAI or any OpenAI-compatible endpoint)\n")
@@ -921,7 +938,10 @@ def generate_config_file(config_data, env_data):
         f.write("# =============================================================================\n")
         f.write("# Persona Configuration\n")
         f.write("# =============================================================================\n")
-        f.write("PERSONA_NAME = \"Wolfhart\"\n\n")
+        f.write("# Character definition file (.json or .md), relative to the project folder or absolute\n")
+        f.write(f"PERSONA_FILE = {json.dumps(config_data.get('PERSONA_FILE') or 'persona/persona-wolfhart.json', ensure_ascii=False)}\n")
+        f.write("# The name the bot speaks as: system prompt, chat logs and Wolfina Wiki conversation records\n")
+        f.write(f"PERSONA_NAME = {json.dumps((config_data.get('PERSONA_NAME') or 'Wolfhart').strip(), ensure_ascii=False)}\n\n")
         
         f.write("# =============================================================================\n")
         f.write("# Game Window Configuration\n")
@@ -1004,9 +1024,14 @@ class WolfChatSetup(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"Wolf Chat Setup v{VERSION}")
-        self.geometry("900x600")
-        self.minsize(900, 600)
-        
+        # Size to the screen; every tab scrolls, so a small window never hides content
+        width = min(1000, self.winfo_screenwidth() - 80)
+        height = min(780, self.winfo_screenheight() - 120)
+        self.geometry(f"{width}x{height}")
+        self.minsize(860, 480)
+        self._scroll_canvases = []
+        self.bind_all("<MouseWheel>", self._on_tab_mousewheel)
+
         # Load existing data
         self.env_data = load_env_file()
         self.config_data = load_current_config()
@@ -1017,19 +1042,20 @@ class WolfChatSetup(tk.Tk):
 
         # Create the notebook for tabs
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
-        
+
         # Create tabs
         self.create_api_tab()
+        self.create_persona_tab()
         self.create_mcp_tab()
         self.create_game_tab()
-        self.create_memory_tab() 
+        self.create_memory_tab()
         self.create_memory_management_tab() # Add memory management tab
         self.create_management_tab() # New tab for combined management
 
-        # Create bottom buttons
+        # Bottom buttons are packed before the notebook so shrinking the window never pushes them out of view
         self.create_bottom_buttons()
-        
+        self.notebook.pack(expand=True, fill=tk.BOTH, padx=10, pady=(10, 0))
+
         # Initialize state management integration FIRST (Added by refactoring)
         self.state_manager = state_manager
         self.process_manager = thread_safe_process_manager
@@ -1191,14 +1217,186 @@ class WolfChatSetup(tk.Tk):
         self.state_manager.set_process_instance(ProcessType.CONTROL_CLIENT, value)
 
         self.update_scheduler_button_states(True) # Set initial scheduler button state
-    
+
+    def create_scrollable_tab(self, title):
+        """Add a notebook tab whose content scrolls vertically; returns the padded content frame"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text=title)
+
+        canvas = tk.Canvas(tab, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        content = ttk.Frame(canvas, padding=10)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Content follows the tab width and keeps its natural height; the scroll region tracks it
+        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self._scroll_canvases.append(canvas)
+        return content
+
+    def _on_tab_mousewheel(self, event):
+        """Scroll the tab under the pointer, unless the pointer is over a widget that scrolls itself"""
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        if widget is None or widget.winfo_class() in ("Text", "Listbox", "Treeview", "TCombobox", "TSpinbox"):
+            return
+        while widget is not None:
+            if widget in self._scroll_canvases:
+                first, last = widget.yview()
+                if first > 0.0 or last < 1.0:
+                    widget.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                return
+            widget = widget.master
+
+    # ----- Persona -----
+    PERSONA_EXTENSIONS = (".json", ".md")
+
+    def find_persona_files(self):
+        """Persona files in the persona/ folder (subfolders included); files elsewhere can still be picked with Browse"""
+        base = Path(os.path.dirname(os.path.abspath(__file__)))
+        found = []
+        for ext in self.PERSONA_EXTENSIONS:
+            found.extend(p.relative_to(base).as_posix() for p in (base / "persona").rglob(f"*{ext}"))
+        return sorted(found)
+
+    def resolve_persona_path(self, value):
+        base = os.path.dirname(os.path.abspath(__file__))
+        if os.path.isabs(value):
+            return value
+        path = os.path.join(base, value)
+        # Older configs point at the project root; those files now live in persona/
+        moved = os.path.join(base, "persona", value)
+        return moved if not os.path.exists(path) and os.path.exists(moved) else path
+
+    def create_persona_tab(self):
+        """Create the Persona tab: character file (.json/.md) and character name"""
+        main_frame = self.create_scrollable_tab("Persona")
+
+        header = ttk.Label(main_frame, text="Persona", font=("", 12, "bold"))
+        header.pack(anchor=tk.W, pady=(0, 10))
+
+        name_frame = ttk.Frame(main_frame)
+        name_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(name_frame, text="Character Name:", width=20).pack(side=tk.LEFT, padx=(0, 5))
+        self.persona_name_var = tk.StringVar(value="Wolfhart")
+        ttk.Entry(name_frame, textvariable=self.persona_name_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.persona_use_file_name_btn = ttk.Button(name_frame, text="Use name from file",
+                                                    command=self.use_persona_file_name, state=tk.DISABLED)
+        self.persona_use_file_name_btn.pack(side=tk.LEFT, padx=(5, 0))
+
+        file_frame = ttk.Frame(main_frame)
+        file_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(file_frame, text="Persona File:", width=20).pack(side=tk.LEFT, padx=(0, 5))
+        self.persona_file_var = tk.StringVar(value="persona/persona-wolfhart.json")
+        self.persona_file_combo = ttk.Combobox(file_frame, textvariable=self.persona_file_var,
+                                               values=self.find_persona_files(),
+                                               postcommand=lambda: self.persona_file_combo.configure(values=self.find_persona_files()))
+        self.persona_file_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.persona_file_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_persona_preview())
+        self.persona_file_combo.bind("<FocusOut>", lambda e: self.refresh_persona_preview())
+        self.persona_file_combo.bind("<Return>", lambda e: self.refresh_persona_preview())
+        ttk.Button(file_frame, text="Browse", command=self.browse_persona_file).pack(side=tk.LEFT, padx=(5, 0))
+
+        self.persona_status_var = tk.StringVar(value="")
+        self.persona_status_label = ttk.Label(main_frame, textvariable=self.persona_status_var, justify=tk.LEFT)
+        self.persona_status_label.pack(anchor=tk.W, pady=(5, 5))
+        self.persona_name_var.trace_add("write", lambda *a: self.update_persona_status())
+
+        preview_frame = ttk.LabelFrame(main_frame, text="Preview (read-only)")
+        preview_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.persona_preview = scrolledtext.ScrolledText(preview_frame, height=14, wrap=tk.WORD)
+        self.persona_preview.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.persona_preview.config(state=tk.DISABLED)
+
+        info_frame = ttk.LabelFrame(main_frame, text="Information")
+        info_frame.pack(fill=tk.X, pady=10)
+        ttk.Label(info_frame, justify=tk.LEFT, text=(
+            "• Persona File: .json (character fields) or .md (free-form text),\n"
+            "  injected into the system prompt as-is\n"
+            "• Character Name is who the bot is: \"You are <name>\" in the system prompt,\n"
+            "  \"Bot (<name>)\" in chat logs, and the speaker in conversations pushed to\n"
+            "  Wolfina Wiki (the bot's first person in its memory)\n"
+            "• New log and Wiki records are written under the name set here"
+        )).pack(anchor=tk.W, padx=10, pady=10)
+
+    def browse_persona_file(self):
+        base = os.path.dirname(os.path.abspath(__file__))
+        file_path = filedialog.askopenfilename(
+            title="Select Persona File", initialdir=os.path.join(base, "persona"),
+            filetypes=[("Persona files", "*.json *.md"), ("JSON", "*.json"), ("Markdown", "*.md"), ("All files", "*.*")])
+        if not file_path:
+            return
+        try:
+            value = Path(file_path).resolve().relative_to(Path(base).resolve()).as_posix()
+        except ValueError:
+            value = Path(file_path).as_posix()  # outside the project folder: keep the absolute path
+        self.persona_file_var.set(value)
+        self.refresh_persona_preview()
+
+    def refresh_persona_preview(self):
+        """Load the selected persona file into the preview and remember the name it declares (JSON only)"""
+        self._persona_file_name = None
+        self._persona_file_error = None
+        value = self.persona_file_var.get().strip()
+        text = ""
+        path = self.resolve_persona_path(value) if value else ""
+        ext = os.path.splitext(path)[1].lower()
+        if not value:
+            self._persona_file_error = "No persona file selected"
+        elif ext not in self.PERSONA_EXTENSIONS:
+            self._persona_file_error = f"Unsupported file type '{ext}' (use .json or .md)"
+        elif not os.path.isfile(path):
+            self._persona_file_error = f"File not found: {path}"
+        else:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                if ext == ".json":
+                    data = json.loads(text)
+                    if isinstance(data, dict) and isinstance(data.get("name"), str):
+                        self._persona_file_name = data["name"].strip() or None
+                elif not text.strip():
+                    self._persona_file_error = "File is empty"
+            except (OSError, UnicodeDecodeError) as e:
+                self._persona_file_error = f"Cannot read file: {e}"
+            except json.JSONDecodeError as e:
+                self._persona_file_error = f"Invalid JSON (line {e.lineno}, column {e.colno}): {e.msg}"
+
+        self.persona_preview.config(state=tk.NORMAL)
+        self.persona_preview.delete("1.0", tk.END)
+        self.persona_preview.insert(tk.END, text)
+        self.persona_preview.config(state=tk.DISABLED)
+        self.persona_use_file_name_btn.config(state=tk.NORMAL if self._persona_file_name else tk.DISABLED)
+        self.update_persona_status()
+
+    def update_persona_status(self):
+        if getattr(self, "_persona_file_error", None):
+            self.persona_status_var.set(f"Problem: {self._persona_file_error}")
+            self.persona_status_label.config(foreground="red")
+            return
+        name = self.persona_name_var.get().strip()
+        file_name = getattr(self, "_persona_file_name", None)
+        if not name:
+            self.persona_status_var.set("Problem: Character Name is empty")
+            self.persona_status_label.config(foreground="red")
+        elif file_name and file_name != name:
+            self.persona_status_var.set(f"Note: the file's \"name\" is \"{file_name}\" but the bot will speak as \"{name}\"")
+            self.persona_status_label.config(foreground="#b36b00")
+        else:
+            fmt = "JSON" if self.persona_file_var.get().strip().lower().endswith(".json") else "Markdown"
+            self.persona_status_var.set(f"OK: {fmt} persona, the bot speaks as \"{name}\"")
+            self.persona_status_label.config(foreground="green")
+
+    def use_persona_file_name(self):
+        if getattr(self, "_persona_file_name", None):
+            self.persona_name_var.set(self._persona_file_name)
+
     def create_management_tab(self):
         """Create the Bot and Game Management tab"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Management")
-        
-        main_frame = ttk.Frame(tab, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame = self.create_scrollable_tab("Management")
 
         header = ttk.Label(main_frame, text="Bot & Game Management", font=("", 12, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
@@ -2008,42 +2206,8 @@ class WolfChatSetup(tk.Tk):
 
     def create_api_tab(self):
         """Create the API Settings tab"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="API Settings")
+        main_frame = self.create_scrollable_tab("API Settings")
 
-        # Create canvas and scrollbar for scrolling
-        canvas = tk.Canvas(tab)
-        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Bind mouse wheel to scroll (only when mouse is over the canvas)
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-
-        def _bind_mousewheel(event):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        def _unbind_mousewheel(event):
-            canvas.unbind_all("<MouseWheel>")
-
-        canvas.bind("<Enter>", _bind_mousewheel)
-        canvas.bind("<Leave>", _unbind_mousewheel)
-
-        # Main frame with padding (now inside scrollable_frame)
-        main_frame = ttk.Frame(scrollable_frame, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
         # Header
         header = ttk.Label(main_frame, text="OpenAI API Settings", font=("", 12, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
@@ -2161,6 +2325,12 @@ class WolfChatSetup(tk.Tk):
             row.pack(fill=tk.X, padx=10, pady=3)
             ttk.Label(row, text=label_text, width=18).pack(side=tk.LEFT, padx=(0, 5))
             return row
+
+        row = add_row("UI Matching Backend:")
+        self.screen_backend_var = tk.StringVar(value="native")
+        ttk.Combobox(row, textvariable=self.screen_backend_var, values=["native", "pyautogui"],
+                     state="readonly", width=12).pack(side=tk.LEFT)
+        ttk.Label(row, text="All UI template checks. native = faster region capture + polling waits").pack(side=tk.LEFT, padx=10)
 
         row = add_row("Detection Method:")
         self.pos_method_var = tk.StringVar(value="llm")
@@ -2289,13 +2459,8 @@ class WolfChatSetup(tk.Tk):
 
     def create_mcp_tab(self):
         """Create the MCP Settings tab"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="MCP Servers")
-        
-        # Main frame with padding
-        main_frame = ttk.Frame(tab, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
+        main_frame = self.create_scrollable_tab("MCP Servers")
+
         # Header
         header = ttk.Label(main_frame, text="Modular Capability Provider (MCP) Servers", font=("", 12, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
@@ -2306,20 +2471,20 @@ class WolfChatSetup(tk.Tk):
         
         # Left side - Servers list
         servers_list_frame = ttk.LabelFrame(servers_frame, text="Available Servers")
-        servers_list_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
-        
+        servers_list_frame.pack(side=tk.LEFT, fill=tk.Y, anchor=tk.N, padx=(0, 5))
+
+        # Buttons below listbox (packed first at the bottom so they stay under the list)
+        servers_btn_frame = ttk.Frame(servers_list_frame)
+        servers_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=5, padx=5)
+
         # Servers list
         self.servers_listbox = tk.Listbox(servers_list_frame, width=20, height=10)
-        self.servers_listbox.pack(side=tk.LEFT, fill=tk.Y, expand=True, padx=5, pady=5)
+        self.servers_listbox.pack(side=tk.LEFT, fill=tk.Y, expand=True, padx=(5, 0), pady=5)
         self.servers_listbox.bind('<<ListboxSelect>>', self.on_server_select)
-        
+
         servers_scrollbar = ttk.Scrollbar(servers_list_frame, orient=tk.VERTICAL, command=self.servers_listbox.yview)
-        servers_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        servers_scrollbar.pack(side=tk.LEFT, fill=tk.Y, pady=5, padx=(0, 5))
         self.servers_listbox.config(yscrollcommand=servers_scrollbar.set)
-        
-        # Buttons below listbox
-        servers_btn_frame = ttk.Frame(servers_list_frame)
-        servers_btn_frame.pack(fill=tk.X, pady=5, padx=5)
         
         add_btn = ttk.Button(servers_btn_frame, text="Add", command=self.add_custom_server)
         add_btn.pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
@@ -2623,13 +2788,8 @@ class WolfChatSetup(tk.Tk):
     
     def create_game_tab(self):
         """Create the Game Settings tab"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Game Settings")
-        
-        # Main frame with padding
-        main_frame = ttk.Frame(tab, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
+        main_frame = self.create_scrollable_tab("Game Settings")
+
         # Header
         header = ttk.Label(main_frame, text="Game Window Configuration", font=("", 12, "bold"))
         header.pack(anchor=tk.W, pady=(0, 10))
@@ -2752,12 +2912,7 @@ class WolfChatSetup(tk.Tk):
 
     def create_memory_tab(self):
         """Create the Memory Settings tab"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Memory Settings")
-
-        # Main frame with padding
-        main_frame = ttk.Frame(tab, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame = self.create_scrollable_tab("Memory Settings")
 
         # Header
         header = ttk.Label(main_frame, text="Memory (Wolfina Wiki)", font=("", 12, "bold"))
@@ -2947,7 +3102,7 @@ class WolfChatSetup(tk.Tk):
     def create_bottom_buttons(self):
         """Create bottom action buttons"""
         btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
         
         # Version label on left
         version_label = ttk.Label(btn_frame, text=f"v{VERSION}")
@@ -3172,6 +3327,11 @@ class WolfChatSetup(tk.Tk):
             self.api_key_var.set(self.env_data.get("OPENAI_API_KEY", ""))
             self.model_var.set(self.config_data.get("LLM_MODEL", "moonshotai/kimi-k2.5"))
 
+            # Persona Tab
+            self.persona_name_var.set(self.config_data.get("PERSONA_NAME", "Wolfhart"))
+            self.persona_file_var.set(self.config_data.get("PERSONA_FILE", "persona/persona-wolfhart.json"))
+            self.refresh_persona_preview()
+
             # Extra API Parameters
             extra_params = self.config_data.get("EXTRA_API_PARAMS", {})
             self.extra_params_text.delete("1.0", tk.END)
@@ -3179,6 +3339,7 @@ class WolfChatSetup(tk.Tk):
                 self.extra_params_text.insert(tk.END, json.dumps(extra_params, indent=2))
 
             # Position vision settings
+            self.screen_backend_var.set(self.config_data.get("SCREEN_VISION_BACKEND", "native"))
             self.pos_method_var.set(self.config_data.get("POSITION_DETECTION_METHOD", "llm"))
             self.pos_provider_var.set(self.config_data.get("POSITION_VISION_PROVIDER", "anthropic"))
             self.pos_model_var.set(self.config_data.get("POSITION_VISION_MODEL", "claude-haiku-5-5"))
@@ -3659,6 +3820,14 @@ class WolfChatSetup(tk.Tk):
             self.config_data["OPENAI_API_BASE_URL"] = self.api_url_var.get()
             self.config_data["LLM_MODEL"] = self.model_var.get()
 
+            # Persona settings
+            persona_name = self.persona_name_var.get().strip()
+            if not persona_name:
+                messagebox.showerror("Error", "Character Name cannot be empty (Persona tab)")
+                return
+            self.config_data["PERSONA_NAME"] = persona_name
+            self.config_data["PERSONA_FILE"] = self.persona_file_var.get().strip() or "persona/persona-wolfhart.json"
+
             # Extra API Parameters
             extra_params_text = self.extra_params_text.get("1.0", tk.END).strip()
             if extra_params_text:
@@ -3674,6 +3843,7 @@ class WolfChatSetup(tk.Tk):
                 self.config_data["EXTRA_API_PARAMS"] = {}
 
             # Position vision settings
+            self.config_data["SCREEN_VISION_BACKEND"] = self.screen_backend_var.get()
             self.config_data["POSITION_DETECTION_METHOD"] = self.pos_method_var.get()
             self.config_data["POSITION_VISION_PROVIDER"] = self.pos_provider_var.get()
             self.config_data["POSITION_VISION_MODEL"] = self.pos_model_var.get().strip()

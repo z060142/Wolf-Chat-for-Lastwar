@@ -519,7 +519,7 @@ def parse_structured_response(response_content: str) -> dict:
         
         # 進一步清理時間戳記和系統訊息
         content_without_json = re.sub(r'\d{4}-\d{2}-\d{2}.*?\d{2}:\d{2}:\d{2}', '', content_without_json)
-        content_without_json = re.sub(r'Wolfhart:', '', content_without_json)
+        content_without_json = re.sub(re.escape(config.PERSONA_NAME) + r':', '', content_without_json)
         content_without_json = re.sub(r'\[.*?\]', '', content_without_json)  # 移除 [Processing...] 等
         
         # 如果有實質性文本，將其作為dialogue
@@ -644,7 +644,9 @@ def _create_synthetic_response_from_tools(tool_results, original_query):
             if tool_result.get("name") == "remove_user_position":
                 try:
                     result_data = json.loads(tool_result.get("content", "{}"))
-                    if result_data.get("status") == "error" or "error" in result_data:
+                    # Only an explicit success counts: the UI thread reports failures as
+                    # status "failed" (no "error" key), which used to fall through as success.
+                    if result_data.get("status") != "success":
                         is_success = False
                 except Exception:
                     # Cannot determine outcome — fail safe to avoid falsely reporting success

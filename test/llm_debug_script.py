@@ -28,7 +28,7 @@ conversation_history = collections.deque(maxlen=20) # Shorter history for debugg
 shutdown_requested = False
 
 # --- Load Persona Function (Adapted from main.py) ---
-def load_persona_from_file(filename="persona.json"):
+def load_persona_from_file(filename="persona/persona.json"):
     """Loads persona data from a local JSON file relative to the main script dir."""
     global wolfhart_persona_details
     try:

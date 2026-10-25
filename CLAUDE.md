@@ -79,7 +79,7 @@ python system_prompt_tester.py
 - **Screen Recognition**: Uses OpenCV for template matching and game UI detection
 - **MCP Framework**: Modular tool system for extensible functionality
 - **Memory System**: ChromaDB-based persistent memory with entity profiles
-- **Persona System**: JSON-based character definition for consistent role-playing
+- **Persona System**: JSON or Markdown character definition for consistent role-playing
 - **Multi-threading**: Separate threads for UI monitoring and main processing
 - **Fault Tolerance**: Graceful handling of MCP server failures and connection issues
 
@@ -107,7 +107,8 @@ ANTHROPIC_API_KEY=fallback_when_POSITION_VISION_API_KEY_is_empty
 ### Key Configuration Files
 - **`Setup.py`**: ⚠️ **Configuration source of truth** - Modify this to change any settings
 - **`config.py`**: ⚠️ **AUTO-GENERATED** - Created by Setup.py, contains API settings, MCP servers, and system parameters
-- `persona.json`: Bot character definition and personality traits
+- Persona file (`PERSONA_FILE`, default `persona/persona-wolfhart.json`; `.json` or `.md`): Bot character definition, chosen in Setup.py > Persona.
+  `PERSONA_NAME` (set there too) is the name the bot speaks as: system prompt, chat logs, Wolfina Wiki conversation push
 - `bubble_colors.json`: Color configuration for chat bubble detection
 - `templates/`: UI template images for screen recognition
 
@@ -171,6 +172,16 @@ Memory preloading can be configured via `ENABLE_PRELOAD_PROFILES` setting in `Se
 
 The UI interaction system uses:
 - **Template Matching**: OpenCV-based image recognition for game UI elements
+- **Native Screen Vision** (`screen_vision.py`, `SCREEN_VISION_BACKEND = "native"`): region-only GDI capture,
+  cached templates, last-hit hint ROI, coarse-to-fine search; `DetectionModule.wait_for_template()` /
+  `wait_for_template_gone()` poll instead of fixed sleeps. `wait_for_template()` only returns once the match
+  has settled (same spot for `UI_SETTLE_SECONDS`), so clicks never land on a page that is still sliding/fading in.
+- **Screen Map** (`ui_navigator.py`, `interactor.nav`): every UI flow (copy text, sender name, reply, position removal,
+  cleanup, main-loop recovery) goes through `click_and_expect()` - confirm the start screen, click, confirm the
+  expected screen (retry a click without effect, stop on an unexpected screen) - and `recover_to_chat()` walks back
+  with each screen's known back action. New screens go into `SCREENS` / `BACK_ACTIONS`. Unexpected screens are saved
+  to `debug_screenshots/nav/`. Offline test with a simulated laggy game: `tools/sim_game_nav.py` `"pyautogui"` keeps the legacy path.
+  Tests: `tools/test_screen_vision.py` (equivalence vs pyscreeze), `tools/test_screen_wait.py` (live on-screen waits)
 - **Screen Capture**: PyAutoGUI for screenshots and coordinate detection
 - **Color Detection**: JSON-based color configuration for chat bubbles
 - **Automated Input**: Keyboard/mouse automation for game interaction

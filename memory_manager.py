@@ -150,7 +150,7 @@ class MemoryGenerator:
         self.summary_model = summary_model or getattr(config, 'MEMORY_SUMMARY_MODEL', "mistral-7b-instruct")
         self.persona_data = self._load_persona_data()
 
-    def _load_persona_data(self, persona_file: str = "persona.json") -> Dict[str, Any]:
+    def _load_persona_data(self, persona_file: str = "persona/persona.json") -> Dict[str, Any]:
         """Load persona data from JSON file."""
         try:
             with open(persona_file, 'r', encoding='utf-8') as f:
