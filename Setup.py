@@ -1088,6 +1088,17 @@ class WolfChatSetup(tk.Tk):
         # Set initial states based on loaded data
         self.update_ui_from_data()
 
+        # Status poll: keeps the Management labels/buttons and the Run buttons in line with what really runs
+        self._closing = False
+        self._session_busy = False  # a managed start/stop sequence is running in a worker thread
+        self._game_busy = False     # a game start/stop is running in a worker thread
+        self._status_note = {"game": None, "bot": None}  # "starting..." / "stopping..." shown instead of the poll result
+        self._last_game = (False, None)
+        self._last_bot = (False, None)
+        self._status_poll_busy = False
+        self._status_poll_again = False
+        self._status_poll_after_id = self.after(200, self._status_poll_tick)
+
     def _setup_legacy_compatibility(self):
         """設置向後相容性支持"""
         # 這些屬性現在重定向到狀態管理器
@@ -1483,62 +1494,111 @@ class WolfChatSetup(tk.Tk):
 
 
         # --- Control Buttons ---
+        # Bot (main.py) and game are controlled separately; _status_poll_tick sets the labels and button states
         control_buttons_frame = ttk.Frame(main_frame)
         control_buttons_frame.pack(fill=tk.X, pady=20)
 
         self.start_managed_button = ttk.Button(control_buttons_frame, text="Start Managed Bot & Game", command=self.start_managed_session)
-        self.start_managed_button.pack(side=tk.LEFT, padx=5)
+        self.start_managed_button.grid(row=0, column=0, padx=5, pady=3, sticky="ew")
 
         self.stop_managed_button = ttk.Button(control_buttons_frame, text="Stop Managed Session", command=self.stop_managed_session, state=tk.DISABLED)
-        self.stop_managed_button.pack(side=tk.LEFT, padx=5)
+        self.stop_managed_button.grid(row=0, column=1, padx=5, pady=3, sticky="ew")
+
+        self.bot_status_var = tk.StringVar(value="Bot: checking...")
+        ttk.Label(control_buttons_frame, textvariable=self.bot_status_var).grid(row=0, column=2, padx=(15, 5), sticky="w")
+
+        self.start_game_button = ttk.Button(control_buttons_frame, text="Start Game", command=self.start_game_clicked, state=tk.DISABLED)
+        self.start_game_button.grid(row=1, column=0, padx=5, pady=3, sticky="ew")
+
+        self.stop_game_button = ttk.Button(control_buttons_frame, text="Stop Game", command=self.stop_game_clicked, state=tk.DISABLED)
+        self.stop_game_button.grid(row=1, column=1, padx=5, pady=3, sticky="ew")
+
+        self.game_status_var = tk.StringVar(value="Game: checking...")
+        ttk.Label(control_buttons_frame, textvariable=self.game_status_var).grid(row=1, column=2, padx=(15, 5), sticky="w")
         
         # Status Area (Optional, for displaying logs or status messages)
         status_label = ttk.Label(main_frame, text="Status messages will appear in the console.")
         status_label.pack(pady=10)
 
     def start_managed_session(self):
+        """Start the game (unless it already runs), then the bot and the session machinery - in a worker thread"""
+        if self._session_busy:
+            return
         logger.info("Attempting to start managed session...")
-        # This will be the new main function to start bot, game, and monitoring
-        
-        # Ensure previous session is stopped if any
-        if self.bot_process_instance or self.game_process_instance or self.monitor_thread_instance:
-            messagebox.showwarning("Session Active", "A managed session might already be active. Please stop it first or check console.")
-            # self.stop_managed_session() # Optionally force stop
-            # time.sleep(1) # Give time to stop
-            # return
+
+        # Config problems are reported here on the Tk thread, before the worker starts
+        if not self.config_data.get("GAME_WINDOW_CONFIG", {}).get("GAME_EXECUTABLE_PATH"):
+            messagebox.showerror("Config Error", "Game executable path is not set in Game Settings.")
+            return
+        bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        if not os.path.exists(bot_script_name):
+            messagebox.showerror("Error", f"Could not find bot script: {bot_script_name}")
+            return
 
         # Save current settings before starting
-        self.save_settings(show_success_message=False) # Save without showing popup, or make it optional
+        self.save_settings(show_success_message=False) # Save without showing popup
 
         self.keep_monitoring_flag.set() # Ensure monitoring is enabled
 
-        # Start Game
-        if not self._start_game_managed():
-            messagebox.showerror("Error", "Failed to start the game.")
-            self.update_management_buttons_state(True) # Enable start, disable stop
-            return
-        
-        time.sleep(5) # Give game some time to initialize
+        self._session_busy = True
+        self._game_busy = True
+        self._status_note["bot"] = "starting..."
+        if not self._last_game[0]:
+            self._status_note["game"] = "starting..."
+        self._refresh_management_ui()
+        threading.Thread(target=self._start_managed_session_worker, daemon=True).start()
 
-        # Start Bot (main.py)
-        if not self._start_bot_managed():
-            messagebox.showerror("Error", "Failed to start the bot (main.py).")
-            self._stop_game_managed() # Stop game if bot fails to start
-            self.update_management_buttons_state(True)
-            return
+    def _start_managed_session_worker(self):
+        """Worker thread: game first (wait until it is seen), then the bot; UI work goes through self._ui"""
+        try:
+            if self.game_running()[0]:
+                logger.info("Game is already running, not starting it again.")
+            else:
+                if not self._start_game_managed():
+                    self._ui(messagebox.showerror, "Error", "Failed to start the game.")
+                    return
+                deadline = time.time() + 60
+                while not self.game_running()[0]:
+                    if time.time() > deadline or self._closing:
+                        self._ui(messagebox.showerror, "Error", "The game did not show up within 60 seconds.")
+                        return
+                    time.sleep(1)
+                time.sleep(5) # Give game some time to initialize
+            self._ui(self._set_status_note, "game", None)
 
+            if self._closing:
+                return
+            # Start Bot (main.py); on failure the game is left running
+            if not self._start_bot_managed():
+                self._ui(messagebox.showerror, "Error", "Failed to start the bot (main.py).")
+                return
+
+            # Monitor thread, game_manager's GameMonitor, scheduler (Tk thread)
+            self._ui(self._start_session_machinery)
+            logger.info("Managed bot and game session started. Check console for logs.")
+        except Exception as e:
+            logger.exception(f"Error starting managed session: {e}")
+            self._ui(messagebox.showerror, "Error", f"Failed to start the managed session: {e}")
+        finally:
+            self._ui(self._end_busy, True, True)
+
+    def _start_session_machinery(self):
+        """Start the monitoring thread, game_manager's GameMonitor and the scheduler (Tk thread)"""
         # Start Control Client (遠程控制已停用)
         # if HAS_SOCKETIO:
         #     self._start_control_client()
-        # else:
-        #     logger.warning("socketio library not found. Remote control will be disabled.")
-        #     messagebox.showwarning("Socket.IO Missing", "The 'python-socketio[client]' library is not installed. Remote control features will be disabled. Please install it via 'pip install \"python-socketio[client]\"' or use the 'Install Dependencies' button.")
-
 
         # Start Monitoring Thread
         self._start_monitoring_thread() # This is the old general monitoring thread
 
         # Initialize and start GameMonitor (new specific game monitor)
+        self._start_game_monitor()
+
+        # Start Scheduler Thread
+        self._start_scheduler_thread()
+
+    def _start_game_monitor(self):
+        """Create and start game_manager's GameMonitor (window position/focus, relaunches a vanished game)"""
         try:
             # Create callback function for game_monitor
             def game_monitor_callback(action):
@@ -1556,7 +1616,7 @@ class WolfChatSetup(tk.Tk):
                     logger=logger, # Use the main Setup logger
                     callback=game_monitor_callback
                 )
-            
+
             # Start the game monitor
             if self.game_monitor.start(): # Ensure start() returns a boolean
                 logger.info("Game monitor (game_manager) started successfully.")
@@ -1569,33 +1629,52 @@ class WolfChatSetup(tk.Tk):
             logger.exception(f"Error setting up game_manager's GameMonitor: {gm_err}")
             messagebox.showwarning("Warning", "Failed to initialize game_manager's GameMonitor.")
             # Continue execution
-        
-        # Start Scheduler Thread
-        self._start_scheduler_thread()
-
-        # 根據實際狀態更新按鈕，而不是硬編碼
-        self._update_buttons_based_on_state()
-        # messagebox.showinfo("Session Started", "Managed bot and game session started. Check console for logs.") # Removed popup
-        logger.info("Managed bot and game session started. Check console for logs.") # Log instead of popup
 
     def _handle_game_restart_complete(self):
         """Handles the callback from GameMonitor when a game restart is complete."""
         logger.info("Game restart completed (callback from game_manager). Handling bot restart...")
-        try:
-            # Ensure we are in the main thread (already handled by self.after)
-            # Wait a bit for the game to stabilize
-            time.sleep(10) 
+        # Wait a bit for the game to stabilize without blocking the Tk thread, then restart the bot in a worker thread
+        self.after(10000, lambda: threading.Thread(target=self._restart_bot_after_game_restart, daemon=True).start())
 
+    def _restart_bot_after_game_restart(self):
+        try:
             logger.info("Restarting bot after game restart (triggered by game_manager)...")
             if self._restart_bot_managed():
                 logger.info("Bot restarted successfully after game_manager's game restart.")
             else:
                 logger.error("Failed to restart bot after game_manager's game restart!")
-                messagebox.showwarning("Warning", "Failed to restart bot after game_manager's game restart.")
+                self._ui(messagebox.showwarning, "Warning", "Failed to restart bot after game_manager's game restart.")
         except Exception as e:
             logger.exception(f"Error in _handle_game_restart_complete: {e}")
+        finally:
+            self._ui(self.request_status_poll)
 
-    def stop_managed_session(self):
+    def stop_managed_session(self, wait=False):
+        """Stop scheduler, monitors and the bot; the game is left running.
+        wait=True stops synchronously without a message (used when the window closes)."""
+        if wait:
+            self._stop_managed_session_work()
+            return
+        if self._session_busy:
+            return
+        logger.info("Attempting to stop managed session...")
+        self._session_busy = True
+        self._status_note["bot"] = "stopping..."
+        self._refresh_management_ui()
+
+        def work():
+            try:
+                self._stop_managed_session_work()
+                self._ui(messagebox.showinfo, "Session Stopped", "Bot stopped. The game was left running.")
+            except Exception as e:
+                logger.exception(f"Error stopping managed session: {e}")
+                self._ui(messagebox.showerror, "Error", f"Error while stopping the managed session: {e}")
+            finally:
+                self._ui(self._end_busy, True, False)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _stop_managed_session_work(self):
+        """Stop scheduler, monitor thread, GameMonitor and bot (blocks up to ~30 s; the game is not touched)"""
         logger.info("Attempting to stop managed session...")
         self.keep_monitoring_flag.clear() # Signal threads to stop
 
@@ -1619,6 +1698,16 @@ class WolfChatSetup(tk.Tk):
         self.monitor_thread_instance = None
 
         # Stop GameMonitor (from game_manager)
+        self._stop_game_monitor()
+
+        self._stop_bot_managed()
+
+        # Reset bot process instance (the game keeps running, so its instance is kept)
+        self.bot_process_instance = None
+        logger.info("Managed session stopped (game left running).")
+
+    def _stop_game_monitor(self):
+        """Stop game_manager's GameMonitor if it exists"""
         if self.game_monitor:
             try:
                 if self.game_monitor.stop(): # Ensure stop() returns a boolean
@@ -1630,22 +1719,226 @@ class WolfChatSetup(tk.Tk):
             finally:
                 self.game_monitor = None # Release the instance
 
-        self._stop_bot_managed()
-        self._stop_game_managed()
-        
-        # Reset process instances
-        self.bot_process_instance = None
-        self.game_process_instance = None
-        
-        # 根據實際狀態更新按鈕，而不是硬編碼
-        self._update_buttons_based_on_state()
-        messagebox.showinfo("Session Stopped", "Managed bot and game session stopped.")
+    def _session_active(self):
+        """A managed session is active while its scheduler thread runs"""
+        thread = self.scheduler_thread_instance
+        return thread is not None and thread.is_alive()
 
-    def update_management_buttons_state(self, enable_start):
-        if hasattr(self, 'start_managed_button'):
-            self.start_managed_button.config(state=tk.NORMAL if enable_start else tk.DISABLED)
-        if hasattr(self, 'stop_managed_button'):
-            self.stop_managed_button.config(state=tk.DISABLED if enable_start else tk.NORMAL)
+    def start_game_clicked(self):
+        """Start Game button: start only the game, in a worker thread"""
+        if self._game_busy:
+            return
+        if not self.config_data.get("GAME_WINDOW_CONFIG", {}).get("GAME_EXECUTABLE_PATH"):
+            messagebox.showerror("Config Error", "Game executable path is not set in Game Settings.")
+            return
+        self._game_busy = True
+        self._status_note["game"] = "starting..."
+        self._refresh_management_ui()
+
+        def work():
+            try:
+                if self._start_game_managed():
+                    if self._session_active():
+                        # Stop Game stopped the GameMonitor; bring it back for the running session
+                        self._ui(self._start_game_monitor)
+                else:
+                    self._ui(messagebox.showerror, "Error", "Failed to start the game.")
+            except Exception as e:
+                logger.exception(f"Error starting game: {e}")
+                self._ui(messagebox.showerror, "Error", f"Failed to start the game: {e}")
+            finally:
+                self._ui(self._end_busy, False, True)
+        threading.Thread(target=work, daemon=True).start()
+
+    def stop_game_clicked(self):
+        """Stop Game button: confirm, then close only the game, in a worker thread (the bot keeps running)"""
+        if self._game_busy:
+            return
+        if not messagebox.askyesno("Stop Game", "Close the game now?\n\nThe bot (main.py) is not stopped."):
+            return
+        self._game_busy = True
+        self._status_note["game"] = "stopping..."
+        self._refresh_management_ui()
+
+        def work():
+            try:
+                # game_manager's GameMonitor relaunches a vanished game within seconds, so it is stopped first
+                self._stop_game_monitor()
+                if not self._stop_game_managed():
+                    self._ui(messagebox.showerror, "Error", "Failed to stop the game.")
+            except Exception as e:
+                logger.exception(f"Error stopping game: {e}")
+                self._ui(messagebox.showerror, "Error", f"Failed to stop the game: {e}")
+            finally:
+                self._ui(self._end_busy, False, True)
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- Status poll (Tk thread) + detection helpers (any thread) ----
+
+    def _ui(self, func, *args):
+        """Run func on the Tk thread; safe to call from worker threads"""
+        try:
+            self.after(0, func, *args)
+        except (RuntimeError, tk.TclError):
+            pass  # window already closed
+
+    def _set_status_note(self, key, note):
+        self._status_note[key] = note
+        self._refresh_management_ui()
+
+    def _end_busy(self, session, game):
+        """A worker finished: clear its busy flags/notes and poll the real state right away"""
+        if session:
+            self._session_busy = False
+            self._status_note["bot"] = None
+        if game:
+            self._game_busy = False
+            self._status_note["game"] = None
+        self._refresh_management_ui()
+        self.request_status_poll()
+
+    def _status_poll_tick(self):
+        """Every 2 s: detect game and bot (in a daemon thread) and update labels and buttons"""
+        if self._closing:
+            return
+        self.request_status_poll()
+        self._status_poll_after_id = self.after(2000, self._status_poll_tick)
+
+    def request_status_poll(self):
+        """Run game_running()/bot_running() in a daemon thread and apply the result on the Tk thread.
+        A request while a poll is still running is queued as one more poll right after it."""
+        if self._closing:
+            return
+        if self._status_poll_busy:
+            self._status_poll_again = True  # the running poll may predate the change; poll once more after it
+            return
+        self._status_poll_busy = True
+
+        def work():
+            game = bot = None
+            try:
+                game = self.game_running()
+                bot = self.bot_running()
+            except Exception as e:
+                logger.error(f"Status poll failed: {e}")
+            self._ui(self._apply_status, game, bot)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_status(self, game, bot):
+        self._status_poll_busy = False
+        if self._closing:
+            return
+        if self._status_poll_again:
+            self._status_poll_again = False
+            self.request_status_poll()
+        if game is not None:
+            self._last_game = game
+        if bot is not None:
+            self._last_bot = bot
+        # A bot handle whose process has exited is dropped (the slot is shared with the Run buttons)
+        handle = self.bot_process_instance
+        if handle is not None and hasattr(handle, "poll") and handle.poll() is not None:
+            self.bot_process_instance = None
+        self._refresh_management_ui()
+
+    def _refresh_management_ui(self):
+        """Labels and button states from the last poll result and the busy flags"""
+        if not hasattr(self, "start_managed_button"):
+            return
+        game_on, game_pid = self._last_game
+        bot_on, bot_pid = self._last_bot
+
+        def text(name, running, pid, note):
+            if note:
+                return f"{name}: {note}"
+            if running:
+                return f"{name}: running (PID {pid})" if pid else f"{name}: running"
+            return f"{name}: not running"
+
+        def state(enabled):
+            return tk.NORMAL if enabled else tk.DISABLED
+
+        self.bot_status_var.set(text("Bot", bot_on, bot_pid, self._status_note["bot"]))
+        self.game_status_var.set(text("Game", game_on, game_pid, self._status_note["game"]))
+        self.start_managed_button.config(state=state(not bot_on and not self._session_busy))
+        self.stop_managed_button.config(state=state(bot_on and not self._session_busy))
+        self.start_game_button.config(state=state(not game_on and not self._game_busy))
+        self.stop_game_button.config(state=state(game_on and not self._game_busy))
+        # Run buttons: bot running -> run buttons disabled, stop enabled
+        self.update_run_button_states(not bot_on and not self._session_busy)
+
+    def _find_bot_processes(self):
+        """psutil processes running the bot script: an argument that resolves (against the process's cwd)
+        to the bot script's real path. The interpreter is never compared - venv launchers and path forms differ."""
+        bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        target = os.path.normcase(os.path.realpath(os.path.join(script_dir, bot_script_name)))
+        target_base = os.path.basename(target)
+        own_pid = os.getpid()
+        found = []
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                if proc.pid == own_pid:
+                    continue
+                for arg in (proc.info['cmdline'] or [])[1:]:
+                    if os.path.normcase(os.path.basename(arg)) != target_base:
+                        continue
+                    path = arg if os.path.isabs(arg) else os.path.join(proc.cwd(), arg)
+                    if os.path.normcase(os.path.realpath(path)) == target:
+                        found.append(proc)
+                        break
+            except (psutil.Error, OSError):
+                continue
+        return found
+
+    def bot_running(self):
+        """(True, pid) if the bot runs: our own Popen handle first, else a cmdline scan; (False, None) otherwise"""
+        handle = self.bot_process_instance
+        if handle is not None and hasattr(handle, "poll") and handle.poll() is None:
+            return True, handle.pid
+        procs = self._find_bot_processes()
+        if procs:
+            return True, procs[0].pid
+        return False, None
+
+    def game_running(self):
+        """(True, pid) if the game runs: our own handle, a window titled exactly WINDOW_TITLE,
+        or a process named GAME_PROCESS_NAME / with exe GAME_EXECUTABLE_PATH; (False, None) otherwise"""
+        game_cfg = self.config_data.get("GAME_WINDOW_CONFIG", {})
+        handle = self.game_process_instance
+        if handle is not None and hasattr(handle, "poll") and handle.poll() is None:
+            return True, handle.pid
+
+        title = game_cfg.get("WINDOW_TITLE", "Last War-Survival Game")
+        try:
+            import pygetwindow as gw
+            import win32process
+            for win in gw.getWindowsWithTitle(title):
+                if win.title != title:  # getWindowsWithTitle also matches substrings
+                    continue
+                _, pid = win32process.GetWindowThreadProcessId(win._hWnd)
+                try:
+                    if psutil.Process(pid).name().lower() == "explorer.exe":
+                        continue  # a folder window named like the game
+                except psutil.Error:
+                    pass
+                return True, pid
+        except Exception as e:
+            logger.debug(f"Game window lookup failed: {e}")
+
+        game_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe").lower()
+        exe_path = game_cfg.get("GAME_EXECUTABLE_PATH") or ""
+        exe_norm = os.path.normcase(os.path.abspath(exe_path)) if exe_path else None
+        for proc in psutil.process_iter(['pid', 'name', 'exe']):
+            try:
+                if (proc.info['name'] or "").lower() == game_name:
+                    return True, proc.pid
+                exe = proc.info['exe']
+                if exe_norm and exe and os.path.normcase(os.path.abspath(exe)) == exe_norm:
+                    return True, proc.pid
+            except (psutil.Error, OSError):
+                continue
+        return False, None
 
     # Placeholder for game/bot start/stop/check methods to be integrated
     # These will be adapted from wolf_control.py and use self.config_data and self.remote_data
@@ -1661,25 +1954,8 @@ class WolfChatSetup(tk.Tk):
         return None
 
     def _is_game_running_managed(self):
-        """使用線程安全包裝器檢查遊戲進程狀態"""
-        
-        # 首先檢查狀態管理器中的進程實例
-        if self.state_manager.is_process_alive(ProcessType.GAME):
-            return True
-        
-        # 如果狀態管理器中沒有，檢查系統中是否有同名進程運行
-        game_process_name = self.remote_data.get("GAME_PROCESS_NAME", "LastWar.exe")
-        try:
-            for proc in psutil.process_iter(['pid', 'name']):
-                if proc.info['name'] and proc.info['name'].lower() == game_process_name.lower():
-                    logger.info(f"Found existing game process: PID {proc.info['pid']}")
-                    # 可以選擇是否將發現的進程註冊到狀態管理器
-                    # 但由於我們無法控制已存在的進程，這裡只返回True
-                    return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-        
-        return False
+        """遊戲是否在執行（自己的 handle、視窗標題或進程名稱，見 game_running）"""
+        return self.game_running()[0]
 
 
     def _start_game_managed(self):
@@ -1732,43 +2008,8 @@ class WolfChatSetup(tk.Tk):
 
 
     def _is_bot_running_managed(self):
-        bot_script_name = self.remote_data.get("BOT_SCRIPT_NAME", "main.py")
-        
-        # 檢查我們管理的進程實例
-        if self.bot_process_instance and self.bot_process_instance.poll() is None:
-            try:
-                p = psutil.Process(self.bot_process_instance.pid)
-                if sys.executable in p.cmdline() and any(bot_script_name in arg for arg in p.cmdline()):
-                    return True
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                # 不要立即清空，改為標記需要重新檢測
-                logger.warning(f"Cannot verify bot process {self.bot_process_instance.pid}, will double-check")
-                pass
-        
-        # 系統級檢查（作為雙重驗證）
-        running_processes = 0
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmdline = proc.cmdline()
-                if cmdline and sys.executable in cmdline[0] and any(bot_script_name in arg for arg in cmdline):
-                    running_processes += 1
-                    if not self.bot_process_instance:
-                        logger.info(f"Found external bot process (PID: {proc.pid})")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
-                continue
-        
-        # 如果找到進程，但我們的實例無效，清空實例但返回 True
-        if running_processes > 0:
-            if self.bot_process_instance and self.bot_process_instance.poll() is not None:
-                logger.info("Bot process instance stale but bot is still running - clearing stale instance")
-                self.bot_process_instance = None
-            return True
-        
-        # 真的沒有找到任何進程，清空實例並返回 False
-        if self.bot_process_instance:
-            logger.info("No bot processes found - clearing instance")
-            self.bot_process_instance = None
-        return False
+        """Bot 是否在執行（自己的 Popen handle 或命令列掃描，見 bot_running）；不會清掉 handle"""
+        return self.bot_running()[0]
 
     def _start_bot_managed(self):
         global bot_process_instance # For compatibility if other parts use global
@@ -1856,26 +2097,21 @@ class WolfChatSetup(tk.Tk):
             self.bot_process_instance = None
             bot_process_instance = None
 
-        # Fallback: find and kill any python process running the bot script
+        # Fallback: find and stop any process running the bot script (see _find_bot_processes)
         if not stopped:
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            for proc in self._find_bot_processes():
                 try:
-                    cmdline = proc.cmdline()
-                    if cmdline and sys.executable in cmdline[0] and any(bot_script_name in arg for arg in cmdline):
-                        logger.info(f"Found bot process '{bot_script_name}' (PID: {proc.pid}). Attempting to terminate...")
-                        proc.terminate()
+                    logger.info(f"Found bot process '{bot_script_name}' (PID: {proc.pid}). Attempting to terminate...")
+                    proc.terminate()
+                    try:
                         proc.wait(timeout=5)
-                        logger.info(f"Bot process '{bot_script_name}' terminated.")
-                        stopped = True
-                        break # Assume only one instance for now
-                except psutil.TimeoutExpired:
-                    logger.warning(f"Bot process '{bot_script_name}' (PID: {proc.pid}) did not terminate, killing...")
-                    proc.kill()
-                    proc.wait(timeout=5)
-                    logger.info(f"Bot process '{bot_script_name}' killed.")
+                    except psutil.TimeoutExpired:
+                        logger.warning(f"Bot process '{bot_script_name}' (PID: {proc.pid}) did not terminate, killing...")
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    logger.info(f"Bot process '{bot_script_name}' (PID: {proc.pid}) stopped.")
                     stopped = True
-                    break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, psutil.TimeoutExpired):
                     continue
 
         if not stopped: # If no Popen instance and no external process found
@@ -2066,34 +2302,8 @@ class WolfChatSetup(tk.Tk):
         self.state_manager.set_process_state(process_type, ProcessState.ERROR)
 
     def _update_buttons_based_on_state(self):
-        """根據實際系統狀態更新按鈕狀態，增加穩定性檢查"""
-        try:
-            # 連續檢查3次，防止瞬態錯誤
-            game_checks = []
-            bot_checks = []
-            
-            for i in range(3):
-                game_checks.append(self._is_game_running_managed())
-                bot_checks.append(self._is_bot_running_managed())
-                if i < 2:  # 最後一次不需要等待
-                    time.sleep(0.5)  # 短暫等待
-            
-            # 取大多數結果
-            game_running = sum(game_checks) >= 2
-            bot_running = sum(bot_checks) >= 2
-            
-            # 如果遊戲和Bot都在運行，則 session 是活躍的
-            session_active = game_running and bot_running
-            
-            # 更新按鈕狀態：session 活躍時，start按鈕禁用，stop按鈕啟用
-            self.update_management_buttons_state(not session_active)
-            
-            logger.info(f"Button state updated (3x check): game={game_checks}→{game_running}, bot={bot_checks}→{bot_running}")
-            
-        except Exception as e:
-            logger.error(f"Error updating button state: {e}")
-            # 發生錯誤時，啟用 start 按鈕作為安全預設
-            self.update_management_buttons_state(True)
+        """根據實際系統狀態更新按鈕狀態：立即要求一次 status poll（偵測在背景執行緒進行）"""
+        self.request_status_poll()
 
     def _monitoring_loop(self):
         logger.info("Monitoring loop started.")
@@ -2197,9 +2407,14 @@ class WolfChatSetup(tk.Tk):
 
     def on_closing(self):
         """Handle window close event."""
-        if messagebox.askokcancel("Quit", "Do you want to quit Wolf Chat Setup? This will stop any managed sessions and running scripts."):
+        if messagebox.askokcancel("Quit", "Do you want to quit Wolf Chat Setup? This will stop the bot and managed scripts (the game stays open)."):
             print("Closing Setup...")
-            self.stop_managed_session() # Stop bot/game managed session if running
+            self._closing = True
+            try:
+                self.after_cancel(self._status_poll_after_id)
+            except Exception:
+                pass
+            self.stop_managed_session(wait=True) # Synchronous here so the window can close right after; the game stays open
             self.stop_process() # Stop bot/test script if running independently
             self.stop_memory_scheduler() # Stop scheduler if running
             self.destroy()
@@ -3460,7 +3675,7 @@ class WolfChatSetup(tk.Tk):
 
             # Update visibility and states
             self.update_exa_settings_visibility()
-            self.update_management_buttons_state(True) # Initially, start button is enabled
+            # Management button states come from the status poll (_status_poll_tick)
 
         except Exception as e:
             logger.exception("Error updating UI from data") # Log full traceback
