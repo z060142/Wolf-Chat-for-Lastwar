@@ -4,6 +4,10 @@ Live on-screen test for DetectionModule waits (native vs pyautogui backend).
 A borderless Tk window draws a UI template after a random delay; the detector thread calls
 wait_for_template() and we measure detection latency after appearance and coordinate error.
 Then the template is removed and wait_for_template_gone() is timed the same way.
+With --animate the template slides in (like game pages do); latency is then measured from the end of the
+animation and the coordinate error shows whether the detector waited for the button to stop moving.
+Note: Tk runs in this same process, so latencies here include GIL contention (~100-400 ms extra);
+the bot itself does not have that overhead. Coordinate error and 'early' counts are what matter.
 
 Usage:
     .venv\\Scripts\\python.exe tools\\test_screen_wait.py [--trials 10] [--backend native|pyautogui|both]
@@ -32,9 +36,10 @@ TEMPLATES = {
     'capitol_button': ui_interaction.CAPITOL_BUTTON_IMG,
 }
 WIN_X, WIN_Y, WIN_W, WIN_H = 120, 120, 700, 500
+SLIDE, SLIDE_STEPS = 160, 18  # --animate: 160 px over ~300 ms
 
 
-def run(backend, trials, seed):
+def run(backend, trials, seed, animate=False):
     config.SCREEN_VISION_BACKEND = backend
     det = ui_interaction.DetectionModule(TEMPLATES, region=(WIN_X, WIN_Y, WIN_W, WIN_H))
     rng = random.Random(seed)
@@ -55,7 +60,7 @@ def run(backend, trials, seed):
         for i in range(trials):
             key = rng.choice(list(TEMPLATES))
             w, h = sizes[key]
-            x, y = rng.randrange(0, WIN_W - w), rng.randrange(0, WIN_H - h)
+            x, y = rng.randrange(SLIDE if animate else 0, WIN_W - w), rng.randrange(0, WIN_H - h)
             delay = rng.uniform(0.1, 0.8)
             state.update(key=key, x=x, y=y, shown_at=None, hidden_at=None)
             root.after(int(delay * 1000), lambda k=key, x=x, y=y: show(k, x, y))
@@ -63,10 +68,13 @@ def run(backend, trials, seed):
             locs = det.wait_for_template(key, timeout=3.0, confidence=0.9)
             t_found = time.perf_counter()
             r = {'backend': backend, 'key': key, 'found': bool(locs)}
-            if locs and state['shown_at']:
-                r['latency_ms'] = (t_found - state['shown_at']) * 1000
+            if locs:
                 cx, cy = WIN_X + x + w // 2, WIN_Y + y + h // 2
                 r['err_px'] = abs(locs[0][0] - cx) + abs(locs[0][1] - cy)
+                if state['shown_at']:
+                    r['latency_ms'] = (t_found - state['shown_at']) * 1000
+                else:
+                    r['early'] = True  # returned while the template was still animating
             root.after(0, hide)
             gone = det.wait_for_template_gone(key, timeout=3.0, confidence=0.9)
             t_gone = time.perf_counter()
@@ -77,8 +85,15 @@ def run(backend, trials, seed):
             time.sleep(0.2)
         root.after(0, root.destroy)
 
-    def show(key, x, y):
+    def show(key, x, y, step=0):
         canvas.delete('all')
+        if animate and step < SLIDE_STEPS:
+            # ease-out slide from the left, ~16 ms per frame
+            t = (step + 1) / SLIDE_STEPS
+            canvas.create_image(x - int(SLIDE * (1 - t) ** 2), y, image=photos[key], anchor='nw')
+            root.update_idletasks()
+            root.after(16, lambda: show(key, x, y, step + 1))
+            return
         canvas.create_image(x, y, image=photos[key], anchor='nw')
         root.update_idletasks()
         state['shown_at'] = time.perf_counter()
@@ -102,7 +117,7 @@ def summarize(results):
     print(f"[{b}] found {len(found)}/{len(results)}  "
           f"appear->detect avg {sum(lat) / max(1, len(lat)):.0f} ms max {max(lat, default=0):.0f} ms  "
           f"vanish->detect avg {sum(gone) / max(1, len(gone)):.0f} ms max {max(gone, default=0):.0f} ms  "
-          f"max coord error {max(errs, default=0)} px")
+          f"max coord error {max(errs, default=0)} px  early (mid-animation) {sum(1 for r in results if r.get('early'))}")
 
 
 if __name__ == '__main__':
@@ -110,6 +125,7 @@ if __name__ == '__main__':
     ap.add_argument('--trials', type=int, default=10)
     ap.add_argument('--backend', default='both', choices=['native', 'pyautogui', 'both'])
     ap.add_argument('--seed', type=int, default=3)
+    ap.add_argument('--animate', action='store_true')
     args = ap.parse_args()
     for b in (['native', 'pyautogui'] if args.backend == 'both' else [args.backend]):
-        summarize(run(b, args.trials, args.seed))
+        summarize(run(b, args.trials, args.seed, args.animate))

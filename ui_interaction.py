@@ -25,6 +25,7 @@ import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
 from simple_bubble_dedup import SimpleBubbleDeduplication
 from screen_vision import ScreenVision, Box
+from ui_navigator import UINavigator, CHAT
 import difflib # Added for text similarity
 import os # Already imported, but good to note for RobustMessageDeduplication
 import json # Already imported, but good to note for RobustMessageDeduplication
@@ -427,6 +428,10 @@ STATE_CONFIDENCE_THRESHOLD = 0.9  # 狀態偵測的信心度
 BUBBLE_RELOCATE_CONFIDENCE = 0.8  # 尋找泡泡快照的信心度
 BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6  # 備用低信心度
 
+# wait_for_template 穩定判定：模板在同一位置（±UI_SETTLE_PX）持續 UI_SETTLE_SECONDS 才算出現（等滑入/淡入動畫結束）
+UI_SETTLE_SECONDS = 0.15
+UI_SETTLE_PX = 3
+
 # 雙方法偵測信心度（CLAHE + Grayscale）
 DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.87  # 雙方法個別閾值
 DUAL_METHOD_HIGH_CONFIDENCE_THRESHOLD = 0.85  # 高信心度直接接受
@@ -639,6 +644,7 @@ class DetectionModule:
         self.state_confidence = state_confidence
         self.region = region
         self._warned_paths = set()
+        self._template_exists: Dict[str, bool] = {}  # os.path.exists can take ~20 ms per call on slow drives
         self._position_vision = None  # Lazily created PositionVisionRecognizer (LLM position detection)
 
         # Template matching backend: "native" (screen_vision.ScreenVision) or "pyautogui" (legacy)
@@ -741,6 +747,13 @@ class DetectionModule:
             print(f"[Icon Prep] Error preparing icon: {e}")
             return None
 
+    def _template_file_exists(self, template_path: str) -> bool:
+        """Cached existence check (template files do not change while the bot runs)."""
+        exists = self._template_exists.get(template_path)
+        if exists is None:
+            exists = self._template_exists[template_path] = os.path.exists(template_path)
+        return exists
+
     def _find_template(self, template_key: str, confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
         """Internal helper to find a template by its key using PyAutoGUI. Returns list of CENTER coordinates (absolute)."""
         template_path = self.templates.get(template_key)
@@ -749,7 +762,7 @@ class DetectionModule:
             return []
 
         # Check if template file exists, warn only once
-        if not os.path.exists(template_path):
+        if not self._template_file_exists(template_path):
             if template_path not in self._warned_paths:
                 print(f"Error: Template image doesn't exist: {template_path}")
                 self._warned_paths.add(template_path)
@@ -785,7 +798,7 @@ class DetectionModule:
         if not template_path:
             print(f"Error: Template key '{template_key}' not found in provided templates.")
             return []
-        if not os.path.exists(template_path):
+        if not self._template_file_exists(template_path):
             if template_path not in self._warned_paths:
                 print(f"Error: Template image doesn't exist: {template_path}")
                 self._warned_paths.add(template_path)
@@ -825,14 +838,32 @@ class DetectionModule:
         return pyautogui.screenshot(region=region)
 
     def wait_for_template(self, template_key: str, timeout: float = 2.0, confidence: Optional[float] = None,
-                          region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
-        """Poll until the template appears; returns CENTER coordinates (like _find_template) or [] on timeout.
-        Replaces fixed sleep-then-check-once: continues as soon as the UI is ready."""
+                          region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False,
+                          settle: Optional[float] = None) -> List[Tuple[int, int]]:
+        """Poll until the template appears AND has settled; returns CENTER coordinates (like _find_template) or [] on timeout.
+        Game pages slide/fade in: a button already matches mid-animation, and clicking it then is ignored by the game
+        or lands where the button no longer is. So the match must stay at the same spot (within UI_SETTLE_PX) for
+        `settle` seconds (default UI_SETTLE_SECONDS); any movement restarts that window."""
+        settle = UI_SETTLE_SECONDS if settle is None else settle
         deadline = time.time() + timeout
+        anchor, since, last = None, None, []
         while True:
             locs = self._find_template(template_key, confidence=confidence, region=region, grayscale=grayscale)
-            if locs or time.time() >= deadline:
-                return locs
+            now = time.time()
+            if locs:
+                pos = locs[0]
+                if anchor is None or abs(pos[0] - anchor[0]) > UI_SETTLE_PX or abs(pos[1] - anchor[1]) > UI_SETTLE_PX:
+                    anchor, since = pos, now  # appeared or still moving: restart the settle window
+                last = locs
+                if now - since >= settle:
+                    return locs
+            else:
+                anchor, since, last = None, None, []
+            # A match that showed up before the timeout gets its settle window; a never-settling one is still returned
+            if now >= deadline + (settle if anchor else 0):
+                if last:
+                    print(f"Note: '{template_key}' found but did not settle within {timeout + settle:.2f}s, using last position")
+                return last
             time.sleep(0.03 if self.vision else 0.05)
 
     def wait_for_template_gone(self, template_key: str, timeout: float = 2.0, confidence: Optional[float] = None,
@@ -924,7 +955,7 @@ class DetectionModule:
         # Process each template
         for name, template_key in position_templates.items():
             template_path = self.templates.get(template_key)
-            if not template_path or not os.path.exists(template_path):
+            if not template_path or not self._template_file_exists(template_path):
                 if template_path and template_path not in self._warned_paths:
                     print(f"[Position Detection] Template not found: {template_path}")
                     self._warned_paths.add(template_path)
@@ -1485,7 +1516,7 @@ class DetectionModule:
         }
 
         for key, template_path in self.core_keyword_templates.items():
-            if not os.path.exists(template_path):
+            if not self._template_file_exists(template_path):
                 if template_path not in self._warned_paths:
                     print(f"Warning: Core keyword template not found: {template_path}")
                     self._warned_paths.add(template_path)
@@ -1955,7 +1986,7 @@ class DetectionModule:
         Returns center coordinates or None.
         """
         template_path = self.templates.get(template_key)
-        if not template_path or not os.path.exists(template_path):
+        if not template_path or not self._template_file_exists(template_path):
             return None
         
         try:
@@ -2106,6 +2137,7 @@ class InteractionModule:
         self.default_input_coords = input_coords
         self.input_template_key = input_template_key
         self.send_button_key = send_button_key
+        self.nav = UINavigator(detector, self)  # screen map: verified clicks and recovery
         print("InteractionModule initialized.")
 
     def click_at(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1, duration: float = 0.1):
@@ -2174,30 +2206,20 @@ class InteractionModule:
         print(f"Attempting to copy text at {coords}...")
         original_clipboard = self.get_clipboard() or ""
         self.set_clipboard("___MCP_CLEAR___")
-        time.sleep(0.1)
 
-        self.click_at(coords[0], coords[1])
-        time.sleep(0.1) # Wait for menu/reaction
+        def _clipboard_filled() -> bool:
+            text = self.get_clipboard()
+            return bool(text) and text != "___MCP_CLEAR___"
 
         copied = False
-        # Try finding "Copy" menu item first
-        copy_item_locations = self.detector._find_template('copy_menu_item', confidence=0.7) # Use detector
-        if copy_item_locations:
-            copy_coords = copy_item_locations[0]
-            self.click_at(copy_coords[0], copy_coords[1])
-            print("Clicked 'Copy' menu item.")
-            time.sleep(0.15)
-            copied = True
+        # Chat room -> click bubble -> bubble menu (Copy / Reply) -> click Copy -> clipboard filled
+        menu = self.nav.click_and_expect(coords, expect={'bubble_menu'}, from_screen=CHAT,
+                                         timeout=2.0, retries=2, label='bubble')
+        if menu:
+            copied = bool(self.nav.click_and_expect('copy_menu_item', until=_clipboard_filled,
+                                                    timeout=1.5, retries=2, confidence=0.75, label='Copy'))
         else:
-            print("'Copy' menu item not found. Attempting Ctrl+C.")
-            try:
-                self.hotkey('ctrl', 'c')
-                time.sleep(0.1)
-                print("Simulated Ctrl+C.")
-                copied = True
-            except Exception as e_ctrlc:
-                 print(f"Failed to simulate Ctrl+C: {e_ctrlc}")
-                 copied = False
+            print(f"Bubble menu did not open: {menu.message}")
 
         copied_text = self.get_clipboard()
         self.set_clipboard(original_clipboard) # Restore clipboard
@@ -2236,12 +2258,10 @@ class InteractionModule:
             print(f"Attempt #{attempt + 1} to click avatar and find profile page...")
 
             # --- Re-locate bubble on retries ---
-            if attempt > 0:
+            if attempt > 0 and bubble_snapshot is None:
+                print("No bubble snapshot for re-location; retrying the same avatar position.")
+            elif attempt > 0:
                 print("Re-locating bubble before retry...")
-                if bubble_snapshot is None:
-                    print("Error: Cannot retry re-location, bubble snapshot is missing.")
-                    break # Cannot retry without snapshot
-
                 new_bubble_box_retry = self.detector.locate_image(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
                 if new_bubble_box_retry:
                     new_tl_x_retry, new_tl_y_retry = new_bubble_box_retry.left, new_bubble_box_retry.top
@@ -2253,54 +2273,39 @@ class InteractionModule:
                     print("Warning: Failed to re-locate bubble snapshot on retry. Aborting name retrieval.")
                     break # Stop retrying if bubble can't be found
 
-            # --- Click Avatar ---
-            try:
-                self.click_at(current_avatar_coords[0], current_avatar_coords[1])
-            except Exception as click_err:
-                print(f"Error clicking avatar at {current_avatar_coords} on attempt {attempt + 1}: {click_err}")
-                time.sleep(0.3) # Wait a bit longer after a click error before retrying
-                continue # Go to next attempt
-
-            # --- Check for Profile Page (poll until it appears instead of a fixed sleep) ---
-            if self.detector.wait_for_template('profile_page', timeout=1.2, confidence=self.detector.state_confidence):
+            # --- Click Avatar: chat room -> profile card (one click per attempt; re-located above) ---
+            opened = self.nav.click_and_expect(current_avatar_coords, expect={'profile_card'}, from_screen=CHAT,
+                                               timeout=2.0, retries=1, label='avatar')
+            if opened:
                 print("Profile page verified.")
                 profile_page_found = True
                 break # Success, exit retry loop
-            else:
-                print(f"Profile page not found after click attempt {attempt + 1}.")
-                # Optional: Press ESC once to close potential wrong menus before retrying?
-                # self.press_key('esc')
-                # time.sleep(0.1)
-                time.sleep(0.3) # Wait before next attempt
+            print(f"Profile page not reached after avatar click attempt {attempt + 1}: {opened.message}")
+            if opened.screen != CHAT:
+                # Missed the avatar (e.g. opened the bubble menu): get back before the next attempt
+                if not self.nav.recover_to_chat():
+                    break
 
         # --- If Profile Page was found, proceed ---
         if profile_page_found:
             try:
-                # 2. Find and click profile option
-                profile_option_locations = self.detector.wait_for_template('profile_option', timeout=1.0, confidence=0.7)
-                if not profile_option_locations:
-                    print("Error: User details option not found on profile card.")
+                # 2. Profile card -> user details
+                details = self.nav.click_and_expect('profile_option', expect={'user_details'}, from_screen='profile_card',
+                                                    timeout=2.5, retries=2, confidence=0.7, label='profile option')
+                if not details:
+                    print(f"Error: Could not open user details: {details.message}")
                     return None # Fail early if critical step missing
-                self.click_at(profile_option_locations[0][0], profile_option_locations[0][1])
-                print("Clicked user details option.")
+                print("User details verified.")
 
-                # 3. Find and click "Copy Name" button (wait for the user details window)
-                copy_name_locations = self.detector.wait_for_template('copy_name_button', timeout=1.5, confidence=0.7)
-                if not copy_name_locations:
-                    print("Error: 'Copy Name' button not found in user details.")
-                    return None # Fail early
-                self.click_at(copy_name_locations[0][0], copy_name_locations[0][1])
-                print("Clicked 'Copy Name' button.")
+                # 3. Copy Name -> clipboard filled (the game writes it asynchronously)
+                def _clipboard_filled() -> bool:
+                    text = self.get_clipboard()
+                    return bool(text) and text != "___MCP_CLEAR___"
 
-                # 4. Get name from clipboard (poll briefly; the game writes it asynchronously)
-                copied_name = None
-                clip_deadline = time.time() + 0.6
-                while time.time() < clip_deadline:
-                    copied_name = self.get_clipboard()
-                    if copied_name and copied_name != "___MCP_CLEAR___":
-                        break
-                    time.sleep(0.03)
-                if copied_name and copied_name != "___MCP_CLEAR___":
+                copy_result = self.nav.click_and_expect('copy_name_button', until=_clipboard_filled,
+                                                        timeout=1.5, retries=2, confidence=0.7, label='Copy name')
+                copied_name = self.get_clipboard()
+                if copy_result and copied_name and copied_name != "___MCP_CLEAR___":
                     print(f"Successfully copied username: {copied_name}")
                     sender_name = copied_name.strip()
                 else:
@@ -2355,8 +2360,13 @@ class InteractionModule:
             print(f"Error pasting response: {e}")
             return False
 
-        # Try clicking send button first
-        send_button_locations = self.detector._find_template(self.send_button_key, confidence=0.7)
+        # Try clicking send button first.
+        # Search only to the right of the input box: the back button (bottom-left, also a blue square with a
+        # white icon) scores ~0.72 against this template, and once hit, the last-hit hint kept returning it.
+        # The real send button scores ~0.97 (only appears after text is in the box, hence the wait).
+        send_region = (input_coords[0] + 150, input_coords[1] - 200, 260, 300)
+        send_button_locations = self.detector.wait_for_template(self.send_button_key, timeout=1.5,
+                                                                confidence=0.85, region=send_region)
         if send_button_locations:
             send_coords = send_button_locations[0]
             self.click_at(send_coords[0], send_coords[1])
@@ -2365,7 +2375,7 @@ class InteractionModule:
             return True
         else:
             # Fallback to pressing Enter
-            print("Send button not found. Attempting to press Enter.")
+            print("Send button not found (the pasted text may not have reached the input box). Attempting to press Enter.")
             try:
                 self.press_key('enter')
                 print("Pressed Enter.")
@@ -2644,10 +2654,8 @@ def remove_user_position(detector: DetectionModule,
     avatar_click_x = compensated_x + AVATAR_OFFSET_X # Use non-reply offset for position removal
     avatar_click_y = compensated_y + AVATAR_OFFSET_Y # Use non-reply offset for position removal
     print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X}, {AVATAR_OFFSET_Y}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
-    interactor.click_at(avatar_click_x, avatar_click_y)
+    nav = interactor.nav
 
-    # Each step waits for the next screen (polling) instead of a fixed sleep + single check,
-    # so slow frames no longer fail the flow and fast frames do not wait needlessly.
     def _fail(message: str, cleanup: bool = True) -> dict:
         print(f"Error: {message}")
         if cleanup:
@@ -2656,98 +2664,61 @@ def remove_user_position(detector: DetectionModule,
         result["position_name"] = target_position_name
         return result
 
-    # 3. Verify Profile Page and Click Capitol Button
-    if not detector.wait_for_template('profile_page', timeout=2.5, confidence=detector.state_confidence):
-        return _fail("Failed to verify Profile Page after clicking avatar")
-    print("Profile page verified.")
-
-    capitol_button_locs = detector.wait_for_template('capitol_button', timeout=1.5, confidence=0.8)
-    if not capitol_button_locs:
-        return _fail("Capitol button not found on profile page")
-    interactor.click_at(capitol_button_locs[0][0], capitol_button_locs[0][1])
-    print("Clicked Capitol button.")
-
-    # 4. Verify Capitol Page
-    if not detector.wait_for_template('president_title', timeout=2.5, confidence=detector.state_confidence):
-        return _fail("Failed to verify Capitol Page - President Title not found")
-    print("Capitol page verified.")
-
-    # 5. Find and Click Corresponding Position Button
     position_button_templates = {
         'DEVELOPMENT': 'pos_btn_dev', 'INTERIOR': 'pos_btn_int', 'SCIENCE': 'pos_btn_sci',
         'SECURITY': 'pos_btn_sec', 'STRATEGY': 'pos_btn_str', 'ADMINISTRATOR': 'pos_btn_adm',
         'MILITARY': 'pos_btn_mil'
     }
-    target_button_key = position_button_templates.get(target_position_name)
-    if not target_button_key:
-        return _fail(f"Internal error - unknown position name: {target_position_name}")
-
-    pos_button_locs = detector.wait_for_template(target_button_key, timeout=1.5, confidence=0.8)
-    if not pos_button_locs:
-        return _fail(f"Position button for '{target_position_name}' not found on Capitol page")
-    interactor.click_at(pos_button_locs[0][0], pos_button_locs[0][1])
-    print(f"Clicked '{target_position_name}' position button.")
-
-    # 6. Verify Position Page
     position_page_templates = {
         'DEVELOPMENT': 'page_dev', 'INTERIOR': 'page_int', 'SCIENCE': 'page_sci',
         'SECURITY': 'page_sec', 'STRATEGY': 'page_str', 'ADMINISTRATOR': 'page_adm',
         'MILITARY': 'page_mil'
     }
+    target_button_key = position_button_templates.get(target_position_name)
     target_page_key = position_page_templates.get(target_position_name)
-    if not target_page_key:
-        return _fail(f"Internal error - unknown position name for page verification: {target_position_name}")
+    if not target_button_key or not target_page_key:
+        return _fail(f"Internal error - unknown position name: {target_position_name}", cleanup=False)
 
-    if not detector.wait_for_template(target_page_key, timeout=2.5, confidence=detector.state_confidence):
-        return _fail(f"Failed to verify correct position page for '{target_position_name}'")
+    # Every step goes through the screen map: start screen confirmed, button settled, click,
+    # then the expected screen confirmed (a click without effect is retried).
+    # chat_room --avatar--> profile_card --capitol--> capitol --position--> position_page
+    #   --Dismiss--> confirm_dialog --Confirm--> position_page (dialog gone = dismissal accepted)
+    step = nav.click_and_expect((avatar_click_x, avatar_click_y), expect={'profile_card'}, from_screen=CHAT,
+                                timeout=2.5, retries=2, label='avatar')
+    if not step:
+        return _fail(f"Failed to open the profile card: {step.message}")
+    print("Profile page verified.")
+
+    step = nav.click_and_expect('capitol_button', expect={'capitol'}, from_screen='profile_card',
+                                timeout=3.0, retries=2, label='Capitol')
+    if not step:
+        return _fail(f"Failed to open the Capitol page: {step.message}")
+    print("Capitol page verified.")
+
+    step = nav.click_and_expect(target_button_key, expect={'position_page'}, from_screen='capitol',
+                                timeout=3.0, retries=2, label=f'{target_position_name} position')
+    if not step:
+        return _fail(f"Failed to open the '{target_position_name}' position page: {step.message}")
+    if step.key != target_page_key:
+        return _fail(f"Opened the wrong position page ({step.key}, expected {target_page_key})")
     print(f"Verified '{target_position_name}' position page.")
 
-    # 7. Find and Click Dismiss Button
-    dismiss_locs = detector.wait_for_template('dismiss_button', timeout=1.5, confidence=0.8)
-    if not dismiss_locs:
-        return _fail("Dismiss button not found on position page")
-    interactor.click_at(dismiss_locs[0][0], dismiss_locs[0][1])
-    print("Clicked Dismiss button.")
+    step = nav.click_and_expect('dismiss_button', expect={'confirm_dialog'}, from_screen='position_page',
+                                timeout=3.0, retries=2, label='Dismiss')
+    if not step:
+        return _fail(f"Dismiss did not open the confirmation dialog: {step.message}")
+    print("Confirmation dialog verified.")
 
-    # 8. Find and Click Confirm Button, then verify the dialog closed (= dismissal accepted)
-    confirm_locs = detector.wait_for_template('confirm_button', timeout=2.0, confidence=0.8)
-    if not confirm_locs:
-        # Don't cleanup here, might be stuck in confirmation state
-        return _fail("Confirm button not found after clicking dismiss", cleanup=False)
-    interactor.click_at(confirm_locs[0][0], confirm_locs[0][1])
-    print("Clicked Confirm button.")
+    step = nav.click_and_expect('confirm_button', expect={'position_page', 'capitol'}, from_screen='confirm_dialog',
+                                timeout=3.0, retries=2, label='Confirm')
+    if not step:
+        # Don't cleanup here: the dialog state is unclear and ESC could cancel a pending dismissal
+        return _fail(f"Confirm dialog did not close; dismissal not confirmed: {step.message}", cleanup=False)
+    print(f"Dismissal of '{target_position_name}' confirmed (dialog closed, back on {step.screen}).")
 
-    if not detector.wait_for_template_gone('confirm_button', timeout=1.5, confidence=0.8):
-        retry_locs = detector._find_template('confirm_button', confidence=0.8)
-        if retry_locs:
-            print("Confirm dialog still open, clicking Confirm again...")
-            interactor.click_at(retry_locs[0][0], retry_locs[0][1])
-        if not detector.wait_for_template_gone('confirm_button', timeout=1.5, confidence=0.8):
-            return _fail("Confirm dialog did not close; dismissal not confirmed", cleanup=False)
-    print(f"Dismissal of '{target_position_name}' confirmed (dialog closed).")
-
-    # 9. Cleanup: Return to Chat Room
-    # Click Close on position page (should now be back on capitol page implicitly)
-    close_locs = detector.wait_for_template('close_button', timeout=1.0, confidence=0.8)
-    if close_locs:
-        interactor.click_at(close_locs[0][0], close_locs[0][1])
-        print("Clicked Close button (returning to Capitol).")
-    else:
-        print("Warning: Close button not found after confirm, attempting back arrow anyway.")
-
-    # Click Back Arrow on Capitol page (should return to profile)
-    back_arrow_locs = detector.wait_for_template('back_arrow', timeout=1.0, confidence=0.8)
-    if back_arrow_locs:
-        interactor.click_at(back_arrow_locs[0][0], back_arrow_locs[0][1])
-        print("Clicked Back Arrow (returning to Profile).")
-    else:
-        print("Warning: Back arrow not found on Capitol page, attempting ESC cleanup.")
-
-    # Use standard ESC cleanup. The dismissal itself is already confirmed above, so a failed
+    # Return to the chat room via the map. The dismissal itself is already confirmed, so a failed
     # navigation back does not turn the result into a failure (the main loop recovers navigation).
-    print("Initiating final ESC cleanup to return to chat...")
-    cleanup_success = perform_state_cleanup(detector, interactor)
-    if not cleanup_success:
+    if not nav.recover_to_chat():
         print("Warning: could not confirm return to chat; automatic navigation recovery will handle it.")
 
     print("--- Position Removal Process Completed Successfully ---")
@@ -2763,9 +2734,13 @@ def remove_user_position(detector: DetectionModule,
 # --- State-based Cleanup Function (To be called by Coordinator) ---
 def perform_state_cleanup(detector: DetectionModule, interactor: InteractionModule, max_attempts: int = 4) -> bool:
     """
-    Attempt to return to the main chat room interface by pressing ESC based on detected state.
+    Return to the chat room using the screen map (each screen's known back action, verified step by step).
     Returns True if confirmed back in chat room, False otherwise.
     """
+    nav = getattr(interactor, 'nav', None)
+    if nav is not None:
+        return nav.recover_to_chat(max_steps=max_attempts + 4)
+
     print("Performing cleanup: Attempting to press ESC to return to chat interface...")
     returned_to_chat = False
     for attempt in range(max_attempts):
@@ -3165,83 +3140,19 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
         # --- If not paused, proceed with UI Monitoring ---
         # print("[DEBUG] UI Loop: Monitoring is active. Proceeding...") # DEBUG REMOVED
 
-        # --- 添加檢查 chat_option 狀態 ---
+        # --- Make sure we are in the chat room (screen map) ---
+        # One frame tells where we are; anything other than the chat room (bubble menu, profile card,
+        # base / world map, update prompt, ...) is walked back with that screen's known back action.
         try:
-            chat_option_locs = detector._find_template('chat_option', confidence=0.8)
-            if chat_option_locs:
-                print("UI Thread: Detected chat_option overlay. Pressing ESC to dismiss...")
-                interactor.press_key('esc')
-                time.sleep(0.2)  # 給一點時間讓界面響應
-                print("UI Thread: Pressed ESC to dismiss chat_option. Continuing...")
-                continue  # 重新開始循環以確保界面已清除
-        except Exception as chat_opt_err:
-            print(f"UI Thread: Error checking for chat_option: {chat_opt_err}")
-            # 繼續執行，不要中斷主流程
-
-        # --- Check for Main Screen Navigation ---
-        # print("[DEBUG] UI Loop: Checking for main screen navigation...") # DEBUG REMOVED
-        try:
-            base_locs = detector._find_template('base_screen', confidence=0.8)
-            map_locs = detector._find_template('world_map_screen', confidence=0.8)
-            if base_locs or map_locs:
-                print(f"UI Thread: Detected main screen (Base or World Map). Counter: {main_screen_click_counter}")
-                if main_screen_click_counter < 5:
-                    main_screen_click_counter += 1
-                    print(f"UI Thread: Attempting click #{main_screen_click_counter}/5 to return to chat...")
-                    # Coordinates provided by user (adjust if needed based on actual screen resolution/layout)
-                    target_x, target_y = 600, 1300
-                    interactor.click_at(target_x, target_y)
-                    time.sleep(0.1) # Short delay after click
-                    print("UI Thread: Clicked. Re-checking screen state...")
-                else:
-                    print("UI Thread: Clicked 5 times, still on main screen. Pressing ESC...")
-                    interactor.press_key('esc')
-                    main_screen_click_counter = 0 # Reset counter after ESC
-                    time.sleep(0.05) # Wait a bit longer after ESC
-                    print("UI Thread: ESC pressed. Re-checking screen state...")
-                continue # Skip the rest of the loop and re-evaluate state
-            else:
-                # Reset counter if not on the main screen
-                if main_screen_click_counter > 0:
-                    print("UI Thread: Not on main screen, resetting click counter.")
-                    main_screen_click_counter = 0
-        except Exception as nav_err:
-            print(f"UI Thread: Error during main screen navigation check: {nav_err}")
-            # Decide if you want to continue or pause after error
-            main_screen_click_counter = 0 # Reset counter on error too
-
-        # --- Verify Chat Room State Before Bubble Detection (Only if NOT paused) ---
-        # print("[DEBUG] UI Loop: Verifying chat room state...") # DEBUG REMOVED
-        try:
-            # Use a slightly lower confidence maybe, or state_confidence
-            chat_room_locs = detector._find_template('chat_room', confidence=detector.state_confidence)
-            if not chat_room_locs:
-                print("UI Thread: Not in chat room state before bubble detection. Checking for update confirm...")
-                
-                # 檢查是否存在更新確認按鈕
-                update_confirm_locs = detector._find_template('update_confirm', confidence=0.8)
-                if update_confirm_locs:
-                    print("UI Thread: Detected update_confirm button. Clicking to proceed...")
-                    interactor.click_at(update_confirm_locs[0][0], update_confirm_locs[0][1])
-                    time.sleep(0.5)  # 給更新過程一些時間
-                    print("UI Thread: Clicked update_confirm button. Continuing...")
-                    continue  # 重新開始循環以重新檢查狀態
-                
-                # 沒有找到更新確認按鈕，繼續原有的清理邏輯
-                print("UI Thread: No update_confirm button found. Attempting cleanup...")
-                perform_state_cleanup(detector, interactor)
-                # Regardless of cleanup success, restart the loop to re-evaluate state from the top
-                print("UI Thread: Continuing loop after attempting chat room cleanup.")
-                time.sleep(0.5) # Small pause after cleanup attempt
-                continue
-            # else: # Optional: Log if chat room is confirmed # DEBUG REMOVED
-               # print("[DEBUG] UI Thread: Chat room state confirmed.") # DEBUG REMOVED
-
+            screen, _, _ = interactor.nav.identify()
+            if screen != CHAT:
+                print(f"UI Thread: Not in chat room (screen: {screen}). Recovering via screen map...")
+                if not interactor.nav.recover_to_chat():
+                    time.sleep(0.5)  # still lost: give the game a moment before the next look
+                continue  # re-evaluate from the top
         except Exception as state_check_err:
-             print(f"UI Thread: Error checking for chat room state: {state_check_err}")
-             # Decide how to handle error - maybe pause and retry? For now, continue cautiously.
-             time.sleep(1)
-
+            print(f"UI Thread: Error checking screen state: {state_check_err}")
+            time.sleep(1)
 
         # --- 經濟模式檢查 ---
         if detector.eco_mode_enabled:
@@ -3583,21 +3494,21 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                 center_y_reply += 15
                                 print(f"Applying +15 Y-offset to bubble center click for reply keyword. Target Y: {center_y_reply}")
 
+                            # chat_room --bubble--> bubble_menu --Reply--> chat_room (menu closed)
                             print(f"Clicking bubble center for reply at ({center_x_reply}, {center_y_reply})")
-                            interactor.click_at(center_x_reply, center_y_reply)
-                            time.sleep(0.15)
-
-                            print("Searching for reply button...")
-                            reply_button_locs = detector._find_template('reply_button', confidence=0.8)
-                            if reply_button_locs:
-                                reply_coords = reply_button_locs[0]
-                                print(f"Found reply button at {reply_coords}. Clicking...")
-                                interactor.click_at(reply_coords[0], reply_coords[1])
-                                time.sleep(0.07)
-                                reply_context_activated = True
-                                print("Reply context activated.")
+                            menu = interactor.nav.click_and_expect((center_x_reply, center_y_reply), expect={'bubble_menu'},
+                                                                   from_screen=CHAT, timeout=2.0, retries=2, label='bubble (reply)')
+                            if menu:
+                                reply_step = interactor.nav.click_and_expect('reply_button', expect={CHAT},
+                                                                             from_screen='bubble_menu', timeout=2.0,
+                                                                             retries=2, label='Reply')
+                                reply_context_activated = bool(reply_step)
+                                print("Reply context activated." if reply_context_activated
+                                      else f">>> Reply step failed: {reply_step.message} <<<")
                             else:
-                                print(">>> Reply button template ('reply_button') not found after clicking bubble center. <<<")
+                                print(f">>> Bubble menu did not open for reply: {menu.message} <<<")
+                            if not reply_context_activated:
+                                interactor.nav.recover_to_chat()
                         else:
                             print("Warning: Failed to re-locate bubble for activating reply context.")
 

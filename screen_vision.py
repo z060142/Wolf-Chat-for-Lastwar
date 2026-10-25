@@ -258,6 +258,11 @@ class ScreenVision:
         # Peak suppression in the coarse map can hide the true peak behind a stronger neighbour up to
         # half a template away, so each verify window covers that neighbourhood.
         pad_x, pad_y = tpl.w // 2 + 4, tpl.h // 2 + 4
+        # Flat or wide templates can yield hundreds of weak coarse candidates; verifying them all costs more
+        # than one full-resolution pass (seen: 300 candidates, ~470 ms vs ~30 ms), so do the full pass then.
+        verify_area = len(candidates) * (tpl.w + 2 * pad_x) * (tpl.h + 2 * pad_y)
+        if verify_area > hw * hh:
+            return self._match_in(tpl, hay, region[:2], confidence, grayscale, limit)
         for cx, cy, _ in candidates:
             x0, y0 = max(0, cx * 2 - pad_x), max(0, cy * 2 - pad_y)
             x1, y1 = min(hw, cx * 2 + tpl.w + pad_x), min(hh, cy * 2 + tpl.h + pad_y)

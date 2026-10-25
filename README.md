@@ -127,7 +127,7 @@ uv pip install -r requirements.txt
 
 If you need to modify settings that are not in Setup.py:
 
-1. **Chat Persona**: Edit `persona.json` to define the bot's personality traits
+1. **Chat Persona**: Put a `.json` or `.md` file in `persona/`, pick it and set the character name in Setup.py > Persona, to define the bot's personality traits
 2. **Bubble Colors**: Edit `bubble_colors.json` for chat bubble detection colors
 3. **UI Templates**: Add/update template images in the `templates/` folder
 
@@ -136,7 +136,7 @@ If you need to modify settings that are not in Setup.py:
 - `Setup.py` → Source of truth for all settings
 - `config.py` → Auto-generated configuration file (DO NOT EDIT)
 - `.env` → Environment variables (API keys)
-- `persona.json` → Character personality definition
+- `persona/` → Character personality definitions (`.json` / `.md`)
 
 ## UI Setup
 
@@ -272,7 +272,7 @@ Test and preview system prompt configurations. Test different MCP server combina
 
 1. Stop the running bot and close Setup.py (installed files may be locked otherwise).
 2. Copy or pull the new version over the bot folder. Keep your own `config.py`, `.env`,
-   `persona.json`, `templates/` changes and data folders.
+   `persona/`, `templates/` changes and data folders.
 3. Run `start.bat`. It checks that `.venv` is Python 3.12 and syncs it to
    `requirements.lock.txt` with `uv pip sync`: missing packages are installed, wrong
    versions replaced and packages that are no longer used (e.g. chroma, torch) removed.
