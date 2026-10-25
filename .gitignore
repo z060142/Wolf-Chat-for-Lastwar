@@ -31,3 +31,5 @@ activate_venv.bat
 
 # Requirements hash for dependency tracking
 .requirements_hash
+# Chat tracker record (restart recovery)
+chat_tracker_data/

@@ -184,6 +184,14 @@ The UI interaction system uses:
   Tests: `tools/test_screen_vision.py` (equivalence vs pyscreeze), `tools/test_screen_wait.py` (live on-screen waits)
 - **Screen Capture**: PyAutoGUI for screenshots and coordinate detection
 - **Color Detection**: JSON-based color configuration for chat bubbles
+- **Chat Tracker** (`chat_tracker.py`): decides which messages are new by *position*, not content. The record is the
+  messages already seen; on each still chat frame the newest recorded one is found again (whole-message image compare,
+  confirmed by the one above it) and everything below it is new. Messages split by background gaps, owner from HSV
+  bubble colours. Repeated text after someone else spoke is new; scrolling up never re-runs old commands; recalled
+  messages are stepped over. Every message is recorded (others' as "not to bot"); the record is saved in
+  `chat_tracker_data/` so a game/script restart continues where it stopped (at most `MAX_CATCHUP` answers for
+  messages sent meanwhile). One message is handled at a time: the UI loop pauses itself after enqueueing a trigger
+  until main.py sends `resume` after the reply.
 - **Automated Input**: Keyboard/mouse automation for game interaction
 
 Critical UI templates must be captured and stored in `templates/` folder for proper functionality.
@@ -216,7 +224,7 @@ Key dependencies include:
 
 - Code is primarily in English with Chinese comments and logs
 - Uses asyncio for concurrent operations
-- Implements robust message deduplication system
+- New messages are decided by position in the chat (`chat_tracker.py`), not by text deduplication
 - Supports both manual and automated game window management
 - Designed for Windows environment with cross-platform considerations
 

@@ -23,9 +23,9 @@ import math # Added for distance calculation in dual method
 import datetime # Added for MCP result timestamps
 import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
-from simple_bubble_dedup import SimpleBubbleDeduplication
 from screen_vision import ScreenVision, Box
 from ui_navigator import UINavigator, CHAT
+from chat_tracker import ChatTracker, MAX_ATTEMPTS
 import difflib # Added for text similarity
 import os # Already imported, but good to note for RobustMessageDeduplication
 import json # Already imported, but good to note for RobustMessageDeduplication
@@ -2774,6 +2774,91 @@ def perform_state_cleanup(detector: DetectionModule, interactor: InteractionModu
     return returned_to_chat
 
 
+def handle_tracked_message(detector: DetectionModule, interactor: InteractionModule, tracker: ChatTracker,
+                           item: dict, m: dict, trigger_queue: queue.Queue) -> str:
+    """Hand one message to the bot: copy its text, get the sender name, open the reply context, enqueue it.
+    `m` is the message on the current still frame. Returns 'sent', 'retry' (try on a later look) or 'failed'."""
+    seq = item['seq']
+    item['attempts'] = item.get('attempts', 0) + 1
+
+    def give_up(why: str) -> str:
+        perform_state_cleanup(detector, interactor)
+        if item['attempts'] >= MAX_ATTEMPTS:
+            print(f"[Tracker] #{seq}: {why} - giving up after {item['attempts']} tries")
+            tracker.mark(item, 'failed')
+            return 'failed'
+        print(f"[Tracker] #{seq}: {why} - will try again (try {item['attempts']}/{MAX_ATTEMPTS})")
+        return 'retry'
+
+    bubble_region = tracker.screen_box(m)
+    found = detector.find_keyword_in_region(bubble_region)
+    if not found:
+        return give_up("keyword not found in the bubble")
+    keyword_coords, keyword_key = found
+    is_reply_keyword = (keyword_key == 'keyword_wolf_reply')
+    click_coords = (keyword_coords[0], keyword_coords[1] + 25) if is_reply_keyword else keyword_coords
+    print(f"\n!!! [Tracker] #{seq}: keyword '{keyword_key}' at {keyword_coords}, bubble {bubble_region} !!!")
+
+    # Snapshot (with avatar) for the position removal tool, which re-locates the bubble later
+    bubble_snapshot, _ = capture_extended_bubble_screenshot(bubble_region)
+
+    bubble_text = interactor.copy_text_at(click_coords)
+    if not bubble_text:
+        return give_up("could not copy the text")
+
+    avatar_coords = (bubble_region[0] + AVATAR_OFFSET_X_REPLY, bubble_region[1] + AVATAR_OFFSET_Y_REPLY)
+    sender_name = interactor.retrieve_sender_name_interaction(initial_avatar_coords=avatar_coords,
+                                                              bubble_snapshot=bubble_snapshot,
+                                                              search_area=SCREENSHOT_REGION)
+    if not perform_state_cleanup(detector, interactor):
+        return give_up("could not get back to the chat room")
+    if not sender_name:
+        return give_up("could not get the sender name")
+
+    # Reply context: new messages may have pushed the chat up meanwhile, so place the message again
+    reply_context_activated = False
+    current = None
+    for _ in range(6):
+        _, view = tracker.update()
+        current = view.get(seq)
+        if current is not None and current['complete']:
+            break
+        time.sleep(0.3)
+    if current is not None and current['complete']:
+        x, y, w, h = tracker.screen_box(current)
+        center = (x + w // 2, y + h // 2 + (15 if is_reply_keyword else 0))
+        # chat_room --bubble--> bubble_menu --Reply--> chat_room (menu closed)
+        menu = interactor.nav.click_and_expect(center, expect={'bubble_menu'}, from_screen=CHAT,
+                                               timeout=2.0, retries=2, label='bubble (reply)')
+        if menu:
+            reply_step = interactor.nav.click_and_expect('reply_button', expect={CHAT}, from_screen='bubble_menu',
+                                                         timeout=2.0, retries=2, label='Reply')
+            reply_context_activated = bool(reply_step)
+            if not reply_step:
+                print(f">>> Reply step failed: {reply_step.message} <<<")
+        else:
+            print(f">>> Bubble menu did not open for reply: {menu.message} <<<")
+        if not reply_context_activated:
+            interactor.nav.recover_to_chat()
+    else:
+        print(f"[Tracker] #{seq}: not found again for the reply context, answering without it")
+
+    data_to_send = {
+        'sender': handle_text_encoding(sender_name, "[未知發送者]"),
+        'text': handle_text_encoding(bubble_text, "[無法處理的文字內容]"),
+        'bubble_region': bubble_region,
+        'reply_context_activated': reply_context_activated,
+        'bubble_snapshot': bubble_snapshot,
+        'search_area': SCREENSHOT_REGION,
+    }
+    trigger_queue.put(data_to_send)
+    item['sender'], item['text'] = data_to_send['sender'], data_to_send['text']
+    tracker.mark(item, 'done')
+    print(f">>> [Tracker] #{seq} handed to the bot: {data_to_send['sender']}: {data_to_send['text'][:80]} "
+          f"(reply context: {reply_context_activated}) <<<")
+    return 'sent'
+
+
 # --- UI Monitoring Loop Function (To be run in a separate thread) ---
 def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: queue.Queue, deduplicator: 'RobustMessageDeduplication', state_monitor: 'StateResetDetector'):
     """
@@ -2782,15 +2867,6 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     Includes state monitoring and robust deduplication.
     """
     print("\n--- Starting Enhanced UI Monitoring Loop (Thread) ---")
-
-    # --- 初始化氣泡圖像去重系統（新增） ---
-    bubble_deduplicator = SimpleBubbleDeduplication(
-        storage_file="simple_bubble_dedup.json",
-        max_bubbles=DEDUPLICATION_WINDOW_SIZE,  # 使用統一的滾動視窗大小
-        threshold=8,      # 哈希差異閾值（值越小越嚴格）
-        hash_size=16      # 哈希大小
-    )
-    # --- 初始化氣泡圖像去重系統結束 ---
 
     # --- Initialization (Instantiate modules within the thread) ---
     # --- Template Dictionary Setup (Refactored) ---
@@ -2856,6 +2932,8 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                    input_coords=(CHAT_INPUT_CENTER_X, CHAT_INPUT_CENTER_Y),
                                    input_template_key='chat_input',
                                    send_button_key='send_button')
+    # New messages are decided by position in the chat (see chat_tracker.py); the record survives restarts
+    tracker = ChatTracker(detector, interactor.nav, SCREENSHOT_REGION, os.path.join(SCRIPT_DIR, "chat_tracker_data"))
 
 # --- State Management (Local to this monitoring thread) ---
     last_processed_bubble_info = None # Store the whole dict now
@@ -3078,43 +3156,31 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
 
                     print("UI Thread: Resuming monitoring internally after restart wait.")
                     monitoring_paused_flag[0] = False
-                    # 删除 recent_texts.clear() 和 last_processed_bubble_info = None
-                    print("UI Thread: Monitoring resumed after restart. Duplicate detection state preserved.")
+                    tracker.catchup = True  # answer only the newest few messages sent while the game was down
+                    print("UI Thread: Monitoring resumed after restart. Chat record preserved.")
                     # --- End Internal Sequence ---
 
                 elif action == 'clear_history': # Added for F7
                     print("UI Thread: Processing clear_history command.")
                     recent_texts.clear()
                     deduplicator.clear_all() # Simultaneously clear deduplication records
-                    
+                    tracker.reset()  # what is on screen now becomes history; only later messages are new
+
                     # Reset position removal lock (DISABLED)
                     # main.position_removal_used = False
                     # print("UI Thread: Position removal lock reset.")
-                    
-                    # --- 新增：清理氣泡去重記錄 ---
-                    if 'bubble_deduplicator' in locals():
-                        bubble_deduplicator.clear_all()
-                    # --- 清理氣泡去重記錄結束 ---
-                    
-                    print("UI Thread: recent_texts and deduplicator records cleared.")
+
+                    print("UI Thread: recent_texts, deduplicator records and chat record cleared.")
 
                 elif action == 'reset_state': # Added for F8 resume
                     print("UI Thread: Processing reset_state command.")
                     recent_texts.clear()
                     last_processed_bubble_info = None
                     deduplicator.clear_all() # Simultaneously clear deduplication records
-                    
-                    # --- 新增：清理氣泡去重記錄 ---
-                    if 'bubble_deduplicator' in locals():
-                        bubble_deduplicator.clear_all()
-                    
-                    # --- 重置經濟模式狀態 ---
-                    detector.eco_mode_enabled = False
-                    detector.eco_mode_start_time = None  # 重置經濟模式開始時間
-                    detector.no_new_bubbles_count = 0
-                    detector.last_eco_screenshot = None
-                    # --- 清理氣泡去重記錄結束 ---
-                    
+                    # The chat record is kept: messages sent while paused are found below it,
+                    # but only the newest few to the bot are answered
+                    tracker.catchup = True
+
                     print("UI Thread: recent_texts, last_processed_bubble_info, and deduplicator records reset.")
 
                 else:
@@ -3154,446 +3220,31 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
             print(f"UI Thread: Error checking screen state: {state_check_err}")
             time.sleep(1)
 
-        # --- 經濟模式檢查 ---
-        if detector.eco_mode_enabled:
-            # 在經濟模式下，檢查固定區域是否有變化
-            if detector.eco_mode_check_region_change():
-                # 檢測到變化，退出經濟模式
-                detector.eco_mode_enabled = False
-                detector.eco_mode_start_time = None  # 重置經濟模式開始時間
-                detector.no_new_bubbles_count = 0
-                detector.last_eco_screenshot = None
-                print("退出經濟模式，恢復正常泡泡檢測")
-            else:
-                # 無變化，繼續經濟模式
-                time.sleep(detector.eco_mode_interval)
-                continue
-
-        # --- Then Perform UI Monitoring (Enhanced Bubble Detection) ---
-        # print("[DEBUG] UI Loop: Starting enhanced bubble detection...") # DEBUG REMOVED
+        # --- Watch the chat: new messages are the ones below the recorded ones (chat_tracker.py) ---
         try:
-            # 1. Enhanced Bubble Detection with stability verification
-            all_bubbles_data = detector.enhanced_bubble_detection() # Returns list of dicts with verification
-            if not all_bubbles_data:
-                # print("[DEBUG] UI Loop: No bubbles detected.") # DEBUG REMOVED
-                # --- 經濟模式邏輯：無泡泡情況 ---
-                detector.no_new_bubbles_count += 1
-                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
-                    detector.eco_mode_enabled = True
-                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
-                    detector.no_new_bubbles_count = 0
-                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
-                time.sleep(2); continue
+            verdict, view = tracker.update(check_screen=False)  # the screen map check above just ran
+            if verdict != tracker.last_verdict:
+                print(f"[Tracker] {verdict}")
+                tracker.last_verdict = verdict
 
-            # Filter out bot bubbles
-            other_bubbles_data = [b_info for b_info in all_bubbles_data if not b_info['is_bot']]
-            if not other_bubbles_data:
-                # print("[DEBUG] UI Loop: No non-bot bubbles detected.") # DEBUG REMOVED
-                # --- 經濟模式邏輯：只有bot泡泡情況 ---
-                detector.no_new_bubbles_count += 1
-                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
-                    detector.eco_mode_enabled = True
-                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
-                    detector.no_new_bubbles_count = 0
-                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡（只有bot泡泡），進入經濟模式")
-                time.sleep(0.2); continue
-
-            # print(f"[DEBUG] UI Loop: Found {len(other_bubbles_data)} non-bot bubbles. Sorting...") # DEBUG REMOVED
-            # Sort bubbles from bottom to top (based on bottom Y coordinate)
-            sorted_bubbles = sorted(other_bubbles_data, key=lambda b_info: b_info['bbox'][3], reverse=True)
-
-            # Iterate through sorted bubbles (bottom to top)
-            # print("[DEBUG] UI Loop: Iterating through sorted bubbles...") # DEBUG REMOVED
-            for i, target_bubble_info in enumerate(sorted_bubbles):
-                # print(f"[DEBUG] UI Loop: Processing bubble #{i+1}") # DEBUG REMOVED
-                target_bbox = target_bubble_info['bbox']
-                # Ensure bubble_region uses standard ints
-                bubble_region = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
-
-                # --- 流程開始：截圖與第一層視覺去重 ---
-                try:
-                    # 確保 bubble_region_tuple 使用最新的 bbox 尺寸
-                    bubble_region_tuple = (int(target_bbox[0]), int(target_bbox[1]), int(target_bbox[2]-target_bbox[0]), int(target_bbox[3]-target_bbox[1]))
-                    if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
-                        print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping this bubble.")
+            # One message at a time, oldest first; the next one waits until the reply to this one is sent
+            waiting = tracker.pending()
+            if waiting:
+                item = waiting[0]
+                m = view.get(item['seq'])
+                if m is not None and m['complete']:
+                    outcome = handle_tracked_message(detector, interactor, tracker, item, m, trigger_queue)
+                    if outcome == 'sent':
+                        # Main thread answers it and sends 'resume' after the reply went out
+                        monitoring_paused_flag[0] = True
                         continue
-
-                    # 1. 截取包含頭像的擴展快照
-                    extended_bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
-                    if extended_bubble_snapshot is None:
-                        print("Warning: Failed to capture extended bubble snapshot. Skipping this bubble.")
-                        continue
-
-                    # 2. 【第一層防護】執行視覺去重檢查
-                    #    is_duplicate 方法會對包含頭像的圖片進行哈希計算，從而區分不同用戶
-                    #    新版本：只檢查不立即添加，返回確認數據供後續使用
-                    is_visual_duplicate, bubble_confirmation_data = bubble_deduplicator.is_duplicate(extended_bubble_snapshot, bubble_region_tuple)
-                    if is_visual_duplicate:
-                        print("--- VISUAL DUPLICATE DETECTED (L1). Skipping. ---")
-                        continue  # 如果視覺重複，直接跳過，成本極低
-
-                    # 3. 將 `bubble_snapshot` 變數指向擴展快照，供後續所有重新定位邏輯使用
-                    bubble_snapshot = extended_bubble_snapshot
-                    # 保存L1去重時的正確模板，供頭像點擊使用
-                    l1_bubble_snapshot = extended_bubble_snapshot
-
-                    # --- 保存除錯快照 ---
-                    try:
-                        screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
-                        screenshot_filename = f"debug_relocation_snapshot_{screenshot_index}.png"
-                        screenshot_path = os.path.join(DEBUG_SCREENSHOT_DIR, screenshot_filename)
-                        bubble_snapshot.save(screenshot_path)
-                        screenshot_counter += 1
-                    except Exception as save_err:
-                        print(f"Error saving debug snapshot: {repr(save_err)}")
-
-                except Exception as snapshot_err:
-                     print(f"Error during snapshot/L1 deduplication phase: {repr(snapshot_err)}")
-                     continue
-
-                # --- 視覺去重通過，開始執行高成本操作 ---
-
-                # 3. Enhanced Keyword Detection in Bubble with verification
-                # print(f"[DEBUG] UI Loop: Enhanced keyword detection in region {bubble_region}...") # DEBUG REMOVED
-                result = detector.enhanced_keyword_detection(bubble_region) # Enhanced method with verification
-
-                if result: # 檢查是否真的找到了關鍵字
-                    keyword_coords, detected_template_key = result # 解包得到座標和 key
-                    # 在這裡可以更新或加入日誌，包含 detected_template_key
-                    print(f"\n!!! Keyword '{detected_template_key}' detected in bubble {target_bbox} at {keyword_coords} !!!")
-
-                    # --- 接下來是移除冗餘邏輯並使用新 key ---
-
-                    # ------------ START: 刪除或註解掉以下區塊 ------------
-                    # is_reply_keyword = False
-                    # reply_keyword_keys = ['keyword_wolf_reply', 'keyword_wolf_reply_type2', 'keyword_wolf_reply_type3', 'keyword_wolf_reply_type4']
-                    # for key in reply_keyword_keys:
-                    #     reply_locs = detector._find_template(key, region=bubble_region, grayscale=False, confidence=detector.confidence)
-                    #     if reply_locs:
-                    #         for loc in reply_locs:
-                    #             if abs(keyword_coords[0] - loc[0]) <= 2 and abs(keyword_coords[1] - loc[1]) <= 2:
-                    #                 print(f"Confirmed detected keyword at {keyword_coords} matches reply keyword template '{key}' at {loc}.")
-                    #                 is_reply_keyword = True
-                    #                 break
-                    #     if is_reply_keyword:
-                    #         break
-                    # ------------- END: 刪除或註解掉以上區塊 -------------
-
-                    # 直接根據返回的 key 判斷是否為 reply
-                    # Note: Dual method currently only returns 'keyword_wolf_reply' as a reply type key
-                    is_reply_keyword = (detected_template_key == 'keyword_wolf_reply')
-
-                    # Calculate click coordinates with potential offset
-                    click_coords = keyword_coords
-                    if is_reply_keyword:
-                        click_coords = (keyword_coords[0], keyword_coords[1] + 25) # 假設 reply 需要 +25 Y 偏移
-                        # 更新日誌，包含 key
-                        print(f"Applying +25 Y-offset for reply keyword '{detected_template_key}'. Click target: {click_coords}")
-                    else:
-                         # 更新日誌，包含 key
-                        print(f"Detected keyword '{detected_template_key}' is not a reply type. Click target: {click_coords}")
-
-                    # --- 將剩餘的邏輯放在 if result: 區塊內 ---
-                    # --- Variables needed later ---
-                    bubble_snapshot = None
-                    search_area = SCREENSHOT_REGION
-                    if search_area is None:
-                        print("Warning: SCREENSHOT_REGION not defined, searching full screen for bubble snapshot.")
-
-                    # --- Take Snapshot for Re-location ---
-                    # print("[DEBUG] UI Loop: Taking bubble snapshot...") # DEBUG REMOVED
-                    try:
-                        bubble_region_tuple = (int(bubble_region[0]), int(bubble_region[1]), int(bubble_region[2]), int(bubble_region[3]))
-                        if bubble_region_tuple[2] <= 0 or bubble_region_tuple[3] <= 0:
-                            print(f"Warning: Invalid bubble region {bubble_region_tuple} for snapshot. Skipping this bubble.")
-                            continue # Skip to next bubble in the loop
-                        bubble_snapshot, extension_used = capture_extended_bubble_screenshot(bubble_region_tuple)
-                        if bubble_snapshot is None:
-                             print("Warning: Failed to capture extended bubble snapshot. Skipping this bubble.")
-                             continue # Skip to next bubble
-
-
-                        # --- Save Snapshot for Debugging ---
-                        try:
-                            screenshot_index = (screenshot_counter % MAX_DEBUG_SCREENSHOTS) + 1
-                            screenshot_filename = f"debug_relocation_snapshot_{screenshot_index}.png"
-                            screenshot_path = os.path.join(DEBUG_SCREENSHOT_DIR, screenshot_filename)
-                            print(f"Attempting to save bubble snapshot used for re-location to: {screenshot_path}")
-                            bubble_snapshot.save(screenshot_path)
-                            print(f"Successfully saved bubble snapshot: {screenshot_path}")
-                            screenshot_counter += 1
-                        except Exception as save_err:
-                            print(f"Error saving bubble snapshot to {screenshot_path}: {repr(save_err)}")
-                            
-                    except Exception as snapshot_err:
-                         print(f"Error taking initial bubble snapshot: {repr(snapshot_err)}")
-                         continue # Skip to next bubble
-
-                    # 4. Re-locate bubble *before* copying text
-                    # print("[DEBUG] UI Loop: Re-locating bubble before copying text...") # DEBUG REMOVED
-                    new_bubble_box_for_copy = None
-                    if bubble_snapshot:
-                        try:
-                            # Use standard confidence for this initial critical step
-                            temp_bubble_box = detector.locate_image(bubble_snapshot,
-                                                                             region=search_area,
-                                                                             confidence=BUBBLE_RELOCATE_CONFIDENCE)
-                            if temp_bubble_box:
-                                compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
-                                new_bubble_box_for_copy = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
-                            else:
-                                new_bubble_box_for_copy = None
-                        except Exception as e:
-                            print(f"Exception during bubble location before copy: {e}")
-
-                    if not new_bubble_box_for_copy:
-                        print("Warning: Failed to re-locate bubble before copying text. Skipping this bubble.")
-                        continue # Skip to the next bubble in the outer loop
-
-                    print(f"Successfully re-located bubble for copy at: {new_bubble_box_for_copy}")
-                    # Define the region based on the re-located bubble, casting to int
-                    copy_bubble_region = (int(new_bubble_box_for_copy.left), int(new_bubble_box_for_copy.top),
-                                          int(new_bubble_box_for_copy.width), int(new_bubble_box_for_copy.height))
-
-                    # Find the keyword *again* within the *new* bubble region to get current coords
-                    # print("[DEBUG] UI Loop: Finding keyword again in re-located region...") # DEBUG REMOVED
-                    current_result = detector.find_keyword_in_region(copy_bubble_region) # Returns (coords, key) or None
-                    if not current_result:
-                        print("Warning: Keyword not found in the re-located bubble region. Skipping this bubble.")
-                        continue # Skip to the next bubble
-
-                    current_keyword_coords, current_detected_key = current_result
-                    print(f"Keyword '{current_detected_key}' re-located at {current_keyword_coords}")
-
-                    # Determine if it's a reply keyword based on the *new* location/key
-                    # Use the key found in the *re-located* region for the most accurate offset decision
-                    is_reply_keyword_current = (current_detected_key == 'keyword_wolf_reply')
-
-                    click_coords_current = current_keyword_coords
-                    if is_reply_keyword_current:
-                        click_coords_current = (current_keyword_coords[0], current_keyword_coords[1] + 25)
-                        print(f"Applying +25 Y-offset for reply keyword '{current_detected_key}' (current location). Click target: {click_coords_current}")
-                    else:
-                        print(f"Detected keyword '{current_detected_key}' is not a reply type (current location). Click target: {click_coords_current}")
-
-                    # Interact: Get Bubble Text using current coordinates
-                    # print("[DEBUG] UI Loop: Copying text...") # DEBUG REMOVED
-                    bubble_text = interactor.copy_text_at(click_coords_current)
-                    if not bubble_text:
-                        print("Error: Could not get dialogue content for this bubble (after re-location).")
-                        perform_state_cleanup(detector, interactor) # Attempt cleanup
-                        continue # Skip to next bubble
-
-                    # 5. Interact: Get Sender Name (uses re-location internally via retrieve_sender_name_interaction)
-                    # print("[DEBUG] UI Loop: Retrieving sender name...") # DEBUG REMOVED
-                    sender_name = None
-                    try:
-                        # --- Reuse Text Copy Bubble Box (OPTIMIZATION) ---
-                        print("Reusing bubble box from successful text copy operation...")
-                        # Use the same bubble_box that was successfully used for text copying
-                        # This ensures perfect consistency between text copy and avatar click operations
-                        new_bubble_box = new_bubble_box_for_copy
-                        print(f"Reusing bubble box from text copy: {new_bubble_box}")
-                        
-                        if new_bubble_box:
-                            new_tl_x, new_tl_y = new_bubble_box.left, new_bubble_box.top
-                            print(f"Using text-copy bubble position at: ({new_tl_x}, {new_tl_y})")
-                            new_avatar_coords = (new_tl_x + AVATAR_OFFSET_X_REPLY, new_tl_y + AVATAR_OFFSET_Y_REPLY)
-                            print(f"Calculated avatar coordinates using text-copy bubble: {new_avatar_coords}")
-                            sender_name = interactor.retrieve_sender_name_interaction(
-                                initial_avatar_coords=new_avatar_coords,
-                                bubble_snapshot=l1_bubble_snapshot,  # 使用L1去重時的正確模板
-                                search_area=search_area
-                            )
-                        else:
-                            print("Warning: Failed to re-locate bubble snapshot after multiple attempts.")
-                            print("Trying direct approach with original bubble coordinates...")
-                            original_tl_coords = target_bubble_info.get('tl_coords')
-                            if original_tl_coords:
-                                fallback_avatar_coords = (original_tl_coords[0] + AVATAR_OFFSET_X_REPLY,
-                                                        original_tl_coords[1] + AVATAR_OFFSET_Y_REPLY)
-                                print(f"Using fallback avatar coordinates from original detection: {fallback_avatar_coords}")
-                                sender_name = interactor.retrieve_sender_name_interaction(
-                                    initial_avatar_coords=fallback_avatar_coords,
-                                    bubble_snapshot=l1_bubble_snapshot,  # 使用L1去重時的正確模板
-                                    search_area=search_area
-                                )
-                                if not sender_name:
-                                    print("Direct approach failed. Skipping this trigger.")
-                                    perform_state_cleanup(detector, interactor)
-                                    continue # Skip to next bubble
-                            else:
-                                print("No original coordinates available. Skipping sender name retrieval.")
-                                perform_state_cleanup(detector, interactor)
-                                continue # Skip to next bubble
-                        # --- End Bubble Re-location Logic ---
-
-                    except Exception as reloc_err:
-                        print(f"Error during bubble re-location or subsequent interaction: {reloc_err}")
-                        import traceback
-                        traceback.print_exc()
-                        perform_state_cleanup(detector, interactor)
-                        continue # Skip to next bubble
-
-                    # 6. Perform Cleanup
-                    # print("[DEBUG] UI Loop: Performing cleanup after getting name...") # DEBUG REMOVED
-                    cleanup_successful = perform_state_cleanup(detector, interactor)
-                    if not cleanup_successful:
-                        print("Error: Failed to return to chat screen after getting name. Skipping this bubble.")
-                        continue # Skip to next bubble
-
-                    if not sender_name or not bubble_text:
-                        print("Error: Could not get sender name or bubble text, skipping.")
-                        perform_state_cleanup(detector, interactor)
-                        continue
-
-                    # --- 【第二層防護】執行文字內容去重 ---
-                    if deduplicator.is_duplicate(sender_name, bubble_text):
-                        print(f"--- TEXT DUPLICATE DETECTED (L2). User: {sender_name}, Text: {bubble_text[:30]}... Skipping. ---")
-                        # 因為已經執行了UI互動(獲取名稱)，所以這裡需要清理狀態
-                        perform_state_cleanup(detector, interactor)
-                        continue
-
-                    # --- 所有檢查通過，這是一個全新的有效觸發 ---
-                    print(">>> New trigger event (passed BOTH visual and text deduplication) <<<")
-                    
-                    # --- 【確認階段】將通過兩階段驗證的泡泡添加到視覺去重記錄中 ---
-                    if bubble_confirmation_data:
-                        # 更新發送者信息到確認數據中
-                        bubble_confirmation_data['sender'] = sender_name
-                        # 確認添加到視覺去重記錄
-                        bubble_deduplicator.confirm_add_bubble(bubble_confirmation_data)
-                    else:
-                        print("Warning: No bubble confirmation data available for final confirmation")
-
-                    # --- Attempt to activate reply context ---
-                    # print("[DEBUG] UI Loop: Attempting to activate reply context...") # DEBUG REMOVED
-                    reply_context_activated = False
-                    try:
-                        print("Attempting to activate reply context...")
-                        if bubble_snapshot is None:
-                             print("Warning: Bubble snapshot missing for reply context activation. Skipping.")
-                             final_bubble_box_for_reply = None
-                        else:
-                             print(f"Attempting final re-location for reply context using search_area: {search_area}")
-                             temp_bubble_box = detector.locate_image(bubble_snapshot, region=search_area, confidence=BUBBLE_RELOCATE_CONFIDENCE)
-                             if temp_bubble_box:
-                                 compensated_coords = compensate_coordinates_for_extended_screenshot(temp_bubble_box)
-                                 final_bubble_box_for_reply = type(temp_bubble_box)(compensated_coords[0], compensated_coords[1], compensated_coords[2], compensated_coords[3])
-                             else:
-                                 final_bubble_box_for_reply = None
-
-                        if final_bubble_box_for_reply:
-                            print(f"Final re-location successful at: {final_bubble_box_for_reply}")
-                            bubble_x_reply, bubble_y_reply = final_bubble_box_for_reply.left, final_bubble_box_for_reply.top
-                            bubble_w_reply, bubble_h_reply = final_bubble_box_for_reply.width, final_bubble_box_for_reply.height
-                            center_x_reply = bubble_x_reply + bubble_w_reply // 2
-                            center_y_reply = bubble_y_reply + bubble_h_reply // 2
-
-                            if is_reply_keyword:
-                                center_y_reply += 15
-                                print(f"Applying +15 Y-offset to bubble center click for reply keyword. Target Y: {center_y_reply}")
-
-                            # chat_room --bubble--> bubble_menu --Reply--> chat_room (menu closed)
-                            print(f"Clicking bubble center for reply at ({center_x_reply}, {center_y_reply})")
-                            menu = interactor.nav.click_and_expect((center_x_reply, center_y_reply), expect={'bubble_menu'},
-                                                                   from_screen=CHAT, timeout=2.0, retries=2, label='bubble (reply)')
-                            if menu:
-                                reply_step = interactor.nav.click_and_expect('reply_button', expect={CHAT},
-                                                                             from_screen='bubble_menu', timeout=2.0,
-                                                                             retries=2, label='Reply')
-                                reply_context_activated = bool(reply_step)
-                                print("Reply context activated." if reply_context_activated
-                                      else f">>> Reply step failed: {reply_step.message} <<<")
-                            else:
-                                print(f">>> Bubble menu did not open for reply: {menu.message} <<<")
-                            if not reply_context_activated:
-                                interactor.nav.recover_to_chat()
-                        else:
-                            print("Warning: Failed to re-locate bubble for activating reply context.")
-
-                    except Exception as reply_context_err:
-                        print(f"!!! Error during reply context activation: {reply_context_err} !!!")
-
-                    # 7. Send Trigger Info to Main Thread
-                    print("\n>>> Putting trigger info in Queue <<<")
-                    try:
-                        # 安全地處理和顯示發送者名稱
-                        safe_sender_display = handle_text_encoding(sender_name, "[未知發送者]")
-                        print(f"   Sender: {safe_sender_display}")
-                        
-                        # 安全地處理和顯示消息內容
-                        if bubble_text:
-                            display_text = bubble_text[:100] + "..." if len(bubble_text) > 100 else bubble_text
-                            safe_content_display = handle_text_encoding(display_text, "[無法處理的文字內容]")
-                            print(f"   Content: {safe_content_display}")
-                        else:
-                            print("   Content: [空]")
-                    except Exception as e_display:
-                        print(f"Error displaying message info: {str(e_display)}")
-                    
-                    print(f"   Bubble Region: {bubble_region}") # Original region for context
-                    print(f"   Reply Context Activated: {reply_context_activated}")
-                    try:
-                        # 確保所有文字數據都經過安全處理
-                        data_to_send = {
-                            'sender': handle_text_encoding(sender_name, "[未知發送者]"),
-                            'text': handle_text_encoding(bubble_text, "[無法處理的文字內容]"),
-                            'bubble_region': bubble_region,
-                            'reply_context_activated': reply_context_activated,
-                            'bubble_snapshot': bubble_snapshot,
-                            'search_area': search_area
-                        }
-                        trigger_queue.put(data_to_send)
-                        found_new_bubble_this_cycle = True  # 標記找到新泡泡
-                        print("Trigger info (with region, reply flag, snapshot, search_area) placed in Queue.")
-                        
-                        # --- 發送者信息已在確認階段統一處理，此處不再需要更新 ---
-
-                        # --- CRITICAL: Break loop after successfully processing one trigger ---
-                        print("--- Single bubble processing complete. Breaking scan cycle. ---")
-                        break # Exit the 'for target_bubble_info in sorted_bubbles' loop
-
-                    except Exception as q_err:
-                        print(f"Error preparing or enqueueing data: {q_err}")
-                        # 嘗試使用最小數據集合保證功能性
-                        try:
-                            minimal_data = {
-                                'sender': "[數據處理錯誤]",
-                                'text': handle_text_encoding(bubble_text[:100] if bubble_text else "[內容獲取失敗]"), # Apply encoding here too
-                                'bubble_region': bubble_region,
-                                'reply_context_activated': False, # Sensible default
-                                'bubble_snapshot': bubble_snapshot, # Keep snapshot if available
-                                'search_area': search_area
-                            }
-                            trigger_queue.put(minimal_data)
-                            found_new_bubble_this_cycle = True  # 標記找到新泡泡（即便是fallback）
-                            print("Minimal fallback data placed in Queue after error.")
-                        except Exception as min_q_err:
-                            print(f"Critical failure: Could not place any data in queue: {min_q_err}")
-                        # Let's break here too, as something is wrong.
-                        print("Breaking scan cycle due to queue error.")
-                        break
-
-                # End of keyword found block (if result:)
-            # End of loop through sorted bubbles (for target_bubble_info...)
-
-            # If the loop finished without breaking (i.e., no trigger processed), wait the full interval.
-            # If it broke, the sleep still happens here before the next cycle.
-            # print("[DEBUG] UI Loop: Finished bubble iteration or broke early. Sleeping...") # DEBUG REMOVED
-            time.sleep(1.5) # Polling interval after checking all bubbles or processing one
-            
-            # --- 經濟模式邏輯：在循環結束時檢查是否有新泡泡被處理 ---
-            if not found_new_bubble_this_cycle:
-                detector.no_new_bubbles_count += 1
-                if detector.no_new_bubbles_count >= detector.eco_mode_threshold:
-                    detector.eco_mode_enabled = True
-                    detector.eco_mode_start_time = time.time()  # 記錄進入經濟模式的時間
-                    detector.no_new_bubbles_count = 0
-                    print(f"連續{detector.eco_mode_threshold}次循環無新泡泡，進入經濟模式")
-            else:
-                # 有新泡泡被處理，重置計數
-                detector.no_new_bubbles_count = 0
+                elif view:
+                    # chat located, but this message is not on screen any more (scrolled far away)
+                    item['misses'] = item.get('misses', 0) + 1
+                    if item['misses'] >= 10:
+                        print(f"[Tracker] #{item['seq']} is no longer on screen, giving up on it")
+                        tracker.mark(item, 'missed (not on screen)')
+            time.sleep(0.5)
 
         except KeyboardInterrupt:
             print("\nMonitoring interrupted.")
