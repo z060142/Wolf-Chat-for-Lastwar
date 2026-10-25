@@ -9,6 +9,8 @@ Why:
   half-resolution pass before a full-resolution verify for large searches.
 - wait_for()/wait_gone() poll at a high rate so callers can replace fixed sleeps
   with "continue as soon as the screen is ready, give up after N seconds".
+- quiet() reports when an area stopped moving (two cheap grabs ~30 ms apart nearly identical), so
+  slide-in / fade-in animations are waited out exactly instead of with fixed settle windows.
 
 Scores use cv2.TM_CCOEFF_NORMED exactly like pyscreeze (color or grayscale),
 so existing confidence values keep their meaning.
@@ -41,11 +43,18 @@ Region = Tuple[int, int, int, int]  # (left, top, width, height)
 Match = Tuple[int, int, int, int, float]  # (left, top, width, height, score)
 
 HINT_MARGIN = 48           # px around the last hit to search first
+HINT_SAME_PX = 3           # a hit this close to the hint confirms it (the element is at rest there)
 COARSE_MIN_AREA = 250_000  # haystacks larger than this use the coarse pass
 COARSE_MIN_SIDE = 32       # smaller templates lose too much at half resolution (tested: 24px icons missed)
 COARSE_SLACK = 0.18        # coarse candidates accepted at (confidence - slack)
 GRAY_SLACK = 0.12          # full-res grayscale candidates for small templates (color verify after)
 MAX_CANDIDATES = 300  # verify is cheap (template-sized windows); busy screens produce many coarse peaks
+
+# quiet(): "the screen stopped moving" = two grabs QUIET_MIN_GAP apart differ in < QUIET_THRESHOLD of the pixels
+QUIET_MIN_GAP = 0.03       # s between the two grabs compared
+QUIET_MAX_WAIT = 1.0       # give up after this long (perpetual animations must not stall a step)
+QUIET_THRESHOLD = 0.003    # fraction of changed pixels still counted as quiet
+QUIET_PIXEL_DIFF = 12      # grayscale difference that counts a pixel as changed
 
 
 def _screen_size() -> Tuple[int, int]:
@@ -87,8 +96,9 @@ class ScreenVision:
         self.debug = debug
         self._templates: Dict[str, _Template] = {}
         self._hints: Dict[str, Region] = {}
+        self._hint_ok: Dict[str, bool] = {}  # hint confirmed: the last two sightings at the same spot
         self._lock = threading.Lock()
-        self._frozen = threading.local()  # per-thread frozen full frame
+        self._frozen = threading.local()  # per-thread frozen frame: (image, region)
         self.screen_w, self.screen_h = _screen_size()
         self.stats = {'calls': 0, 'hint_hits': 0, 'time': 0.0}
         self._last_warn: Dict[str, float] = {}
@@ -132,6 +142,7 @@ class ScreenVision:
                 self._warn('resize', f"screen size changed {self.screen_w}x{self.screen_h} -> {size[0]}x{size[1]}", 0)
                 self.screen_w, self.screen_h = size
                 self._hints.clear()
+                self._hint_ok.clear()
         full = (0, 0, self.screen_w, self.screen_h)
         requested = tuple(int(v) for v in region) if region else full
         region = _clip_region(requested, full)
@@ -141,8 +152,11 @@ class ScreenVision:
             self._warn(f'clip{requested}', f"capture region {requested} clipped to the primary screen -> {region}")
 
         if frozen is not None:
+            frame, (fx, fy, fw, fh) = frozen
             x, y, w, h = region
-            return frozen[y:y + h, x:x + w], region
+            if fx <= x and fy <= y and x + w <= fx + fw and y + h <= fy + fh:
+                return frame[y - fy:y - fy + h, x - fx:x - fx + w], region
+            # outside the frozen area: capture live
 
         img = None
         if _HAS_WIN32:
@@ -165,17 +179,55 @@ class ScreenVision:
         return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
     @contextmanager
-    def frozen(self):
-        """Capture the screen once; every grab() in this thread reuses that frame.
-        Use when checking several templates against the same moment (state checks)."""
+    def frozen(self, region: Optional[Region] = None):
+        """Capture the screen (or just `region`, ~3x cheaper) once; every grab() in this thread inside that
+        area reuses that frame. Use when checking several templates against the same moment (state checks)."""
         if getattr(self._frozen, 'frame', None) is not None:
             yield  # already frozen (nested)
             return
-        self._frozen.frame, _ = self.grab(None)
+        self._frozen.frame = self.grab(region)
         try:
             yield
         finally:
             self._frozen.frame = None
+
+    def quiet(self, region: Optional[Region] = None, min_gap: float = QUIET_MIN_GAP,
+              max_wait: float = QUIET_MAX_WAIT, threshold: float = QUIET_THRESHOLD) -> bool:
+        """True as soon as two consecutive grabs of region (>= min_gap apart) differ in fewer than `threshold`
+        of the pixels, i.e. nothing slides / fades there any more; False after max_wait (callers then go on).
+        Must be called outside frozen() (a frozen frame never changes)."""
+        deadline = time.perf_counter() + max_wait
+        prev_t = time.perf_counter()
+        prev = self.gray(region)
+        while True:
+            wait = min_gap - (time.perf_counter() - prev_t)
+            if wait > 0:
+                time.sleep(wait)
+            t = time.perf_counter()
+            cur = self.gray(region)
+            if self.changed(prev, cur) < threshold:
+                return True
+            if t >= deadline:
+                return False
+            prev, prev_t = cur, t
+
+    def gray(self, region: Optional[Region] = None) -> np.ndarray:
+        """Grayscale capture of region (for quiet() / change checks)."""
+        return cv2.cvtColor(self.grab(region)[0], cv2.COLOR_BGR2GRAY)
+
+    @staticmethod
+    def changed(a: np.ndarray, b: np.ndarray) -> float:
+        """Fraction of pixels that differ by more than QUIET_PIXEL_DIFF between two grayscale frames
+        (1.0 if their sizes differ)."""
+        if a.shape != b.shape or a.size == 0:
+            return 1.0
+        _, moved = cv2.threshold(cv2.absdiff(a, b), QUIET_PIXEL_DIFF, 255, cv2.THRESH_BINARY)
+        return cv2.countNonZero(moved) / a.size
+
+    def template_size(self, needle) -> Optional[Tuple[int, int]]:
+        """(width, height) of a template, or None if it cannot be loaded."""
+        _, tpl = self._get_template(needle)
+        return (tpl.w, tpl.h) if tpl is not None else None
 
     # ---------------------------------------------------------------- templates
     def _get_template(self, needle: Union[str, Image.Image, np.ndarray]) -> Tuple[Optional[str], Optional[_Template]]:
@@ -276,11 +328,18 @@ class ScreenVision:
                 unique.append(m)
         return unique[:limit]
 
+    def has_hint(self, needle) -> bool:
+        """True once a template's (by path) spot is confirmed: found twice in a row at the same place.
+        (A first sighting can be mid slide-in, i.e. not where the element comes to rest.)"""
+        return bool(self._hint_ok.get(needle)) and needle in self._hints
+
     def locate_all(self, needle: Union[str, Image.Image, np.ndarray], region: Optional[Region] = None,
                    confidence: float = 0.9, grayscale: bool = False, limit: int = 50,
-                   use_hint: bool = True) -> List[Match]:
+                   use_hint: bool = True, hint_only: bool = False) -> List[Match]:
         """Find all matches of needle in region. Best match first.
-        use_hint: try the area around the previous hit first (single-instance UI elements)."""
+        use_hint: try the area around the previous hit first (single-instance UI elements).
+        hint_only: for elements that never move - once their spot is confirmed (has_hint), search only around
+        it (a miss there means "not on screen"); before that the whole region is searched as usual."""
         start = time.perf_counter()
         self.stats['calls'] += 1
         try:
@@ -308,12 +367,20 @@ class ScreenVision:
                     found = self._match_in(tpl, hay, actual[:2], confidence, grayscale, limit)
                     if found:
                         self.stats['hint_hits'] += 1
+                        if key:
+                            same = abs(found[0][0] - hx) <= HINT_SAME_PX and abs(found[0][1] - hy) <= HINT_SAME_PX
+                            self._hint_ok[key] = same
+                            if not same:
+                                self._hints[key] = found[0][:4]  # still moving (slide-in): follow it
                         return found
+                    if hint_only and self._hint_ok.get(key):
+                        return []
 
             hay, actual = self.grab(search_region)
             found = self._search(tpl, hay, actual, confidence, grayscale, limit)
             if found and key:
                 self._hints[key] = found[0][:4]
+                self._hint_ok[key] = False
             return found
         finally:
             self.stats['time'] += time.perf_counter() - start

@@ -69,7 +69,7 @@ def run_synthetic(rounds, confidence, seed, native_only=False):
             hay[y:y + th, x:x + tw] = t
             placed[p] = (x, y)
         hay_pil = Image.fromarray(cv2.cvtColor(hay, cv2.COLOR_BGR2RGB))
-        vision._frozen.frame = hay  # make ScreenVision read this haystack
+        vision._frozen.frame = (hay, (0, 0, hay.shape[1], hay.shape[0]))  # make ScreenVision read this haystack
         vision._hints.clear()
 
         # Half the rounds use the bot's default game region, half the full screen

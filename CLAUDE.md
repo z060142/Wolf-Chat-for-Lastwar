@@ -175,11 +175,15 @@ The UI interaction system uses:
 - **Native Screen Vision** (`screen_vision.py`, `SCREEN_VISION_BACKEND = "native"`): region-only GDI capture,
   cached templates, last-hit hint ROI, coarse-to-fine search; `DetectionModule.wait_for_template()` /
   `wait_for_template_gone()` poll instead of fixed sleeps. `wait_for_template()` only returns once the match
-  has settled (same spot for `UI_SETTLE_SECONDS`), so clicks never land on a page that is still sliding/fading in.
+  has settled (same spot ±`UI_SETTLE_PX` on two polls ~30 ms apart and its area quiet: `ScreenVision.quiet()`,
+  constants `QUIET_*`), so clicks never land on a page that is still sliding/fading in. `click_at` has no fixed waits.
 - **Screen Map** (`ui_navigator.py`, `interactor.nav`): every UI flow (copy text, sender name, reply, position removal,
   cleanup, main-loop recovery) goes through `click_and_expect()` - confirm the start screen, click, confirm the
   expected screen (retry a click without effect, stop on an unexpected screen) - and `recover_to_chat()` walks back
-  with each screen's known back action. New screens go into `SCREENS` / `BACK_ACTIONS`. Unexpected screens are saved
+  with each screen's known back action. After a click only the expected screens' signatures are polled (a start
+  screen lying on top must be gone); the full `identify()` runs only when they do not show up. A click after which
+  the game area did not change at all for `NO_EFFECT_SECONDS` counts as ignored and is retried early.
+  `send_chat_message` confirms the send (send button gone; one more click, else it reports failure). New screens go into `SCREENS` / `BACK_ACTIONS`. Unexpected screens are saved
   to `debug_screenshots/nav/`. Offline test with a simulated laggy game: `tools/sim_game_nav.py` `"pyautogui"` keeps the legacy path.
   Tests: `tools/test_screen_vision.py` (equivalence vs pyscreeze), `tools/test_screen_wait.py` (live on-screen waits)
 - **Screen Capture**: PyAutoGUI for screenshots and coordinate detection
@@ -187,7 +191,7 @@ The UI interaction system uses:
 - **Chat Tracker** (`chat_tracker.py`): decides which messages are new by *position*, not content. The record is the
   messages already seen; on each still chat frame the newest recorded one is found again (whole-message image compare,
   confirmed by the one above it) and everything below it is new. Messages split by background gaps, owner from HSV
-  bubble colours. Repeated text after someone else spoke is new; scrolling up never re-runs old commands; recalled
+  bubble colours (a frame counts as still when its layout equals the previous look's, 0.15-2 s earlier). Repeated text after someone else spoke is new; scrolling up never re-runs old commands; recalled
   messages are stepped over. Every message is recorded (others' as "not to bot"); the record is saved in
   `chat_tracker_data/` so a game/script restart continues where it stopped (at most `MAX_CATCHUP` answers for
   messages sent meanwhile). One message is handled at a time: the UI loop pauses itself after enqueueing a trigger

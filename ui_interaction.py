@@ -23,7 +23,7 @@ import math # Added for distance calculation in dual method
 import datetime # Added for MCP result timestamps
 import hashlib # Added for UI stability checking
 import time # Ensure time is imported for MessageDeduplication
-from screen_vision import ScreenVision, Box
+from screen_vision import ScreenVision, Box, QUIET_THRESHOLD
 from ui_navigator import UINavigator, CHAT
 from chat_tracker import ChatTracker, MAX_ATTEMPTS
 import difflib # Added for text similarity
@@ -428,9 +428,13 @@ STATE_CONFIDENCE_THRESHOLD = 0.9  # 狀態偵測的信心度
 BUBBLE_RELOCATE_CONFIDENCE = 0.8  # 尋找泡泡快照的信心度
 BUBBLE_RELOCATE_FALLBACK_CONFIDENCE = 0.6  # 備用低信心度
 
-# wait_for_template 穩定判定：模板在同一位置（±UI_SETTLE_PX）持續 UI_SETTLE_SECONDS 才算出現（等滑入/淡入動畫結束）
-UI_SETTLE_SECONDS = 0.15
+# wait_for_template 穩定判定：連續兩次輪詢在同一位置（±UI_SETTLE_PX）找到模板，且模板周圍（外擴 QUIET_PAD px）畫面靜止
+# （ScreenVision.quiet，常數 QUIET_* 在 screen_vision.py）才算出現 —— 等滑入/淡入動畫結束才點擊
 UI_SETTLE_PX = 3
+QUIET_PAD = 40
+UI_POLL_SECONDS = 0.03  # 等待模板時的輪詢間隔（native vision）
+# 點擊前滑鼠在目標上停留的時間（部分遊戲先讀 hover 再收點擊）；0 = 移動後立即按下
+CLICK_HOVER_SECONDS = 0.02
 
 # 雙方法偵測信心度（CLAHE + Grayscale）
 DUAL_METHOD_CONFIDENCE_THRESHOLD = 0.87  # 雙方法個別閾值
@@ -754,8 +758,10 @@ class DetectionModule:
             exists = self._template_exists[template_path] = os.path.exists(template_path)
         return exists
 
-    def _find_template(self, template_key: str, confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
-        """Internal helper to find a template by its key using PyAutoGUI. Returns list of CENTER coordinates (absolute)."""
+    def _find_template(self, template_key: str, confidence: Optional[float] = None, region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False,
+                       hint_only: bool = False) -> List[Tuple[int, int]]:
+        """Internal helper to find a template by its key using PyAutoGUI. Returns list of CENTER coordinates (absolute).
+        hint_only (native vision): the element never moves, so once seen only its last spot is searched."""
         template_path = self.templates.get(template_key)
         if not template_path:
             print(f"Error: Template key '{template_key}' not found in provided templates.")
@@ -776,7 +782,8 @@ class DetectionModule:
             if self.vision:
                 # Single-instance UI elements: search around the last hit first
                 matches = [Box(*m[:4]) for m in self.vision.locate_all(
-                    template_path, region=current_region, confidence=current_confidence, grayscale=grayscale)]
+                    template_path, region=current_region, confidence=current_confidence, grayscale=grayscale,
+                    hint_only=hint_only)]
             else:
                 # locateAllOnScreen returns Box objects (left, top, width, height)
                 matches = pyautogui.locateAllOnScreen(template_path, region=current_region, confidence=current_confidence, grayscale=grayscale)
@@ -837,34 +844,81 @@ class DetectionModule:
             return self.vision.grab_pil(region)
         return pyautogui.screenshot(region=region)
 
+    def quiet(self, region: Optional[Tuple[int, int, int, int]] = None, max_wait: Optional[float] = None) -> bool:
+        """Wait until `region` (default: the game area) stops changing - see ScreenVision.quiet. True once still,
+        False if it kept moving for max_wait. Legacy pyautogui backend: no cheap capture, returns True at once
+        (its ~0.2 s searches already space the polls apart)."""
+        if not self.vision:
+            return True
+        try:
+            if max_wait is None:
+                return self.vision.quiet(region or self.region)
+            return self.vision.quiet(region or self.region, max_wait=max_wait)
+        except Exception as e:
+            print(f"Warning: quiet-frame check failed ({e}), going on")
+            return True
+
+    def snapshot_gray(self):
+        """Grayscale frame of the game area to compare later (unchanged_since), or None without native vision."""
+        if not self.vision:
+            return None
+        try:
+            return self.vision.gray(self.region)
+        except Exception as e:
+            print(f"Warning: reference capture failed ({e})")
+            return None
+
+    def unchanged_since(self, ref) -> bool:
+        """True if the game area still looks like `ref` (within the quiet threshold): nothing reacted."""
+        if ref is None or not self.vision:
+            return False
+        try:
+            return self.vision.changed(ref, self.vision.gray(self.region)) < QUIET_THRESHOLD
+        except Exception:
+            return False
+
+    def quiet_around(self, template_key: str, center: Tuple[int, int], pad: int = QUIET_PAD) -> bool:
+        """quiet() on a template's box (centered at `center`) padded by `pad` px, clipped to the game area."""
+        size = self.vision.template_size(self.templates.get(template_key)) if self.vision else None
+        w, h = size or (0, 0)
+        x0, y0 = center[0] - w // 2 - pad, center[1] - h // 2 - pad
+        x1, y1 = x0 + w + 2 * pad, y0 + h + 2 * pad
+        if self.region:
+            rx, ry, rw, rh = self.region
+            x0, y0, x1, y1 = max(x0, rx), max(y0, ry), min(x1, rx + rw), min(y1, ry + rh)
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return self.quiet()
+        return self.quiet((x0, y0, x1 - x0, y1 - y0))
+
     def wait_for_template(self, template_key: str, timeout: float = 2.0, confidence: Optional[float] = None,
-                          region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False,
-                          settle: Optional[float] = None) -> List[Tuple[int, int]]:
+                          region: Optional[Tuple[int, int, int, int]] = None, grayscale: bool = False) -> List[Tuple[int, int]]:
         """Poll until the template appears AND has settled; returns CENTER coordinates (like _find_template) or [] on timeout.
         Game pages slide/fade in: a button already matches mid-animation, and clicking it then is ignored by the game
-        or lands where the button no longer is. So the match must stay at the same spot (within UI_SETTLE_PX) for
-        `settle` seconds (default UI_SETTLE_SECONDS); any movement restarts that window."""
-        settle = UI_SETTLE_SECONDS if settle is None else settle
+        or lands where the button no longer is. Settled = found at the same spot (within UI_SETTLE_PX) on two polls in
+        a row and the area around it quiet (no pixel movement); then it is looked up once more and returned."""
         deadline = time.time() + timeout
-        anchor, since, last = None, None, []
+        poll = UI_POLL_SECONDS if self.vision else 0.05
+        prev, last = None, []
         while True:
             locs = self._find_template(template_key, confidence=confidence, region=region, grayscale=grayscale)
-            now = time.time()
             if locs:
                 pos = locs[0]
-                if anchor is None or abs(pos[0] - anchor[0]) > UI_SETTLE_PX or abs(pos[1] - anchor[1]) > UI_SETTLE_PX:
-                    anchor, since = pos, now  # appeared or still moving: restart the settle window
-                last = locs
-                if now - since >= settle:
-                    return locs
+                if prev is not None and abs(pos[0] - prev[0]) <= UI_SETTLE_PX and abs(pos[1] - prev[1]) <= UI_SETTLE_PX:
+                    still = self.quiet_around(template_key, pos)
+                    again = self._find_template(template_key, confidence=confidence, region=region, grayscale=grayscale)
+                    if again and abs(again[0][0] - pos[0]) <= UI_SETTLE_PX and abs(again[0][1] - pos[1]) <= UI_SETTLE_PX:
+                        if not still:
+                            print(f"Note: the area around '{template_key}' kept changing, using its position anyway")
+                        return again
+                    locs = again  # it moved while we waited for the quiet frame: settle again from there
+                prev, last = (locs[0] if locs else None), locs
             else:
-                anchor, since, last = None, None, []
-            # A match that showed up before the timeout gets its settle window; a never-settling one is still returned
-            if now >= deadline + (settle if anchor else 0):
+                prev, last = None, []
+            if time.time() >= deadline:
                 if last:
-                    print(f"Note: '{template_key}' found but did not settle within {timeout + settle:.2f}s, using last position")
+                    print(f"Note: '{template_key}' found but did not settle within {timeout:.2f}s, using last position")
                 return last
-            time.sleep(0.03 if self.vision else 0.05)
+            time.sleep(poll)
 
     def wait_for_template_gone(self, template_key: str, timeout: float = 2.0, confidence: Optional[float] = None,
                                region: Optional[Tuple[int, int, int, int]] = None) -> bool:
@@ -2102,7 +2156,7 @@ class DetectionModule:
         """Determine the current UI state based on visible elements."""
         if self.vision:
             try:
-                with self.vision.frozen():  # one capture shared by every check below
+                with self.vision.frozen(self.region):  # one capture shared by every check below
                     return self._get_current_ui_state()
             except Exception as e:
                 # _find_template swallows its own errors, but the shared capture happens here;
@@ -2140,7 +2194,7 @@ class InteractionModule:
         self.nav = UINavigator(detector, self)  # screen map: verified clicks and recovery
         print("InteractionModule initialized.")
 
-    def click_at(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1, duration: float = 0.1):
+    def click_at(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1, duration: float = 0.0):
         """Safely click at specific coordinates with safety boundary check."""
         # 安全區域檢查
         if not is_click_position_safe(x, y):
@@ -2159,9 +2213,12 @@ class InteractionModule:
             scale_factor = get_windows_dpi_scale()
             scaling_info = f" [DPI {scale_factor:.2f}]" if scale_factor != 1.0 else ""
             print(f"Moving to and clicking at: ({x}, {y}) [SAFE]{scaling_info}, button: {button}, clicks: {clicks}")
-            pyautogui.moveTo(x, y, duration=duration)
-            pyautogui.click(button=button, clicks=clicks, interval=interval)
-            time.sleep(0.1)
+            # No fixed waits around the click (pyautogui's 0.1 s PAUSE after each call skipped too):
+            # callers confirm the click's effect by watching the screen (click_and_expect / wait_for_template)
+            pyautogui.moveTo(x, y, duration=duration, _pause=False)
+            if CLICK_HOVER_SECONDS > 0:
+                time.sleep(CLICK_HOVER_SECONDS)
+            pyautogui.click(button=button, clicks=clicks, interval=interval, _pause=False)
             return True  # 成功點擊
         except Exception as e:
             print(f"Error clicking at coordinates ({x}, {y}): {e}")
@@ -2249,7 +2306,6 @@ class InteractionModule:
         print(f"Attempting interaction to get username, initial avatar guess: {initial_avatar_coords}...")
         original_clipboard = self.get_clipboard() or ""
         self.set_clipboard("___MCP_CLEAR___")
-        time.sleep(0.1)
         sender_name = None
         profile_page_found = False
         current_avatar_coords = initial_avatar_coords
@@ -2345,16 +2401,14 @@ class InteractionModule:
         else:
              print("Warning: Input box template key not set or image missing, using default coordinates.")
 
-        # Click input, paste, send
+        # Click input, paste, send. No fixed waits: the send button appearing proves the text landed,
+        # the send button going away proves the message went out.
         self.click_at(input_coords[0], input_coords[1])
-        time.sleep(0.1)
 
         print("Pasting response...")
         self.set_clipboard(reply_text)
-        time.sleep(0.1)
         try:
             self.hotkey('ctrl', 'v')
-            time.sleep(0.4)  # Extended delay for UI to process paste operation
             print("Pasted.")
         except Exception as e:
             print(f"Error pasting response: {e}")
@@ -2369,17 +2423,21 @@ class InteractionModule:
                                                                 confidence=0.85, region=send_region)
         if send_button_locations:
             send_coords = send_button_locations[0]
-            self.click_at(send_coords[0], send_coords[1])
-            print("Clicked send button.")
-            time.sleep(0.2)
-            return True
+            for attempt in (1, 2):
+                self.click_at(send_coords[0], send_coords[1])
+                if self.detector.wait_for_template_gone(self.send_button_key, timeout=2.0, confidence=0.85,
+                                                        region=send_region):
+                    print(f"Clicked send button, message sent (send button gone{', attempt 2' if attempt > 1 else ''}).")
+                    return True
+                print(f"Send button still there after click {attempt} - the message was not sent yet")
+            print("Error: message NOT sent - the send button stayed after two clicks.")
+            return False
         else:
             # Fallback to pressing Enter
             print("Send button not found (the pasted text may not have reached the input box). Attempting to press Enter.")
             try:
                 self.press_key('enter')
                 print("Pressed Enter.")
-                time.sleep(0.1)
                 return True
             except Exception as e_enter:
                 print(f"Error pressing Enter: {e_enter}")
@@ -2823,7 +2881,7 @@ def handle_tracked_message(detector: DetectionModule, interactor: InteractionMod
         current = view.get(seq)
         if current is not None and current['complete']:
             break
-        time.sleep(0.3)
+        time.sleep(0.1)  # still() inside update() already waits for a still chat
     if current is not None and current['complete']:
         x, y, w, h = tracker.screen_box(current)
         center = (x + w // 2, y + h // 2 + (15 if is_reply_keyword else 0))
@@ -3244,7 +3302,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     if item['misses'] >= 10:
                         print(f"[Tracker] #{item['seq']} is no longer on screen, giving up on it")
                         tracker.mark(item, 'missed (not on screen)')
-            time.sleep(0.5)
+            time.sleep(0.3)  # also the gap still() compares over (previous look's frame vs this one)
 
         except KeyboardInterrupt:
             print("\nMonitoring interrupted.")

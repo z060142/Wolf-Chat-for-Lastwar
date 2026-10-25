@@ -137,7 +137,7 @@ class SimGame:
             self.clicks += 1
             if self.busy(now) or self.rng.random() < self.drop_rate:
                 self.dropped += 1
-                return
+                return 'busy' if self.busy(now) else 'dropped'
             s, hit = self.screen, lambda k: self._hit(k, px, py)
             ax, ay, aw, ah = self.avatar
             if s == 'chat_room':
@@ -191,10 +191,10 @@ class SimInteractor(U.InteractionModule):
         self.game = game
 
     def click_at(self, x, y, *a, **k):
-        print(f"  (sim) click ({x}, {y}) on {self.game.screen}")
-        self.game.click(x, y)
-        time.sleep(0.1)
-        return True
+        screen = self.game.screen
+        lost = self.game.click(x, y)
+        print(f"  (sim) click ({x}, {y}) on {screen}" + (f" - ignored by the game ({lost})" if lost else ""))
+        return True  # like the real click_at: no wait after the click
 
     def press_key(self, key, presses=1, interval=0.1):
         print(f"  (sim) key {key} on {self.game.screen}")

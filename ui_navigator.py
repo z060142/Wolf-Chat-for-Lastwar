@@ -3,7 +3,9 @@ UI navigator: an internal map of the game's screens.
 
 Instead of "see a template, click it, hope", every interaction goes through the map:
   1. identify()       - which screen are we on (one frame, top-most overlay first)
-  2. wait_screen()    - wait until the screen is *stable* (same answer over several frames)
+  2. wait_screen()    - wait for a screen: an expected one is watched for directly (its signature at the
+                        same spot on two polls ~30 ms apart, on a quiet frame); otherwise wait for a quiet
+                        frame (nothing moving, see ScreenVision.quiet) and identify it
   3. click_and_expect - confirm the starting screen, find the button (settled), click,
                         then confirm the click had its effect (expected screen / condition).
                         No effect -> click again; unexpected screen -> stop and report it.
@@ -34,6 +36,13 @@ SCREENS: Sequence[Tuple[str, Tuple[Tuple[str, Optional[float]], ...]]] = (
 )
 CHAT = 'chat_room'
 UNKNOWN = 'unknown'
+RANK = {name: i for i, (name, _) in enumerate(SCREENS)}  # lower = drawn on top
+# Signature elements that do not sit at a fixed spot (the bubble menu opens next to the clicked bubble):
+# always searched in the whole game area. Every other one is searched only where it was last seen.
+MOVING = {'reply_button', 'copy_menu_item'}
+# Full pages reached only through the profile card (~100 ms of searching): until one has been seen, it is
+# looked for only when expected or when nothing else matched (it hides everything under it, so then nothing does)
+DEEP = {'position_page', 'capitol'}
 
 # How to step back from each screen towards the chat room, tried in order until the screen changes.
 # ('esc',), ('click', template_key), ('click_xy', (x, y))
@@ -48,9 +57,12 @@ BACK_ACTIONS: Dict[str, Sequence[tuple]] = {
     UNKNOWN: (('esc',),),
 }
 
-STABLE_SECONDS = 0.3     # a screen counts as reached once identified identically for this long
-STABLE_FRAMES = 3        # ... and in at least this many consecutive checks
-POLL_SECONDS = 0.05
+SAME_SPOT_PX = 3         # an expected screen counts as reached once its signature is found twice in a row this close
+POLL_SECONDS = 0.03      # between two looks while waiting
+# A click / key after which the game area has not changed at all for this long was ignored by the game
+# (busy right after a transition, dropped): retry it now instead of waiting out the full timeout.
+# Raise it if the game is slow to react (a retry then risks a double click).
+NO_EFFECT_SECONDS = 1.0
 SNAPSHOT_DIR = os.path.join("debug_screenshots", "nav")
 SNAPSHOT_KEEP = 60
 
@@ -76,14 +88,17 @@ class UINavigator:
         self.history: deque = deque(maxlen=30)
 
     # ------------------------------------------------------------------ where am I
-    def identify(self) -> Tuple[str, Optional[str], Optional[Tuple[int, int]]]:
-        """(screen, matched template key, its center) for the current frame."""
-        def scan():
+    def identify(self, expect: Optional[Iterable[str]] = None) -> Tuple[str, Optional[str], Optional[Tuple[int, int]]]:
+        """(screen, matched template key, its center) for the current frame.
+        expect: screens being waited for (always searched in full, even before their first sighting)."""
+        def scan(spot=(), skip=(), only=None):
+            """spot: keys searched only around their last hit; skip: keys left out; only: check just these keys."""
             for name, signature in SCREENS:
                 for key, conf in signature:
-                    if key not in self.det.templates:
+                    if key not in self.det.templates or key in skip or (only is not None and key not in only):
                         continue
-                    locs = self.det._find_template(key, confidence=conf or self.det.state_confidence)
+                    locs = self.det._find_template(key, confidence=conf or self.det.state_confidence,
+                                                   hint_only=key in spot)
                     if locs:
                         return name, key, locs[0]
             return UNKNOWN, None, None
@@ -91,47 +106,123 @@ class UINavigator:
         vision = getattr(self.det, 'vision', None)
         if vision:
             try:
-                with vision.frozen():  # one capture for the whole scan
-                    return scan()
+                with vision.frozen(self.det.region):  # one capture of the game area for the whole scan
+                    # Fixed elements seen before are searched only around that spot (~10x cheaper)
+                    spot = {k for k, path in self.det.templates.items() if k not in MOVING and vision.has_hint(path)}
+                    expect = set(expect or ())
+                    skip = {k for name, sig in SCREENS if name in DEEP and name not in expect
+                            for k, _ in sig if k not in spot}
+                    found = scan(spot, skip)
+                    if found[0] == UNKNOWN and (spot or skip):
+                        # nothing matched (e.g. the game window moved, or a page not seen yet):
+                        # search the remembered and the left-out ones everywhere once
+                        found = scan(only=spot | skip)
+                    return found
             except Exception as e:
                 print(f"[Nav] Warning: shared-frame scan failed ({e}), scanning templates individually")
         return scan()
 
     def wait_screen(self, expect: Optional[Iterable[str]] = None, timeout: float = 3.0,
-                    leave: Optional[str] = None) -> Tuple[str, Optional[str]]:
-        """Wait until the screen is stable and satisfies the condition:
+                    leave: Optional[str] = None, start: Optional[str] = None, ref=None) -> Tuple[str, Optional[str]]:
+        """Wait until the screen satisfies the condition:
         in `expect` (if given), or a known screen other than `leave` (if given), or anything (neither given).
-        Returns (screen, matched key) of the last stable screen (or the last seen one on timeout)."""
-        expect = set(expect) if expect else None
-        deadline = time.time() + timeout
-        cur, key, since, frames = None, None, 0.0, 0
-        stable: Tuple[Optional[str], Optional[str]] = (None, None)
+        expect: only the expected screens' signatures are watched (fast, see _wait_expected); `start` (default:
+        the last known screen) is the screen we come from - if it lies on top of an expected one, it must be gone.
+        Otherwise: quiet frame + identify, repeated (with `leave`) until the condition holds or the timeout.
+        ref: game-area frame from just before the click / key; still unchanged after NO_EFFECT_SECONDS = it was
+        ignored, stop waiting early.
+        Returns (screen, matched key); on timeout the screen the last look found."""
+        if expect:
+            expect = set(expect)
+            got = self._wait_expected(expect, self.last_screen if start is None else start, timeout, ref)
+            # nothing expected showed up: classify where we are (full scan)
+            return got if got else self._settled(expect)
+        t0 = time.time()
         while True:
-            name, k, _ = self.identify()
-            now = time.time()
-            if name != cur:
-                cur, key, since, frames = name, k, now, 1
-            else:
-                frames += 1
-            if frames >= STABLE_FRAMES and now - since >= STABLE_SECONDS:
-                stable = (cur, key)
-                if expect is not None:
-                    if cur in expect:
-                        return cur, key
-                elif leave is not None:
-                    if cur not in (leave, UNKNOWN):
-                        return cur, key
-                else:
-                    return cur, key
-            if now >= deadline:
-                return stable if stable[0] is not None else (cur, key)
+            name, key = self._settled()
+            if leave is None or name not in (leave, UNKNOWN) or time.time() - t0 >= timeout:
+                return name, key
+            if name == leave and time.time() - t0 >= NO_EFFECT_SECONDS and self.det.unchanged_since(ref):
+                return name, key
             time.sleep(POLL_SECONDS)
 
     def current(self, timeout: float = 2.0) -> str:
-        """Stable current screen (waits out transitions)."""
+        """Current screen, read from a quiet frame (waits out transitions)."""
         screen, _ = self.wait_screen(timeout=timeout)
         self._note(screen)
         return screen
+
+    def _settled(self, expect: Optional[Iterable[str]] = None) -> Tuple[str, Optional[str]]:
+        """Screen on the next quiet frame: one identify(), a second only if the first found nothing known."""
+        self.det.quiet()
+        name, key, _ = self.identify(expect)
+        if name == UNKNOWN:
+            time.sleep(POLL_SECONDS)
+            name, key, _ = self.identify(expect)
+        return name, key
+
+    def _look_for(self, expect: set, start: Optional[str]):
+        """One frame: (screen, key, center) of the first expected screen whose signature is visible, or None.
+        A start screen drawn on top of the expected one (bubble menu over the chat, user details over the
+        profile card) hides nothing completely, so while its signature is still visible it counts as not there."""
+        vision = getattr(self.det, 'vision', None)
+
+        def find(key, conf):
+            if key not in self.det.templates:
+                return []
+            spot = bool(vision) and key not in MOVING and vision.has_hint(self.det.templates[key])
+            return self.det._find_template(key, confidence=conf or self.det.state_confidence, hint_only=spot)
+
+        def look():
+            covered = None
+            for name, signature in SCREENS:
+                if name not in expect:
+                    continue
+                if start in RANK and start not in expect and RANK[start] < RANK[name]:
+                    if covered is None:
+                        covered = any(find(k, c) for k, c in dict(SCREENS)[start])
+                    if covered:
+                        return None
+                for key, conf in signature:
+                    locs = find(key, conf)
+                    if locs:
+                        return name, key, locs[0]
+            return None
+
+        if vision:
+            try:
+                with vision.frozen(self.det.region):  # one capture for the whole look
+                    return look()
+            except Exception as e:
+                print(f"[Nav] Warning: shared-frame look failed ({e}), checking templates individually")
+        return look()
+
+    def _wait_expected(self, expect: set, start: Optional[str], timeout: float, ref=None) -> Optional[Tuple[str, str]]:
+        """Poll the expected screens' signatures. Reached = found at the same spot on two polls in a row, the
+        area around it quiet, and still there after that. Returns (screen, key), or None at the timeout
+        (or earlier when the game area still equals `ref` after NO_EFFECT_SECONDS: the click was ignored)."""
+        def same(a, b):
+            return a is not None and b is not None and a[1] == b[1] and \
+                abs(a[2][0] - b[2][0]) <= SAME_SPOT_PX and abs(a[2][1] - b[2][1]) <= SAME_SPOT_PX
+
+        t0 = time.time()
+        deadline = t0 + timeout
+        prev = None
+        while True:
+            if prev is None and ref is not None and time.time() - t0 >= NO_EFFECT_SECONDS \
+                    and self.det.unchanged_since(ref):
+                return None
+            hit = self._look_for(expect, start)
+            if same(prev, hit):
+                self.det.quiet_around(hit[1], hit[2])  # still sliding / fading in: wait until it stops
+                again = self._look_for(expect, start)
+                if same(hit, again):
+                    return again[0], again[1]
+                hit = again
+            prev = hit
+            if time.time() >= deadline:
+                return None
+            time.sleep(POLL_SECONDS)
 
     # ------------------------------------------------------------------ act
     def click_and_expect(self, target: Target, expect: Iterable[str] = (), from_screen: Optional[str] = None,
@@ -145,7 +236,12 @@ class UINavigator:
         expect = set(expect)
         label = label or (target if isinstance(target, str) else 'click')
         if from_screen:
-            here = self.current()
+            # One frame is enough when we are already there (the click's effect is verified below);
+            # anything else may be a transition (e.g. the menu still closing after Copy), so wait for it
+            here = self.identify({from_screen})[0]
+            if here != from_screen:
+                here, _ = self.wait_screen(expect={from_screen}, timeout=1.5, start=here)
+                self._note(here)
             if here != from_screen:
                 return self._unexpected(f"before '{label}'", {from_screen}, here)
         start_screen = from_screen or self.last_screen
@@ -158,6 +254,7 @@ class UINavigator:
                     return NavResult(True, screen, f"'{label}' already done", attempt)
                 return NavResult(False, screen, f"'{label}' not found on screen '{screen}'", attempt)
 
+            ref = self.det.snapshot_gray() if until is None else None  # to tell "ignored" from "slow"
             t0 = time.time()
             self.ui.click_at(coords[0], coords[1])
 
@@ -174,7 +271,8 @@ class UINavigator:
                 print(f"[Nav] '{label}' had no visible effect (attempt {attempt}), retrying")
                 continue
 
-            screen, key = self.wait_screen(expect=expect, timeout=timeout)
+            # watch for the expected screen only; a full classification happens only if it never shows up
+            screen, key = self.wait_screen(expect=expect, timeout=timeout, start=start_screen or UNKNOWN, ref=ref)
             if screen in expect:
                 self._log(start_screen, label, screen, t0, attempt)
                 return NavResult(True, screen, "", attempt, key)
@@ -190,21 +288,28 @@ class UINavigator:
 
     def recover_to_chat(self, max_steps: int = 8) -> bool:
         """Walk back to the chat room using the map. True once the chat room is confirmed."""
+        screen = self.current()
         for _ in range(max_steps):
-            screen = self.current()
             if screen == CHAT:
                 return True
             print(f"[Nav] Recovering from '{screen}' to chat room...")
+            left = False
             for action in BACK_ACTIONS.get(screen, BACK_ACTIONS[UNKNOWN]):
+                ref = self.det.snapshot_gray()
                 t0 = time.time()
                 if not self._do(action):
                     continue
-                after, _ = self.wait_screen(leave=screen, timeout=2.0)
+                after, _ = self.wait_screen(leave=screen, timeout=2.0, ref=ref)
                 if after != screen:
                     self._log(screen, self._action_label(action), after, t0, 1)
+                    # a stable known screen needs no second look; 'unknown' may still be a transition
+                    screen = after if after not in (UNKNOWN, None) else self.current()
+                    left = True
                     break
                 print(f"[Nav] '{self._action_label(action)}' did not leave '{screen}'")
-        ok = self.current() == CHAT
+            if not left:
+                screen = self.current()
+        ok = screen == CHAT
         if not ok:
             self._snapshot(f"recover_failed_{self.last_screen}")
             print(f"[Nav] Could not get back to the chat room (stuck on '{self.last_screen}')")

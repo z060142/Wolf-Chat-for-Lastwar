@@ -35,6 +35,8 @@ KEEP_ITEMS = 80                     # records kept (and saved)
 MAX_CATCHUP = 3                     # after a restart, answer at most this many messages sent to the bot meanwhile
 LOST_REBASE_SECONDS = 30            # record not found this long at the bottom of a clean chat: start over
 MAX_ATTEMPTS = 3                    # tries per message before giving up on it
+STILL_MIN_GAP, STILL_MAX_AGE = 0.15, 2.0  # previous look's frame counts for the stillness check in this age window
+STILL_GAP = 0.1                     # otherwise: second grab this long after the first
 
 PENDING = "to bot"
 
@@ -55,6 +57,7 @@ class ChatTracker:
         self.lost_since: Optional[float] = None
         self.catchup = False            # first match after loading a saved record
         self.last_verdict = ""
+        self._last_layout, self._last_time = None, None  # previous still() frame: message rows, grab time
         os.makedirs(data_dir, exist_ok=True)
         self.load()
 
@@ -68,6 +71,14 @@ class ChatTracker:
         return cv2.cvtColor(np.array(pyautogui.screenshot(region=self.region)), cv2.COLOR_RGB2BGR)
 
     @staticmethod
+    def _diff(img, bg):
+        """Per pixel sum over B, G, R of |pixel - bg| (float32; ~10x faster than numpy int arrays)."""
+        if img.size == 0:
+            return np.zeros(img.shape[:2], np.float32)
+        d = cv2.absdiff(np.ascontiguousarray(img), (int(bg[0]), int(bg[1]), int(bg[2]), 0))
+        return cv2.transform(d, np.ones((1, 3), np.float32))
+
+    @staticmethod
     def background_and_viewport(img):
         """Background colour from the left margin; viewport = longest run of rows whose margin is background,
         minus full-width bars at its top (sub-tab bar)."""
@@ -77,7 +88,7 @@ class ChatTracker:
         vals, counts = np.unique(keys, return_counts=True)
         k = vals[counts.argmax()]
         bg = np.array([(k // 4096) * 4 + 2, ((k // 64) % 64) * 4 + 2, (k % 64) * 4 + 2])
-        row_is_bg = (np.abs(img[:, 5:12].astype(int) - bg).sum(axis=2) < 30).mean(axis=1) > 0.8
+        row_is_bg = (ChatTracker._diff(img[:, 5:12], bg) < 30).mean(axis=1) > 0.8
         best, start = (0, 0), None
         for y, ok in enumerate(list(row_is_bg) + [False]):
             if ok and start is None:
@@ -87,9 +98,10 @@ class ChatTracker:
                     best = (start, y)
                 start = None
         y0, y1 = best
-        full = (np.abs(img[y0:y1, 14:718].astype(int) - bg).sum(axis=2) > 30).mean(axis=1) > 0.97
+        head = min(120, y1 - y0)  # a sub-tab bar can only sit at the top
+        full = (ChatTracker._diff(img[y0:y0 + head, 14:718], bg) > 30).mean(axis=1) > 0.97
         top = 0
-        for y in range(min(120, y1 - y0)):
+        for y in range(head):
             if full[y]:
                 top = y + 1
         return bg, (y0 + top + 2 if top else y0, y1)
@@ -98,7 +110,7 @@ class ChatTracker:
     def segment(img, bg, vp):
         """Islands of content between background gaps; kind from which avatar column has content."""
         y0, y1 = vp
-        content = np.abs(img[y0:y1, X0:X1].astype(int) - bg).sum(axis=2) > 30
+        content = ChatTracker._diff(img[y0:y1, X0:X1], bg) > 30
         rows = content.mean(axis=1) > 0.003
         islands, start, gap, end = [], None, 0, 0
         for y, r in enumerate(list(rows) + [False] * (GAP_ROWS + 2)):
@@ -123,6 +135,8 @@ class ChatTracker:
 
     def hsv_bubbles(self, img, vp):
         y0, y1 = vp
+        if y1 <= y0:
+            return []
         hsv = cv2.cvtColor(img[y0:y1, X0:X1], cv2.COLOR_BGR2HSV)
         found = []
         for c in self.colors:
@@ -145,7 +159,7 @@ class ChatTracker:
     def covered_rows(img, bg, vp):
         """Rows inside the chat where the left margin is not background = a banner lies over the chat."""
         y0, y1 = vp
-        margin = np.abs(img[y0:y1, 5:12].astype(int) - bg).sum(axis=2) >= 30
+        margin = ChatTracker._diff(img[y0:y1, 5:12], bg) >= 30
         return np.nonzero(margin.mean(axis=1) > 0.5)[0] + y0
 
     def messages(self, img):
@@ -176,15 +190,27 @@ class ChatTracker:
         return msgs, vp
 
     def still(self, check_screen: bool = True):
-        """(frame, messages, viewport) of a still chat room frame, or None."""
+        """(frame, messages, viewport) of a still chat room frame, or None.
+        Still = same layout (message rows) as a frame STILL_MIN_GAP..STILL_MAX_AGE s earlier: the previous call's
+        frame when it is in that window (the UI loop looks every ~0.3 s), else a second grab STILL_GAP s before."""
         if check_screen and self.nav.identify()[0] != "chat_room":
+            self._last_time = None
             return None
-        f1 = self.grab()
-        time.sleep(0.2)
+        age = time.time() - self._last_time if self._last_time is not None else None
+        if age is not None and STILL_MIN_GAP <= age <= STILL_MAX_AGE:
+            layout1 = self._last_layout
+        else:
+            f1 = self.grab()
+            time.sleep(STILL_GAP)
+            # the first frame only has to show the same layout (message rows), no bubble colours needed
+            bg1, vp1 = self.background_and_viewport(f1)
+            layout1 = [(i["top"], i["bottom"]) for i in self.segment(f1, bg1, vp1)]
+        t2 = time.time()
         f2 = self.grab()
-        m1, _ = self.messages(f1)
         m2, vp = self.messages(f2)
-        if [(m["top"], m["bottom"]) for m in m1] != [(m["top"], m["bottom"]) for m in m2]:
+        layout2 = [(m["top"], m["bottom"]) for m in m2]
+        self._last_layout, self._last_time = layout2, t2
+        if layout1 != layout2:
             return None
         return f2, m2, vp
 
