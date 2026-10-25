@@ -2834,7 +2834,7 @@ def perform_state_cleanup(detector: DetectionModule, interactor: InteractionModu
 
 def handle_tracked_message(detector: DetectionModule, interactor: InteractionModule, tracker: ChatTracker,
                            item: dict, m: dict, trigger_queue: queue.Queue) -> str:
-    """Hand one message to the bot: copy its text, get the sender name, open the reply context, enqueue it.
+    """Hand one message to the bot: copy its text, get the sender name, enqueue it, then open the reply context.
     `m` is the message on the current still frame. Returns 'sent', 'retry' (try on a later look) or 'failed'."""
     seq = item['seq']
     item['attempts'] = item.get('attempts', 0) + 1
@@ -2873,47 +2873,55 @@ def handle_tracked_message(detector: DetectionModule, interactor: InteractionMod
     if not sender_name:
         return give_up("could not get the sender name")
 
-    # Reply context: new messages may have pushed the chat up meanwhile, so place the message again
-    reply_context_activated = False
-    current = None
-    for _ in range(6):
-        _, view = tracker.update()
-        current = view.get(seq)
-        if current is not None and current['complete']:
-            break
-        time.sleep(0.1)  # still() inside update() already waits for a still chat
-    if current is not None and current['complete']:
-        x, y, w, h = tracker.screen_box(current)
-        center = (x + w // 2, y + h // 2 + (15 if is_reply_keyword else 0))
-        # chat_room --bubble--> bubble_menu --Reply--> chat_room (menu closed)
-        menu = interactor.nav.click_and_expect(center, expect={'bubble_menu'}, from_screen=CHAT,
-                                               timeout=2.0, retries=2, label='bubble (reply)')
-        if menu:
-            reply_step = interactor.nav.click_and_expect('reply_button', expect={CHAT}, from_screen='bubble_menu',
-                                                         timeout=2.0, retries=2, label='Reply')
-            reply_context_activated = bool(reply_step)
-            if not reply_step:
-                print(f">>> Reply step failed: {reply_step.message} <<<")
-        else:
-            print(f">>> Bubble menu did not open for reply: {menu.message} <<<")
-        if not reply_context_activated:
-            interactor.nav.recover_to_chat()
-    else:
-        print(f"[Tracker] #{seq}: not found again for the reply context, answering without it")
-
+    # Hand it to the main thread now, so the LLM works while the reply context is opened below. Safe: the UI
+    # thread handles 'send_reply' only at the top of its loop, i.e. after this function has returned.
+    # (No 'reply_context_activated' in the data: it is not known yet, and main.py does not read it.)
     data_to_send = {
         'sender': handle_text_encoding(sender_name, "[未知發送者]"),
         'text': handle_text_encoding(bubble_text, "[無法處理的文字內容]"),
         'bubble_region': bubble_region,
-        'reply_context_activated': reply_context_activated,
         'bubble_snapshot': bubble_snapshot,
         'search_area': SCREENSHOT_REGION,
     }
     trigger_queue.put(data_to_send)
     item['sender'], item['text'] = data_to_send['sender'], data_to_send['text']
     tracker.mark(item, 'done')
-    print(f">>> [Tracker] #{seq} handed to the bot: {data_to_send['sender']}: {data_to_send['text'][:80]} "
-          f"(reply context: {reply_context_activated}) <<<")
+    print(f">>> [Tracker] #{seq} handed to the bot: {data_to_send['sender']}: {data_to_send['text'][:80]} <<<")
+
+    # Reply context: new messages may have pushed the chat up meanwhile, so place the message again.
+    # The message is already handed over, so whatever happens here the result stays 'sent' (the caller then
+    # pauses monitoring until main.py has replied).
+    reply_context_activated = False
+    try:
+        current = None
+        for _ in range(6):
+            _, view = tracker.update()
+            current = view.get(seq)
+            if current is not None and current['complete']:
+                break
+            time.sleep(0.1)  # still() inside update() already waits for a still chat
+        if current is not None and current['complete']:
+            x, y, w, h = tracker.screen_box(current)
+            center = (x + w // 2, y + h // 2 + (15 if is_reply_keyword else 0))
+            # chat_room --bubble--> bubble_menu --Reply--> chat_room (menu closed)
+            menu = interactor.nav.click_and_expect(center, expect={'bubble_menu'}, from_screen=CHAT,
+                                                   timeout=2.0, retries=2, label='bubble (reply)')
+            if menu:
+                reply_step = interactor.nav.click_and_expect('reply_button', expect={CHAT}, from_screen='bubble_menu',
+                                                             timeout=2.0, retries=2, label='Reply')
+                reply_context_activated = bool(reply_step)
+                if not reply_step:
+                    print(f">>> Reply step failed: {reply_step.message} <<<")
+            else:
+                print(f">>> Bubble menu did not open for reply: {menu.message} <<<")
+            if not reply_context_activated:
+                interactor.nav.recover_to_chat()
+        else:
+            print(f"[Tracker] #{seq}: not found again for the reply context, answering without it")
+    except Exception as e:
+        print(f"[Tracker] #{seq}: error while opening the reply context ({e}), answering without it")
+        perform_state_cleanup(detector, interactor)
+    print(f">>> [Tracker] #{seq} reply context: {reply_context_activated} (opened while the bot was answering) <<<")
     return 'sent'
 
 
