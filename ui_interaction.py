@@ -3230,13 +3230,15 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     print("UI Thread: Processing clear_history command.")
                     recent_texts.clear()
                     deduplicator.clear_all() # Simultaneously clear deduplication records
-                    tracker.reset()  # what is on screen now becomes history; only later messages are new
+                    # The chat record is rebuilt from the screen on the next look: at the bottom of the chat,
+                    # requests below the bot's newest message are answered (the newest MAX_CATCHUP)
+                    tracker.reset()
 
                     # Reset position removal lock (DISABLED)
                     # main.position_removal_used = False
                     # print("UI Thread: Position removal lock reset.")
 
-                    print("UI Thread: recent_texts, deduplicator records and chat record cleared.")
+                    print("UI Thread: recent_texts and deduplicator records cleared; chat record is rebuilt on the next look.")
 
                 elif action == 'reset_state': # Added for F8 resume
                     print("UI Thread: Processing reset_state command.")

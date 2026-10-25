@@ -12,6 +12,12 @@ So the same text sent again after someone else spoke is new (it sits below), and
 re-run when someone scrolls up. A recalled message (turns into "X recalled a message") is stepped over.
 The record is saved to disk, so after a game / script restart the bot continues where it stopped.
 
+Starting over (fresh start, F7, record lost e.g. after a channel switch, saved record not found after a
+restart) never waits for the old chat to come back: the record is rebuilt from the screen within two looks.
+At the bottom of the chat, messages to the bot below the bot's own newest message on screen are still
+answered (the newest MAX_CATCHUP); one handled before the start-over keeps its status and is not answered again.
+Only a screen scrolled up into history is recorded as plain history; back at the bottom it is rebuilt again.
+
 Only the plain chat room view is complete: an open bubble menu, the reply bar or a multi-line input
 eat the bottom of the chat, so update() is only called while the bot is just watching.
 """
@@ -32,13 +38,16 @@ CLIP_MARGIN = 3                     # a complete newest message sits 4-9 px abov
 BOTTOM_MARGIN = 12                  # at the bottom of the chat the newest message ends this close to the input bar
 MATCH = 0.95                        # whole-message similarity for "same message"
 KEEP_ITEMS = 80                     # records kept (and saved)
-MAX_CATCHUP = 3                     # after a restart, answer at most this many messages sent to the bot meanwhile
-LOST_REBASE_SECONDS = 30            # record not found this long at the bottom of a clean chat: start over
+MAX_CATCHUP = 3                     # on a start-over or after a restart, answer at most this many waiting requests
+LOST_CONFIRM_LOOKS = 2              # record not found on this many still looks in a row: rebuild from the screen
+COVER_MAX_SECONDS = 5               # record not found while a banner covers the chat: rebuild after this long
+UNCERTAIN_LOOKS = 3                 # at the bottom, newest records cannot be placed this many looks in a row: rebuild
 MAX_ATTEMPTS = 3                    # tries per message before giving up on it
 STILL_MIN_GAP, STILL_MAX_AGE = 0.15, 2.0  # previous look's frame counts for the stillness check in this age window
 STILL_GAP = 0.1                     # otherwise: second grab this long after the first
 
 PENDING = "to bot"
+HISTORY_UP = "history (scrolled up)"  # recorded while scrolled up into history: checked again at the next rebuild
 
 
 def _log(msg: str):
@@ -54,7 +63,10 @@ class ChatTracker:
         self.next_seq = 1
         self.dir = 0                    # +1: content moved down (someone scrolled up), -1: back at the newest
         self.tops: Dict[int, int] = {}  # seq -> top row last time it was seen
-        self.lost_since: Optional[float] = None
+        self.lost_looks = 0             # still looks in a row on which the record was not found
+        self.cover_since: Optional[float] = None  # record not found under a banner since
+        self.uncertain = 0              # looks in a row on which the newest records could not be placed
+        self.from_history = False       # record rebuilt while scrolled up: rebuild again once at the bottom
         self.catchup = False            # first match after loading a saved record
         self.last_verdict = ""
         self._last_layout, self._last_time = None, None  # previous still() frame: message rows, grab time
@@ -296,13 +308,49 @@ class ChatTracker:
         r = self.det.find_keyword_in_region((x0 + self.region[0], y0 + self.region[1], x1 - x0, y1 - y0))
         return r[1] if r else None
 
-    def _baseline(self, img, msgs, why):
-        self.items, self.tops, self.dir, self.lost_since, self.catchup = [], {}, 0, None, False
-        for m in msgs:
-            if m["complete"]:
-                self._add(img, m, "history")
+    def _rebuild(self, img, msgs, why, catch_up):
+        """Start over from the screen: every complete message becomes a record (the old records only serve to
+        recognise requests handled before). With catch_up (chat at the bottom) messages to the bot below the
+        bot's newest message on screen are answered, at most the newest MAX_CATCHUP; without it (scrolled up
+        into history) all is history. Returns (verdict, view) like update(): a request can be handled now."""
+        old, self.items, self.tops, self.dir = self.items, [], {}, 0
+        self.lost_looks, self.cover_since, self.uncertain, self.catchup = 0, None, 0, False
+        self.from_history = not catch_up
+        last_bot = max((i for i, m in enumerate(msgs) if m["who"] == "bot"), default=-1)
+        view, used = {}, set()
+        for i, m in enumerate(msgs):
+            if not m["complete"]:
+                continue
+            kw = self._keyword(m) if catch_up and i > last_bot and m["who"] == "other" else None
+            if not catch_up:
+                status = HISTORY_UP
+            elif i < last_bot:
+                status = "history"                      # the bot already spoke after it
+            else:
+                status = PENDING if kw else "not to bot" if m["who"] == "other" else m["who"]
+            item = self._add(img, m, status, kw)
+            view[item["seq"]] = m
+            if kw:
+                # seen before the start-over (answered, failed, skipped...): keep that, do not answer it again
+                prev = next((o for o in old if id(o) not in used and o["who"] == "other" and o["status"] != HISTORY_UP
+                             and self.same_message(o["img"], item["img"]) >= MATCH), None)
+                if prev is not None:
+                    used.add(id(prev))
+                    item["status"], item["attempts"] = prev["status"], prev.get("attempts", 0)
+        waiting = self.pending()
+        for it in waiting[:-MAX_CATCHUP]:
+            it["status"] = "skipped (rebuilt, too many waiting)"
+        self._trim()
         self.save()
-        return f"{why}: {len(self.items)} messages on screen recorded as history"
+        if catch_up:
+            skipped = max(0, len(waiting) - MAX_CATCHUP)
+            _log(f"{why}: record rebuilt from {len(self.items)} messages on screen, "
+                 f"{len(waiting) - skipped} to the bot will be answered"
+                 + (f" ({skipped} older ones skipped)" if skipped else ""))
+        else:
+            _log(f"{why}: chat scrolled up into history, {len(self.items)} messages recorded as history "
+                 f"(rebuilt again once the chat is at the bottom)")
+        return f"rebuilt the record ({why})", view
 
     def pending(self) -> List[dict]:
         """Messages to the bot not handled yet, oldest first."""
@@ -313,8 +361,9 @@ class ChatTracker:
         self.save()
 
     def reset(self):
-        """Forget everything; the next clean frame at the bottom becomes the new history."""
-        self.items, self.tops, self.dir, self.lost_since = [], {}, 0, None
+        """F7: forget the record; the next look rebuilds it from the screen (_rebuild, catch-up at the bottom)."""
+        self.items, self.tops, self.dir, self.catchup, self.from_history = [], {}, 0, False, False
+        self.lost_looks, self.cover_since, self.uncertain = 0, None, 0
         self.save()
 
     def screen_box(self, m) -> Tuple[int, int, int, int]:
@@ -334,23 +383,30 @@ class ChatTracker:
             return "chat area empty (game redrawing) - wait", {}
         bottom = self.at_bottom(msgs, vp)
         if not self.items:
-            if not bottom:
-                return "waiting: start recording only when the chat is at the bottom", {}
-            return self._baseline(img, msgs, "start"), {}
+            return self._rebuild(img, msgs, "start", bottom)
+        if self.from_history and bottom:
+            return self._rebuild(img, msgs, "back at the bottom after a rebuild in history", True)
 
         hit = self.locate(img, msgs)
         if hit is None:
-            if self.dir > 0:
-                return "scrolled up past the record (older history on screen) - nothing new", {}
+            # never wait for the old chat to come back (other channel, a page of new messages, ...): rebuild
+            self.uncertain = 0
             if any(m["covered"] for m in msgs):
-                return "record not found while a banner covers the chat - wait", {}
-            if bottom:
-                self.lost_since = self.lost_since or time.time()
-                if time.time() - self.lost_since >= LOST_REBASE_SECONDS:
-                    return self._baseline(img, msgs, f"WARNING record not found for {LOST_REBASE_SECONDS}s "
-                                                     f"(other channel / chat changed?), starting over"), {}
-            return "LOST: record not found on screen (other channel?) - nothing processed", {}
-        self.lost_since = None
+                self.lost_looks = 0
+                self.cover_since = self.cover_since or time.time()
+                if time.time() - self.cover_since < COVER_MAX_SECONDS:
+                    return "record not found while a banner covers the chat - wait", {}
+                return self._rebuild(img, msgs, f"record not found under a banner for {COVER_MAX_SECONDS}s", bottom)
+            self.cover_since = None
+            if self.dir > 0 and not bottom:
+                self.lost_looks = 0
+                return "scrolled up into history - nothing new can be seen", {}
+            self.lost_looks += 1
+            if self.lost_looks < LOST_CONFIRM_LOOKS:
+                return f"LOST: record not found (look {self.lost_looks}/{LOST_CONFIRM_LOOKS})", {}
+            return self._rebuild(img, msgs, "record not found (other channel / chat changed?)", bottom)
+        self.lost_looks, self.cover_since = 0, None
+        looks, self.uncertain = self.uncertain + 1, 0   # counts only UNCERTAIN looks in a row
 
         ri, si, pairs = hit
         view = {self.items[a]["seq"]: msgs[b] for a, b in pairs}
@@ -362,9 +418,9 @@ class ChatTracker:
         self.tops = {self.items[a]["seq"]: msgs[b]["top"] for a, b in pairs}
 
         if ri < len(self.items) - 1:
-            # New messages only push content up; content that moved down means someone scrolled up,
-            # and it stays "scrolled up" until the newest record is seen again
-            if not bottom or moved > 0 or self.dir > 0:
+            # New messages only push content up: content that moved down, or a chat not at the bottom, means
+            # someone scrolled up (an old scroll direction alone does not count: at the bottom it would block)
+            if not bottom or moved > 0:
                 return f"scrolled up: newest visible #{seq}, newest known #{self.items[-1]['seq']} - nothing new", view
             # At the bottom, yet the newest records did not match: their look changed (re-render, expanded
             # "View All", animation). Map them by position if sender and bubble colour agree.
@@ -377,8 +433,12 @@ class ChatTracker:
                     r.update(who="system", color=None, status="recalled" if r["status"] != "done" else "done")
                     continue
                 if m is None or not m["complete"] or m["who"] != r["who"] or mcolor != r.get("color"):
+                    if looks >= UNCERTAIN_LOOKS:
+                        return self._rebuild(img, msgs, f"record #{r['seq']} could not be placed for {looks} looks",
+                                             True)
+                    self.uncertain = looks
                     return (f"UNCERTAIN: at the bottom but record #{r['seq']} ({r['who']}, {r.get('color')}) "
-                            f"cannot be placed - wait, nothing processed"), view
+                            f"cannot be placed (look {looks}/{UNCERTAIN_LOOKS})"), view
             for j, r in enumerate(later):
                 r["img"] = self.crop(img, cand[j])
                 self.tops[r["seq"]] = cand[j]["top"]
@@ -391,8 +451,10 @@ class ChatTracker:
         for m in msgs[si + 1:]:
             if not m["complete"]:
                 break                                   # wait until it is fully visible / uncovered
-            kw = self._keyword(m)
-            status = PENDING if kw else "not to bot" if m["who"] == "other" else m["who"]
+            # a record rebuilt in history: what scrolls in below is history too (until the bottom rebuild)
+            kw = None if self.from_history else self._keyword(m)
+            status = (HISTORY_UP if self.from_history else
+                      PENDING if kw else "not to bot" if m["who"] == "other" else m["who"])
             item = self._add(img, m, status, kw)
             view[item["seq"]] = m
             new.append(f"#{item['seq']} {m['who']} [{item['color']}] -> {status}" + (f" ({kw})" if kw else ""))
@@ -425,7 +487,7 @@ class ChatTracker:
         try:
             np.savez_compressed(img_path, *[it["img"] for it in self.items])
             with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump({"next_seq": self.next_seq,
+                json.dump({"next_seq": self.next_seq, "from_history": self.from_history,
                            "items": [{k: v for k, v in it.items() if k != "img"} for it in self.items]},
                           f, ensure_ascii=False, indent=1)
         except Exception as e:
@@ -443,6 +505,7 @@ class ChatTracker:
             for k, it in enumerate(items):
                 it["img"] = data[f"arr_{k}"]
             self.items, self.next_seq = items, meta.get("next_seq", len(items) + 1)
+            self.from_history = bool(meta.get("from_history", False))
             self.catchup = bool(items)
             _log(f"loaded {len(items)} recorded messages (newest #{items[-1]['seq'] if items else '-'}): "
                  f"continuing where the bot stopped")

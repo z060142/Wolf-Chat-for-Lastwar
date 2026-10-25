@@ -194,8 +194,14 @@ The UI interaction system uses:
   bubble colours (a frame counts as still when its layout equals the previous look's, 0.15-2 s earlier). Repeated text after someone else spoke is new; scrolling up never re-runs old commands; recalled
   messages are stepped over. Every message is recorded (others' as "not to bot"); the record is saved in
   `chat_tracker_data/` so a game/script restart continues where it stopped (at most `MAX_CATCHUP` answers for
-  messages sent meanwhile). One message is handled at a time: the UI loop pauses itself after enqueueing a trigger
-  until main.py sends `resume` after the reply.
+  messages sent meanwhile). Starting over never waits for an old channel to come back: fresh start, F7, a record not
+  found on `LOST_CONFIRM_LOOKS` (2) looks in a row (other channel, a page of new messages), under a banner for
+  `COVER_MAX_SECONDS` or not placeable for `UNCERTAIN_LOOKS`, and a saved record not found after a restart all
+  rebuild the record from the screen (`_rebuild`). At the bottom of the chat the requests below the bot's newest
+  message on screen are answered (the newest `MAX_CATCHUP`); ones handled before the start-over keep their status
+  and are not repeated. Only a screen clearly scrolled up into history gets no catch-up (all history, rebuilt again
+  once back at the bottom). F7 = forget the record and rebuild. One message is handled at a time: the UI loop
+  pauses itself after enqueueing a trigger until main.py sends `resume` after the reply.
 - **Automated Input**: Keyboard/mouse automation for game interaction
 
 Critical UI templates must be captured and stored in `templates/` folder for proper functionality.
