@@ -9,7 +9,8 @@ Instead of "see a template, click it, hope", every interaction goes through the 
   3. click_and_expect - confirm the starting screen, find the button (settled), click,
                         then confirm the click had its effect (expected screen / condition).
                         No effect -> click again; unexpected screen -> stop and report it.
-  4. recover_to_chat  - walk back to the chat room using each screen's known back action.
+  4. recover_to_chat  - walk back to the chat room using each screen's known back action; after a back step
+                        the screen it leads to (BACK_TARGETS) is watched for directly, like a click's expected one.
 
 Every transition is logged as "[Nav] a --label--> b (0.42s)". When a step lands somewhere
 unexpected, a screenshot is saved to debug_screenshots/nav/ so the map can be refined.
@@ -55,6 +56,17 @@ BACK_ACTIONS: Dict[str, Sequence[tuple]] = {
     'profile_card': (('esc',),),
     'main_screen': (('click_xy', (600, 1300)), ('esc',)),  # chat shortcut on base/world map
     UNKNOWN: (('esc',),),
+}
+# Where those back actions lead. After a back step only that screen is watched for (fast, like after a click);
+# if it does not show up, the full classification still finds wherever the game went. Screens without a
+# fixed target (confirm_dialog: a dismissal or an update prompt; unknown) wait for a quiet frame and identify it.
+BACK_TARGETS: Dict[str, set] = {
+    'bubble_menu': {CHAT},
+    'user_details': {'profile_card'},
+    'position_page': {'capitol'},
+    'capitol': {'profile_card'},
+    'profile_card': {CHAT},
+    'main_screen': {CHAT},
 }
 
 SAME_SPOT_PX = 3         # an expected screen counts as reached once its signature is found twice in a row this close
@@ -286,20 +298,30 @@ class UINavigator:
             return NavResult(True, screen, "", retries + 1)
         return self._unexpected(f"'{label}' never took effect", expect or {'(condition)'}, screen, retries + 1)
 
-    def recover_to_chat(self, max_steps: int = 8) -> bool:
-        """Walk back to the chat room using the map. True once the chat room is confirmed."""
-        screen = self.current()
+    def recover_to_chat(self, max_steps: int = 8, start: Optional[str] = None) -> bool:
+        """Walk back to the chat room using the map. True once the chat room is confirmed.
+        start: the screen we are known to be on (e.g. just confirmed by a click): skips the first look."""
+        if start not in (None, UNKNOWN):
+            screen = start
+            self._note(screen)
+        else:
+            screen = self.current()
         for _ in range(max_steps):
             if screen == CHAT:
                 return True
             print(f"[Nav] Recovering from '{screen}' to chat room...")
             left = False
+            targets = BACK_TARGETS.get(screen)
             for action in BACK_ACTIONS.get(screen, BACK_ACTIONS[UNKNOWN]):
                 ref = self.det.snapshot_gray()
                 t0 = time.time()
                 if not self._do(action):
                     continue
-                after, _ = self.wait_screen(leave=screen, timeout=2.0, ref=ref)
+                if targets:
+                    # watch for the screen this step leads to; anything else is classified once it does not show
+                    after, _ = self.wait_screen(expect=targets, start=screen, timeout=2.0, ref=ref)
+                else:
+                    after, _ = self.wait_screen(leave=screen, timeout=2.0, ref=ref)
                 if after != screen:
                     self._log(screen, self._action_label(action), after, t0, 1)
                     # a stable known screen needs no second look; 'unknown' may still be a transition

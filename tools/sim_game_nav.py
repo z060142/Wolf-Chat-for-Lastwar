@@ -189,6 +189,7 @@ class SimInteractor(U.InteractionModule):
     def __init__(self, detector, game):
         super().__init__(detector)
         self.game = game
+        self.sent = []  # (reply text, screen it was sent on)
 
     def click_at(self, x, y, *a, **k):
         screen = self.game.screen
@@ -211,6 +212,12 @@ class SimInteractor(U.InteractionModule):
     def set_clipboard(self, text):
         self.game.clipboard = text
 
+    def send_chat_message(self, reply_text):
+        # the chat input / send button are not simulated: record which screen the reply would land on
+        self.sent.append((reply_text, self.game.screen))
+        print(f"  (sim) reply sent on {self.game.screen}")
+        return True
+
 
 AVATAR_DX = U.AVATAR_OFFSET_X  # avatar position relative to the bubble's left edge
 
@@ -230,7 +237,8 @@ def run(runs, drop, seed):
     extended = Box(BUBBLE[0] - U.AVATAR_EXTENSION_PX, BUBBLE[1], BUBBLE[2] + U.AVATAR_EXTENSION_PX, BUBBLE[3])
     det.locate_image = lambda *a, **k: extended
     names = list(POS_KEYS)
-    results = {'recovered': 0, 'copy_text': 0, 'sender_name': 0, 'reply': 0, 'removal': 0, 'back_in_chat': 0}
+    results = {'recovered': 0, 'copy_text': 0, 'sender_name': 0, 'reply': 0, 'removal': 0, 'back_in_chat': 0,
+               'reply_in_chat': 0}
     t_start = time.time()
     for i in range(runs):
         target = rng.choice(names)
@@ -251,12 +259,22 @@ def run(runs, drop, seed):
         results['reply'] += bool(menu and ui.nav.click_and_expect('reply_button', expect={U.CHAT},
                                                                    from_screen='bubble_menu', retries=2, label='Reply'))
         before = len(game.removed)
+        t0 = time.time()
         r = U.remove_user_position(det, ui, BUBBLE, extended, U.SCREENSHOT_REGION)
+        t_result = time.time() - t0
         ok = r.get('status') == 'success' and game.removed[before:] == [POS_KEYS[target]]
         results['removal'] += ok
         if not ok:
             print(f"!!! removal result {r}, removed now {game.removed[before:]}")
+        U.walk_back_after_removal(ui, r)  # what the UI thread does once the result is reported
+        print(f"[Sim] removal result after {t_result:.2f}s, back in chat after {time.time() - t0:.2f}s")
         results['back_in_chat'] += game.screen == 'chat_room' and not game.pending
+        # a reply that finds another screen walks back first and goes out only in the chat room
+        with game.lock:
+            game.screen, game.pending, game.anim_start = \
+                ('bubble_menu', 'user_details', 'capitol', 'position_page')[i % 4], None, 0
+        results['reply_in_chat'] += U.send_reply_in_chat(ui, f'reply {i}') and \
+            ui.sent[-1:] == [(f'reply {i}', 'chat_room')]
     print(f"\n===== {runs} runs in {time.time() - t_start:.0f}s, drop rate {drop:.0%}, "
           f"clicks {game.clicks} (ignored/dropped by the game {game.dropped}) =====")
     for k, v in results.items():

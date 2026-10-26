@@ -2454,7 +2454,11 @@ def remove_user_position(detector: DetectionModule,
     """
     Performs the sequence of UI actions to remove a user's position based on the triggering chat bubble.
     Includes re-location using the provided snapshot before proceeding.
-    Returns dict with status, error_type, and message.
+    Returns dict with status, error_type, and message. It does NOT walk back to the chat room: the caller
+    reports the result first and then calls walk_back_after_removal(), so the bot can go on answering while
+    the screens close. 'walk_back' tells whether that is needed (absent/False: nothing was opened, or the
+    Confirm step failed - the dialog state is unclear and ESC could cancel a pending dismissal); 'screen'
+    is where the last confirmed step ended (lets the walk back skip its first look).
     """
     
     def _return_result(status: str, error_type: str = None, message: str = "") -> dict:
@@ -2714,12 +2718,11 @@ def remove_user_position(detector: DetectionModule,
     print(f"Clicking avatar for position removal at calculated position: ({avatar_click_x}, {avatar_click_y}) using offsets ({AVATAR_OFFSET_X}, {AVATAR_OFFSET_Y}) from compensated bubble coordinates ({compensated_x}, {compensated_y})")
     nav = interactor.nav
 
-    def _fail(message: str, cleanup: bool = True) -> dict:
+    def _fail(message: str, walk_back: bool = True) -> dict:
         print(f"Error: {message}")
-        if cleanup:
-            perform_state_cleanup(detector, interactor)
         result = _return_result("failed", "ui_operation_failed", message)
         result["position_name"] = target_position_name
+        result["walk_back"] = walk_back  # done by the caller after it has reported the result
         return result
 
     position_button_templates = {
@@ -2735,7 +2738,7 @@ def remove_user_position(detector: DetectionModule,
     target_button_key = position_button_templates.get(target_position_name)
     target_page_key = position_page_templates.get(target_position_name)
     if not target_button_key or not target_page_key:
-        return _fail(f"Internal error - unknown position name: {target_position_name}", cleanup=False)
+        return _fail(f"Internal error - unknown position name: {target_position_name}", walk_back=False)
 
     # Every step goes through the screen map: start screen confirmed, button settled, click,
     # then the expected screen confirmed (a click without effect is retried).
@@ -2770,19 +2773,51 @@ def remove_user_position(detector: DetectionModule,
     step = nav.click_and_expect('confirm_button', expect={'position_page', 'capitol'}, from_screen='confirm_dialog',
                                 timeout=3.0, retries=2, label='Confirm')
     if not step:
-        # Don't cleanup here: the dialog state is unclear and ESC could cancel a pending dismissal
-        return _fail(f"Confirm dialog did not close; dismissal not confirmed: {step.message}", cleanup=False)
+        # No walk back here: the dialog state is unclear and ESC could cancel a pending dismissal
+        return _fail(f"Confirm dialog did not close; dismissal not confirmed: {step.message}", walk_back=False)
     print(f"Dismissal of '{target_position_name}' confirmed (dialog closed, back on {step.screen}).")
 
-    # Return to the chat room via the map. The dismissal itself is already confirmed, so a failed
-    # navigation back does not turn the result into a failure (the main loop recovers navigation).
-    if not nav.recover_to_chat():
-        print("Warning: could not confirm return to chat; automatic navigation recovery will handle it.")
-
+    # The walk back to the chat room is left to the caller (walk_back_after_removal), after it has reported
+    # this result. The dismissal is already confirmed, so a failed walk back does not make it a failure.
     print("--- Position Removal Process Completed Successfully ---")
     result = _return_result("success", None, f"Position {target_position_name} removed successfully")
     result["position_name"] = target_position_name
+    result["walk_back"] = True
+    result["screen"] = step.screen  # just confirmed: the walk back starts from here without a first look
     return result
+
+
+def walk_back_after_removal(interactor: InteractionModule, removal_result: Optional[dict]):
+    """Walk back to the chat room after remove_user_position(), once its result has been reported.
+    Nothing happens when the result says not to (see remove_user_position). A failed walk back does not
+    change the removal's result: the main loop recovers navigation."""
+    if not removal_result or not removal_result.get("walk_back"):
+        return
+    try:
+        if not interactor.nav.recover_to_chat(start=removal_result.get("screen")):
+            print("Warning: could not confirm return to chat after the position removal; "
+                  "automatic navigation recovery will handle it.")
+    except Exception as e:
+        print(f"Warning: error while walking back after the position removal: {e}")
+
+
+# --- Replies go out only in the chat room ---
+REPLY_RETRY_SECONDS = 1.0     # a reply that found another screen is retried this often from the UI loop
+REPLY_GIVE_UP_SECONDS = 30.0  # ... and dropped after this long without reaching the chat room
+
+
+def send_reply_in_chat(interactor: InteractionModule, text: str) -> bool:
+    """Send a reply, but only in the chat room: walk back there first when needed, never paste into another
+    screen. False = the chat room could not be confirmed, nothing was sent (the caller keeps the reply).
+    True = sent or tried in the chat room (a failed send is not repeated: it could post the message twice)."""
+    nav = interactor.nav
+    screen = nav.identify()[0]
+    if screen != CHAT:
+        print(f"UI Thread: Not in the chat room ('{screen}') for the reply, walking back first...")
+        if not nav.recover_to_chat():
+            return False
+    interactor.send_chat_message(text)
+    return True
 
 
 # ==============================================================================
@@ -3006,6 +3041,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
     recent_texts = collections.deque(maxlen=RECENT_TEXT_HISTORY_MAXLEN) # Context-specific history needed
     screenshot_counter = 0 # Initialize counter for debug screenshots
     main_screen_click_counter = 0 # Counter for consecutive main screen clicks
+    pending_replies = []  # replies that found another screen: {'text', 'since', 'next_try'}, oldest first
 
     loop_counter = 0 # Add loop counter for debugging
     
@@ -3038,7 +3074,12 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         print("UI Thread: Received send_reply command with no text.")
                         continue # Process next command in queue
                     print(f"UI Thread: Processing command to send reply: '{text_to_send[:50]}...'")
-                    interactor.send_chat_message(text_to_send)
+                    # Only in the chat room, and in order: one that cannot go out yet waits (retried below)
+                    if pending_replies or not send_reply_in_chat(interactor, text_to_send):
+                        now = time.time()
+                        pending_replies.append({'text': text_to_send, 'since': now,
+                                                'next_try': now + REPLY_RETRY_SECONDS})
+                        print(f"UI Thread: Reply kept until the chat room is confirmed ({len(pending_replies)} waiting)")
 
                 elif action == 'remove_position_with_feedback':
                     # Check position removal lock first (DISABLED)
@@ -3079,6 +3120,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     if started_event is not None:
                         started_event.set()
 
+                    removal_result = None
                     if snapshot:
                         print(f"UI Thread: Snapshot available, attempting position removal...")
                         try:
@@ -3092,6 +3134,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                                 "status": "failed",
                                 "error_type": "ui_operation_failed",
                                 "message": f"Exception during position removal: {removal_err}",
+                                "walk_back": True,  # screen state unknown: walk back after reporting
                             }
 
                         # Process detailed result information
@@ -3163,6 +3206,10 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         except Exception as e:
                             print(f"UI Thread: Error with fallback queue: {e}")
 
+                    # Walk back only now that the result is out: the bot goes on (next LLM call) meanwhile.
+                    # A 'send_reply' arriving meanwhile waits in the queue until this walk back has finished.
+                    walk_back_after_removal(interactor, removal_result)
+
                 elif action == 'remove_position':
                     # Check position removal lock first (DISABLED)
                     # if main.position_removal_used:
@@ -3179,7 +3226,14 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                     original_region = command_data.get('trigger_bubble_region')
                     if snapshot: # Check for snapshot presence
                         print(f"UI Thread: Processing legacy remove_position command (Snapshot provided: {'Yes' if snapshot else 'No'})")
-                        removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+                        try:
+                            removal_result = remove_user_position(detector, interactor, original_region, snapshot, area)
+                        except Exception as removal_err:
+                            import traceback
+                            traceback.print_exc()
+                            removal_result = {"status": "failed", "error_type": "ui_operation_failed",
+                                              "message": f"Exception during position removal: {removal_err}",
+                                              "walk_back": True}
                         success = removal_result["status"] == "success"
                         
                         # Reset lock for technical failures in legacy mode (DISABLED)
@@ -3190,6 +3244,7 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
                         #         print(f"UI Thread: Position removal lock reset due to technical failure in legacy mode ({error_type})")
                         
                         print(f"UI Thread: Legacy position removal attempt finished. Success: {success}, Type: {removal_result.get('error_type', 'N/A')}")
+                        walk_back_after_removal(interactor, removal_result)
                     else:
                         # Reset lock for missing snapshot (technical issue) (DISABLED)
                         # main.position_removal_used = False
@@ -3262,6 +3317,30 @@ def run_ui_monitoring_loop_enhanced(trigger_queue: queue.Queue, command_queue: q
         except Exception as cmd_err:
             print(f"UI Thread: Error processing command queue: {cmd_err}")
             # Consider if pausing is needed on error, maybe not
+
+        # --- Replies waiting for the chat room (send_reply found another screen and could not walk back) ---
+        # Retried about once per second, also while monitoring is paused (main.py sends 'resume' right after
+        # 'send_reply'); monitoring waits meanwhile, so no new message is handed over before the reply is out.
+        if pending_replies:
+            first = pending_replies[0]
+            if time.time() >= first['next_try']:
+                try:
+                    sent = send_reply_in_chat(interactor, first['text'])
+                except Exception as reply_err:
+                    print(f"UI Thread: Error while sending a waiting reply: {reply_err}")
+                    sent = False
+                if sent:
+                    pending_replies.pop(0)
+                    print(f"UI Thread: Waiting reply sent after {time.time() - first['since']:.1f}s (chat room confirmed)")
+                elif time.time() - first['since'] >= REPLY_GIVE_UP_SECONDS:
+                    pending_replies.pop(0)
+                    print(f"UI Thread: GAVE UP on a reply after {REPLY_GIVE_UP_SECONDS:.0f}s - could not get back "
+                          f"to the chat room, reply NOT sent: '{first['text'][:50]}...'")
+                else:
+                    first['next_try'] = time.time() + REPLY_RETRY_SECONDS
+            if pending_replies:
+                time.sleep(0.1)
+                continue  # keep draining commands; monitoring resumes once no reply is waiting
 
         # --- Now, Check Pause State ---
         # print("[DEBUG] UI Loop: Checking pause state...") # DEBUG REMOVED

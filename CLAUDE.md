@@ -181,9 +181,15 @@ The UI interaction system uses:
   cleanup, main-loop recovery) goes through `click_and_expect()` - confirm the start screen, click, confirm the
   expected screen (retry a click without effect, stop on an unexpected screen) - and `recover_to_chat()` walks back
   with each screen's known back action. After a click only the expected screens' signatures are polled (a start
-  screen lying on top must be gone); the full `identify()` runs only when they do not show up. A click after which
+  screen lying on top must be gone); the full `identify()` runs only when they do not show up. Back steps work the
+  same way: only the screen the step leads to (`BACK_TARGETS`) is watched for (`confirm_dialog` / unknown keep the
+  quiet-frame + identify path); `recover_to_chat(start=...)` skips the first look when the screen is known. A click after which
   the game area did not change at all for `NO_EFFECT_SECONDS` counts as ignored and is retried early.
-  `send_chat_message` confirms the send (send button gone; one more click, else it reports failure). New screens go into `SCREENS` / `BACK_ACTIONS`. Unexpected screens are saved
+  `send_chat_message` confirms the send (send button gone; one more click, else it reports failure). New screens go into `SCREENS` / `BACK_ACTIONS` / `BACK_TARGETS`.
+  Position removal reports its result first and walks back afterwards (`walk_back_after_removal`, run by the UI
+  thread; still no ESC after a failed Confirm), so the next LLM call overlaps the walk back. Replies are sent only
+  once the chat room is confirmed (`send_reply_in_chat`); one that cannot get there waits, is retried ~1/s from the
+  UI loop (monitoring waits meanwhile) and is dropped after `REPLY_GIVE_UP_SECONDS`. Unexpected screens are saved
   to `debug_screenshots/nav/`. Offline test with a simulated laggy game: `tools/sim_game_nav.py` `"pyautogui"` keeps the legacy path.
   Tests: `tools/test_screen_vision.py` (equivalence vs pyscreeze), `tools/test_screen_wait.py` (live on-screen waits)
 - **Screen Capture**: PyAutoGUI for screenshots and coordinate detection
